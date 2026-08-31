@@ -5,7 +5,7 @@ using System.Collections.Generic;
 public abstract class BossAction : MonoBehaviour
 {
     [Header("Cast-Einstellungen")]
-    public int totalWindupTurns = 1;     // Wie viele Runden Vorwarnzeit (1 = nächste Runde, 3 = nach 3 Runden)
+    public int totalWindupTurns = 1;     // Wie viele Runden Vorwarnzeit (1 = nächste Runde; 3 = nach 3 Runden)
     [HideInInspector] public int currentWindup = 0;
 
     [Header("Visuelle Telegrafie")]
