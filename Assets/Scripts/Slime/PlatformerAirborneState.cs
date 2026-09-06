@@ -7,33 +7,33 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void Enter()
     {
-        // In der Luft richtet sich der Slime sofort wieder normal nach oben aus
-        controller.TargetSurfaceNormal = Vector2.up;
+        // Nicht mehr sofort auf Vector2.up setzen, damit die Ausrichtung bei kurzen
+        // Abrissen oder Kantenwechseln stabil bleibt.
     }
 
     public override void FrameUpdate()
     {
-        // Boden- / Flächenkontakt nach einem Fall
-        if (controller.IsGrounded && controller.Velocity.y <= 0.01f)
+        // 1. Kontakt mit einer Wand im Flug -> Sofort haften
+        if (controller.HitWall)
         {
+            controller.Velocity = Vector2.zero;
             stateMachine.ChangeState(controller.GroundedState);
             return;
         }
 
-        // Kontakt mit einer Wand im Flug -> Sofort haften
-        if (controller.HitWall)
+        // 2. Boden- / Deckenkontakt nach Fall/Sprung
+        if (controller.IsGrounded && controller.Velocity.y <= 0.01f)
         {
-            controller.Velocity = Vector2.zero;
             stateMachine.ChangeState(controller.GroundedState);
         }
     }
 
     public override void PhysicsUpdate()
     {
-        // In der Luft zieht immer die echte Welt-Schwerkraft nach unten
+        // In der Luft zieht immer die echte Schwerkraft nach unten
         ApplyGravity();
 
-        // Horizontale Luftsteuerung in Welt-X
+        // Horizontale Steuerung in der Luft
         ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
     }
 }
