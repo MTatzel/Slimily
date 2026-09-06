@@ -57,18 +57,25 @@ public class PlatformerGroundedState : PlatformerSlimeState
     {
         Vector2 normal = controller.CurrentSurfaceNormal;
         bool isWall = Mathf.Abs(normal.x) > 0.5f;
+        bool isCeiling = normal.y < -0.5f;
 
-        // Eingabeachse wählen: An der Wand W/S (y), am Boden A/D (x)
         float activeInput = 0f;
 
         if (isWall)
         {
             // Rechte Wand (normal.x < 0) vs. Linke Wand (normal.x > 0)
-            // W klettert nach oben, S nach unten
+            // W klettert immer nach oben, S nach unten
             activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
+        }
+        else if (isCeiling)
+        {
+            // An der Decke zeigt die mathematische Tangente nach links.
+            // Vorzeichen umkehren, damit D/Rechts auch real nach rechts läuft:
+            activeInput = -controller.MoveInput.x;
         }
         else
         {
+            // Normaler Boden
             activeInput = controller.MoveInput.x;
         }
 

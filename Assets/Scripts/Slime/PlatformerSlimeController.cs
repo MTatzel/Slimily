@@ -111,168 +111,165 @@ private void UpdateSurfaceRotation()
     CurrentSurfaceNormal = TargetSurfaceNormal;
 }
 
-    private void MoveAndResolveCollisions(Vector2 deltaMovement)
+private void MoveAndResolveCollisions(Vector2 deltaMovement)
+{
+    IsGrounded = false;
+    HitCeiling = false;
+    HitWall = false;
+
+    Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
+    Vector2 position = rb.position;
+    Vector2 castOrigin = position + boxCollider.offset;
+
+    Vector2 surfaceNormal = CurrentSurfaceNormal;
+    Vector2 surfaceTangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
+
+    bool isGroundedMode = StateMachine.CurrentState == GroundedState;
+
+    if (isGroundedMode)
     {
-        IsGrounded = false;
-        HitCeiling = false;
-        HitWall = false;
-
-        Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
-        Vector2 position = rb.position;
-        Vector2 castOrigin = position + boxCollider.offset;
-
-        Vector2 surfaceNormal = CurrentSurfaceNormal;
-        Vector2 surfaceTangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
-
-        bool isGroundedMode = StateMachine.CurrentState == GroundedState;
-
-        if (isGroundedMode)
+        // 1. BEWEGUNG ENTLANG DER FLÄCHE
+        if (Mathf.Abs(deltaMovement.x) > 0.0001f)
         {
-            // 1. Bewegung entlang der Wand / des Bodens
-            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
-            {
-                float moveDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
-                Vector2 moveDir = surfaceTangent * Mathf.Sign(deltaMovement.x);
+            float moveDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
+            Vector2 moveDir = surfaceTangent * Mathf.Sign(deltaMovement.x);
 
-                int hits = Physics2D.BoxCast(
-                    castOrigin,
-                    boxSize,
-                    0f,
-                    moveDir,
-                    contactFilter,
-                    hitBuffer,
-                    moveDist
-                );
-
-                if (hits > 0)
-                {
-                    RaycastHit2D hit = hitBuffer[0];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position += moveDir * actualDist;
-                    HitWall = true;
-
-                    TargetSurfaceNormal = hit.normal;
-                    CurrentSurfaceNormal = hit.normal;
-                    Velocity = Vector2.zero;
-                }
-                else
-                {
-                    position += surfaceTangent * deltaMovement.x;
-                }
-            }
-
-            // 2. Festhalten an der Fläche (Snap gegen die Normale)
-            castOrigin = position + boxCollider.offset;
-            float snapDist = data.skinWidth * 3f;
-            Vector2 surfaceSnapDir = -surfaceNormal;
-
-            int groundHits = Physics2D.BoxCast(
+            int hits = Physics2D.BoxCast(
                 castOrigin,
                 boxSize,
                 0f,
-                surfaceSnapDir,
+                moveDir,
                 contactFilter,
                 hitBuffer,
-                snapDist
+                moveDist
             );
 
-            if (groundHits > 0)
+            if (hits > 0)
             {
                 RaycastHit2D hit = hitBuffer[0];
                 float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                position += surfaceSnapDir * actualDist;
-                IsGrounded = true;
+                position += moveDir * actualDist;
+                HitWall = true;
+
                 TargetSurfaceNormal = hit.normal;
+                CurrentSurfaceNormal = hit.normal;
+                Velocity = Vector2.zero;
             }
             else
             {
-                IsGrounded = false;
+                position += surfaceTangent * deltaMovement.x;
             }
+        }
+
+        // 2. HAFTUNG ZUR FLÄCHE (Gegen die Normale saugen)
+        castOrigin = position + boxCollider.offset;
+        float snapDist = data.skinWidth * 3f;
+        Vector2 surfaceSnapDir = -surfaceNormal;
+
+        int groundHits = Physics2D.BoxCast(
+            castOrigin,
+            boxSize,
+            0f,
+            surfaceSnapDir,
+            contactFilter,
+            hitBuffer,
+            snapDist
+        );
+
+        if (groundHits > 0)
+        {
+            RaycastHit2D hit = hitBuffer[0];
+            float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+            position += surfaceSnapDir * actualDist;
+            IsGrounded = true;
+            TargetSurfaceNormal = hit.normal;
         }
         else
         {
-            // --- FLUG-MODUS ---
+            IsGrounded = false;
+        }
+    }
+    else
+    {
+        // --- FLUG-MODUS ---
 
-            // Y-Achse
-            if (Mathf.Abs(deltaMovement.y) > 0.0001f)
+        // Y-Achse
+        if (Mathf.Abs(deltaMovement.y) > 0.0001f)
+        {
+            float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
+            float yDir = Mathf.Sign(deltaMovement.y);
+
+            int yHits = Physics2D.BoxCast(
+                castOrigin,
+                boxSize,
+                0f,
+                Vector2.up * yDir,
+                contactFilter,
+                hitBuffer,
+                yDist
+            );
+
+            if (yHits > 0)
             {
-                float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
-                float yDir = Mathf.Sign(deltaMovement.y);
+                RaycastHit2D hit = hitBuffer[0];
+                float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                position.y += yDir * actualDist;
 
-                int yHits = Physics2D.BoxCast(
-                    castOrigin,
-                    boxSize,
-                    0f,
-                    Vector2.up * yDir,
-                    contactFilter,
-                    hitBuffer,
-                    yDist
-                );
+                TargetSurfaceNormal = hit.normal;
+                CurrentSurfaceNormal = hit.normal;
+                Velocity = Vector2.zero;
+                IsGrounded = true;
 
-                if (yHits > 0)
-                {
-                    RaycastHit2D hit = hitBuffer[0];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position.y += yDir * actualDist;
-
-                    if (yDir < 0f)
-                    {
-                        IsGrounded = true;
-                        TargetSurfaceNormal = hit.normal;
-                        Vector2 v = Velocity;
-                        if (v.y < 0f) v.y = 0f;
-                        Velocity = v;
-                    }
-                    else
-                    {
-                        HitCeiling = true;
-                        TargetSurfaceNormal = hit.normal;
-                        Vector2 v = Velocity;
-                        if (v.y > 0f) v.y = 0f;
-                        Velocity = v;
-                    }
-                }
-                else
-                {
-                    position.y += deltaMovement.y;
-                }
+                // Sofort in Grounded wechseln, damit keine Gravitation im nächsten Frame greift!
+                StateMachine.ChangeState(GroundedState);
             }
-
-            // X-Achse
-            castOrigin = position + boxCollider.offset;
-            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+            else
             {
-                float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
-                float xDir = Mathf.Sign(deltaMovement.x);
-
-                int xHits = Physics2D.BoxCast(
-                    castOrigin,
-                    boxSize,
-                    0f,
-                    Vector2.right * xDir,
-                    contactFilter,
-                    hitBuffer,
-                    xDist
-                );
-
-                if (xHits > 0)
-                {
-                    RaycastHit2D hit = hitBuffer[0];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position.x += xDir * actualDist;
-                    HitWall = true;
-                    TargetSurfaceNormal = hit.normal;
-                    Velocity = new Vector2(0f, Velocity.y);
-                }
-                else
-                {
-                    position.x += deltaMovement.x;
-                }
+                position.y += deltaMovement.y;
             }
         }
 
-        rb.MovePosition(position);
+        // X-Achse
+        castOrigin = position + boxCollider.offset;
+        if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+        {
+            float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
+            float xDir = Mathf.Sign(deltaMovement.x);
+
+            int xHits = Physics2D.BoxCast(
+                castOrigin,
+                boxSize,
+                0f,
+                Vector2.right * xDir,
+                contactFilter,
+                hitBuffer,
+                xDist
+            );
+
+            if (xHits > 0)
+            {
+                RaycastHit2D hit = hitBuffer[0];
+                float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                position.x += xDir * actualDist;
+                HitWall = true;
+
+                TargetSurfaceNormal = hit.normal;
+                CurrentSurfaceNormal = hit.normal;
+                Velocity = Vector2.zero;
+                IsGrounded = true;
+
+                // Sofort in Grounded wechseln
+                StateMachine.ChangeState(GroundedState);
+            }
+            else
+            {
+                position.x += deltaMovement.x;
+            }
+        }
     }
+
+    rb.MovePosition(position);
+}
 
     private void OnDrawGizmos()
     {

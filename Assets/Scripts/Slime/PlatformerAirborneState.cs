@@ -7,21 +7,20 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void Enter()
     {
-        // Sobald er in die Luft geht (Sprung/Fall), richten sich die Füße sofort nach unten aus
-        controller.TargetSurfaceNormal = Vector2.up;
     }
 
     public override void FrameUpdate()
     {
-        // 1. Kontakt mit einer Wand im Flug -> Sofort haften
-        if (controller.HitWall)
+        // 1. Kontakt mit einer Wand ODER Decke im Flug -> Sofort anheften
+        if (controller.HitWall || controller.HitCeiling)
         {
             controller.Velocity = Vector2.zero;
+            controller.IsGrounded = true;
             stateMachine.ChangeState(controller.GroundedState);
             return;
         }
 
-        // 2. Bodenkontakt nach Fall/Sprung
+        // 2. Bodenkontakt nach einem Fall
         if (controller.IsGrounded && controller.Velocity.y <= 0.01f)
         {
             stateMachine.ChangeState(controller.GroundedState);
@@ -30,10 +29,7 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void PhysicsUpdate()
     {
-        // Schwerkraft nach unten
         ApplyGravity();
-
-        // Horizontale Luftsteuerung
         ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
     }
 }
