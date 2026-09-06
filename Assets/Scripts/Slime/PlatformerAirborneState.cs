@@ -7,29 +7,20 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void Enter()
     {
+        // Kein hartes Überschreiben im ersten Frame, damit keine Fehlausrichtung entsteht
     }
 
     public override void FrameUpdate()
     {
-        // 1. Kontakt mit einer Wand ODER Decke im Flug -> Sofort anheften
-        if (controller.HitWall || controller.HitCeiling)
-        {
-            controller.Velocity = Vector2.zero;
-            controller.IsGrounded = true;
-            stateMachine.ChangeState(controller.GroundedState);
-            return;
-        }
-
-        // 2. Bodenkontakt nach einem Fall
-        if (controller.IsGrounded && controller.Velocity.y <= 0.01f)
-        {
-            stateMachine.ChangeState(controller.GroundedState);
-        }
+        // Das Anheften wird nun direkt in MoveAndResolveCollisions präzise und race-condition-frei ausgelöst.
     }
 
     public override void PhysicsUpdate()
     {
+        // Reale Welt-Schwerkraft zieht nach unten
         ApplyGravity();
+
+        // Horizontale Luftsteuerung in Welt-X
         ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
     }
 }

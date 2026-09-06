@@ -16,36 +16,55 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
     public override void FrameUpdate()
     {
-        // Verhindert, dass er im ersten Frame direkt wieder in Airborne abrutscht,
-        // bevor FixedUpdate den Surface-Snap ausführen konnte.
+        // 1-Frame-Schutz beim Betreten
         if (justEntered)
         {
             justEntered = false;
             return;
         }
 
-        // 1. Wenn Fläche verloren geht -> Fallen
+        // Kontakt verloren -> Fallen
         if (!controller.IsGrounded)
         {
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
 
-        // 2. Sprung von der Fläche
+        Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
+        bool isCeiling = surfaceNormal.y < -0.5f;
+        bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+
+        // 1. Spezieller Decken-Drop mit Taste S (einfach fallen lassen)
+        if (isCeiling && controller.MoveInput.y < -0.1f)
+        {
+            controller.TriggerDetach();
+            controller.Velocity = Vector2.down * 1.5f; // Leichter Initialimpuls
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // 2. Sprung von der jeweiligen Fläche
         if (controller.JumpTriggered)
         {
-            Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
-            bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+            controller.TriggerDetach();
 
-            if (isWall)
+            if (isCeiling)
             {
-                // Wall-Jump: Weg von der Wand + Schub nach oben
+                // Kontrollierter Decken-Sprung: Moderater Schub nach unten + Schwung in A/D-Richtung
+                float horizontalPush = controller.MoveInput.x * data.moveSpeed * 0.8f;
+                float verticalDrop = -data.jumpVelocity * 0.4f; // ca. 40% der normalen Sprungkraft
+
+                controller.Velocity = new Vector2(horizontalPush, verticalDrop);
+            }
+            else if (isWall)
+            {
+                // Wall-Jump: Weg von der Wand + Aufwärtsschub
                 Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
                 controller.Velocity = jumpDir * data.jumpVelocity;
             }
             else
             {
-                // Normaler Sprung: Entlang der Flächennormale
+                // Normaler Bodensprung entlang der Flächennormale
                 controller.Velocity = surfaceNormal * data.jumpVelocity;
             }
 
@@ -64,13 +83,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (isWall)
         {
             // Rechte Wand (normal.x < 0) vs. Linke Wand (normal.x > 0)
-            // W klettert immer nach oben, S nach unten
+            // W klettert nach oben, S nach unten
             activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
         }
         else if (isCeiling)
         {
-            // An der Decke zeigt die mathematische Tangente nach links.
-            // Vorzeichen umkehren, damit D/Rechts auch real nach rechts läuft:
+            // Vorzeichen an der Decke umkehren, damit D nach rechts und A nach links läuft
             activeInput = -controller.MoveInput.x;
         }
         else
@@ -79,7 +97,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             activeInput = controller.MoveInput.x;
         }
 
-        // Bewegung entlang der Fläche berechnen
+        // Bewegung entlang der Flächen-Tangente
         float targetSpeed = activeInput * data.moveSpeed;
         Vector2 vel = controller.Velocity;
 
