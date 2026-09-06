@@ -7,8 +7,8 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void Enter()
     {
-        // Nicht mehr sofort auf Vector2.up setzen, damit die Ausrichtung bei kurzen
-        // Abrissen oder Kantenwechseln stabil bleibt.
+        // Sobald er in die Luft geht (Sprung/Fall), richten sich die Füße sofort nach unten aus
+        controller.TargetSurfaceNormal = Vector2.up;
     }
 
     public override void FrameUpdate()
@@ -21,7 +21,7 @@ public class PlatformerAirborneState : PlatformerSlimeState
             return;
         }
 
-        // 2. Boden- / Deckenkontakt nach Fall/Sprung
+        // 2. Bodenkontakt nach Fall/Sprung
         if (controller.IsGrounded && controller.Velocity.y <= 0.01f)
         {
             stateMachine.ChangeState(controller.GroundedState);
@@ -30,10 +30,10 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void PhysicsUpdate()
     {
-        // In der Luft zieht immer die echte Schwerkraft nach unten
+        // Schwerkraft nach unten
         ApplyGravity();
 
-        // Horizontale Steuerung in der Luft
+        // Horizontale Luftsteuerung
         ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
     }
 }

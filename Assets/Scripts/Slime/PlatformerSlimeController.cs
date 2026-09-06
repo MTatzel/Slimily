@@ -5,7 +5,7 @@ using UnityEngine.InputSystem;
 public class PlatformerSlimeController : MonoBehaviour
 {
     [SerializeField] private PlatformerPhysicsData data;
-    [SerializeField] private Transform visualTransform; // Hier das Visual-Child zuweisen!
+    [SerializeField] private Transform visualTransform; // Child mit dem SpriteRenderer
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
@@ -24,7 +24,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     // --- Kollisions- & Orientierungsstatus ---
     public Vector2 Velocity { get; set; }
-    public bool IsGrounded { get; set; }
+    public bool IsGrounded { get; set; } // Öffentlicher Setter für State-Übergänge
     public bool HitCeiling { get; private set; }
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
@@ -35,7 +35,7 @@ public class PlatformerSlimeController : MonoBehaviour
         rb = GetComponent<Rigidbody2D>();
         boxCollider = GetComponent<BoxCollider2D>();
 
-        // Collider-Rotation auf der Z-Achse sperren
+        // Collider-Rotation sperren (Root bleibt immer ungedreht)
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
 
         contactFilter = new ContactFilter2D
@@ -87,26 +87,29 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveInput = input;
     }
 
-    private void UpdateSurfaceRotation()
+private void UpdateSurfaceRotation()
+{
+    transform.rotation = Quaternion.identity;
+
+    if (visualTransform != null)
     {
-        // Root-Transform bleibt immer upright
-        transform.rotation = Quaternion.identity;
+        // 1. Drehung wie gehabt
+        float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
+        visualTransform.rotation = Quaternion.Euler(0f, 0f, targetAngle);
 
-        // Nur das Visual-Child wird an die Oberflächennormale ausgerichtet
-        if (visualTransform != null)
-        {
-            float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
-            Quaternion targetRotation = Quaternion.Euler(0f, 0f, targetAngle);
+        // 2. Halbe Collider-Ausdehnung
+        float halfColHeight = boxCollider.size.y * 0.5f;
 
-            visualTransform.rotation = Quaternion.RotateTowards(
-                visualTransform.rotation,
-                targetRotation,
-                data.alignRotationSpeed * Time.deltaTime
-            );
-        }
+        // 3. Wenn er an einer Fläche haftet, schieben wir das Visual entlang der negativen
+        // Normale exakt an die Außenkante des Colliders minus optischen Rand.
+        // Bei Offset (0,0) und 0.65er Box sitzt der Slime bei ~0.06 Einheiten perfekt bündig.
+        Vector2 visualOffset = -TargetSurfaceNormal * (halfColHeight - 0.26f);
 
-        CurrentSurfaceNormal = TargetSurfaceNormal;
+        visualTransform.localPosition = (Vector2)boxCollider.offset + visualOffset;
     }
+
+    CurrentSurfaceNormal = TargetSurfaceNormal;
+}
 
     private void MoveAndResolveCollisions(Vector2 deltaMovement)
     {
@@ -118,8 +121,6 @@ public class PlatformerSlimeController : MonoBehaviour
         Vector2 position = rb.position;
         Vector2 castOrigin = position + boxCollider.offset;
 
-        // Tangente und Normale für Bewegung
-        // Tangente ist 90° im Uhrzeigersinn zur Normale gedreht
         Vector2 surfaceNormal = CurrentSurfaceNormal;
         Vector2 surfaceTangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
 
@@ -127,7 +128,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
         if (isGroundedMode)
         {
-            // 1. BEWEGUNG ENTLANG DER FLÄCHE (Tangente)
+            // 1. Bewegung entlang der Wand / des Bodens
             if (Mathf.Abs(deltaMovement.x) > 0.0001f)
             {
                 float moveDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
@@ -150,7 +151,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     position += moveDir * actualDist;
                     HitWall = true;
 
-                    // Innenkante getroffen: Normale übernehmen
                     TargetSurfaceNormal = hit.normal;
                     CurrentSurfaceNormal = hit.normal;
                     Velocity = Vector2.zero;
@@ -161,7 +161,7 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // 2. HAFTUNG ZUR FLÄCHE (Gegen die Normale casten)
+            // 2. Festhalten an der Fläche (Snap gegen die Normale)
             castOrigin = position + boxCollider.offset;
             float snapDist = data.skinWidth * 3f;
             Vector2 surfaceSnapDir = -surfaceNormal;
@@ -191,9 +191,9 @@ public class PlatformerSlimeController : MonoBehaviour
         }
         else
         {
-            // --- STANDARD FLUG-MODUS (Weltachsen X / Y) ---
+            // --- FLUG-MODUS ---
 
-            // Y-Achse (Fallen / Steigen)
+            // Y-Achse
             if (Mathf.Abs(deltaMovement.y) > 0.0001f)
             {
                 float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
@@ -215,7 +215,7 @@ public class PlatformerSlimeController : MonoBehaviour
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position.y += yDir * actualDist;
 
-                    if (yDir < 0f) // Bodenkontakt
+                    if (yDir < 0f)
                     {
                         IsGrounded = true;
                         TargetSurfaceNormal = hit.normal;
@@ -223,7 +223,7 @@ public class PlatformerSlimeController : MonoBehaviour
                         if (v.y < 0f) v.y = 0f;
                         Velocity = v;
                     }
-                    else // Decke
+                    else
                     {
                         HitCeiling = true;
                         TargetSurfaceNormal = hit.normal;
@@ -238,7 +238,7 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // X-Achse (Horizontale Flugbewegung)
+            // X-Achse
             castOrigin = position + boxCollider.offset;
             if (Mathf.Abs(deltaMovement.x) > 0.0001f)
             {
@@ -272,5 +272,16 @@ public class PlatformerSlimeController : MonoBehaviour
         }
 
         rb.MovePosition(position);
+    }
+
+    private void OnDrawGizmos()
+    {
+        // Zeichnet den tatsächlichen logischen BoxCollider im Scene- und Game-View (wenn Gizmos aktiv sind)
+        BoxCollider2D col = GetComponent<BoxCollider2D>();
+        if (col == null) return;
+
+        Gizmos.color = IsGrounded ? Color.green : Color.cyan;
+        Vector2 center = (Vector2)transform.position + col.offset;
+        Gizmos.DrawWireCube(center, col.size);
     }
 }
