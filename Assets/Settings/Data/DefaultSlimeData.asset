@@ -22,4 +22,5 @@ MonoBehaviour:
   groundLayer:
     serializedVersion: 2
     m_Bits: 128
-  skinWidth: 0.015
+  skinWidth: 0.005
+  alignRotationSpeed: 720
