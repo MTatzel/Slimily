@@ -43,28 +43,25 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        // 2. Sprung von der Fläche (Leertaste)
-        if (controller.JumpTriggered)
+        // 2. Sprung von der Fläche (entweder frisch gedrückt oder gepuffert)
+        if (controller.HasBufferedJump)
         {
+            controller.ConsumeJumpBuffer();
             controller.TriggerDetach();
 
             if (isCeiling)
             {
-                // Decken-Sprung: Horizontaler Schwung bleibt erhalten + Schub nach unten
                 float currentMoveX = controller.Velocity.x;
                 float verticalDrop = -data.jumpVelocity * 0.4f;
-
                 controller.Velocity = new Vector2(currentMoveX, verticalDrop);
             }
             else if (isWall)
             {
-                // Wall-Jump: Fester Kicker weg von der Wand + Aufwärtsschub
                 Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
                 controller.Velocity = jumpDir * data.jumpVelocity;
             }
             else
             {
-                // Bodensprung: Bisheriger Laufschwung (X) bleibt 1:1 erhalten, Sprung nach oben (Y)
                 float currentMoveX = controller.Velocity.x;
                 controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
             }

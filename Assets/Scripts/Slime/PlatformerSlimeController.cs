@@ -33,6 +33,17 @@ public class PlatformerSlimeController : MonoBehaviour
     // Cooldown, um nach einem Absprung nicht sofort wieder eingesaugt zu werden
     private float detachCooldownTimer;
 
+    [Header("Juice & Buffers")]
+    [SerializeField] private float jumpBufferDuration = 0.12f;
+    private float jumpBufferTimer;
+
+    public bool HasBufferedJump => jumpBufferTimer > 0f;
+
+    public void ConsumeJumpBuffer()
+    {
+        jumpBufferTimer = 0f;
+    }
+
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
@@ -85,23 +96,34 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
     private void ReadInput()
+{
+    Vector2 input = Vector2.zero;
+    var keyboard = Keyboard.current;
+
+    if (keyboard != null)
     {
-        Vector2 input = Vector2.zero;
-        var keyboard = Keyboard.current;
+        if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
+        if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
+        if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
+        if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
 
-        if (keyboard != null)
+        // Wenn Taste in diesem Frame gedrückt wurde: Puffer aufladen
+        if (keyboard.spaceKey.wasPressedThisFrame)
         {
-            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
-            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
-            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
-            if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
-
-            JumpTriggered = keyboard.spaceKey.wasPressedThisFrame;
-            JumpHeld = keyboard.spaceKey.isPressed;
+            jumpBufferTimer = jumpBufferDuration;
         }
 
-        MoveInput = input;
+        JumpHeld = keyboard.spaceKey.isPressed;
     }
+
+    // Puffer herunterzählen
+    if (jumpBufferTimer > 0f)
+    {
+        jumpBufferTimer -= Time.deltaTime;
+    }
+
+    MoveInput = input;
+}
 
     private void UpdateSurfaceRotation()
     {
