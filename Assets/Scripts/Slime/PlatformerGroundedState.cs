@@ -16,14 +16,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
     public override void FrameUpdate()
     {
-        // 1-Frame-Schutz beim Betreten
         if (justEntered)
         {
             justEntered = false;
             return;
         }
 
-        // Kontakt verloren -> Fallen
         if (!controller.IsGrounded)
         {
             stateMachine.ChangeState(controller.AirborneState);
@@ -34,38 +32,41 @@ public class PlatformerGroundedState : PlatformerSlimeState
         bool isCeiling = surfaceNormal.y < -0.5f;
         bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
 
-        // 1. Spezieller Decken-Drop mit Taste S (einfach fallen lassen)
+        // 1. Dropdown an der Decke via Taste S
         if (isCeiling && controller.MoveInput.y < -0.1f)
         {
             controller.TriggerDetach();
-            controller.Velocity = Vector2.down * 1.5f; // Leichter Initialimpuls
+            // Schwung in X mitnehmen, sanfter Fall nach unten
+            float currentMoveX = controller.Velocity.x;
+            controller.Velocity = new Vector2(currentMoveX, -1.5f);
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
 
-        // 2. Sprung von der jeweiligen Fläche
+        // 2. Sprung von der Fläche (Leertaste)
         if (controller.JumpTriggered)
         {
             controller.TriggerDetach();
 
             if (isCeiling)
             {
-                // Kontrollierter Decken-Sprung: Moderater Schub nach unten + Schwung in A/D-Richtung
-                float horizontalPush = controller.MoveInput.x * data.moveSpeed * 0.8f;
-                float verticalDrop = -data.jumpVelocity * 0.4f; // ca. 40% der normalen Sprungkraft
+                // Decken-Sprung: Horizontaler Schwung bleibt erhalten + Schub nach unten
+                float currentMoveX = controller.Velocity.x;
+                float verticalDrop = -data.jumpVelocity * 0.4f;
 
-                controller.Velocity = new Vector2(horizontalPush, verticalDrop);
+                controller.Velocity = new Vector2(currentMoveX, verticalDrop);
             }
             else if (isWall)
             {
-                // Wall-Jump: Weg von der Wand + Aufwärtsschub
+                // Wall-Jump: Fester Kicker weg von der Wand + Aufwärtsschub
                 Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
                 controller.Velocity = jumpDir * data.jumpVelocity;
             }
             else
             {
-                // Normaler Bodensprung entlang der Flächennormale
-                controller.Velocity = surfaceNormal * data.jumpVelocity;
+                // Bodensprung: Bisheriger Laufschwung (X) bleibt 1:1 erhalten, Sprung nach oben (Y)
+                float currentMoveX = controller.Velocity.x;
+                controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
             }
 
             stateMachine.ChangeState(controller.AirborneState);
@@ -82,28 +83,23 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         if (isWall)
         {
-            // Rechte Wand (normal.x < 0) vs. Linke Wand (normal.x > 0)
-            // W klettert nach oben, S nach unten
             activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
         }
         else if (isCeiling)
         {
-            // Vorzeichen an der Decke umkehren, damit D nach rechts und A nach links läuft
             activeInput = -controller.MoveInput.x;
         }
         else
         {
-            // Normaler Boden
             activeInput = controller.MoveInput.x;
         }
 
-        // Bewegung entlang der Flächen-Tangente
         float targetSpeed = activeInput * data.moveSpeed;
         Vector2 vel = controller.Velocity;
 
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
         vel.x = Mathf.MoveTowards(vel.x, targetSpeed, accel * Time.fixedDeltaTime);
-        vel.y = 0f; // Festhalten an der Fläche
+        vel.y = 0f;
 
         controller.Velocity = vel;
     }
