@@ -9,12 +9,43 @@ public class Room : MonoBehaviour
     public struct DoorSetup
     {
         public Direction direction;
-        public GameObject wallBlocker;  // Schließt den Ausgang, wenn kein Nachbar existiert
-        public Transform spawnPoint;    // Einstiegspunkt, wenn man aus dieser Richtung kommt
+        [Tooltip("Das Tür-Prefab in der 6-Tile-Lücke (Sprite + Collider auf Layer 'Ground')")]
+        public GameObject wallBlocker;  
+        [Tooltip("Einstiegspunkt, wenn man aus dieser Richtung kommt")]
+        public Transform spawnPoint;    
     }
 
     [Header("Exits & Spawns")]
     [SerializeField] private DoorSetup[] doors;
+
+    [Header("Kamera-Begrenzung")]
+    [Tooltip("Der Trigger-Collider (Box oder Polygon) für CinemachineConfiner2D")]
+    [SerializeField] private Collider2D cameraBounds;
+    public Collider2D CameraBounds => cameraBounds;
+
+    // --- Editor-Testwerte ---
+    [Header("Debug / Erzwingen")]
+    [SerializeField] private bool debugForceOpenNorth;
+    [SerializeField] private bool debugForceOpenEast;
+    [SerializeField] private bool debugForceOpenSouth;
+    [SerializeField] private bool debugForceOpenWest;
+
+    private void Awake()
+    {
+        // Falls im Inspector nicht zugewiesen, sucht das Skript nach einem Trigger-Collider
+        if (cameraBounds == null)
+        {
+            Collider2D[] colliders = GetComponentsInChildren<Collider2D>();
+            foreach (var col in colliders)
+            {
+                if (col.isTrigger)
+                {
+                    cameraBounds = col;
+                    break;
+                }
+            }
+        }
+    }
 
     // Wird vom RoomManager aufgerufen, wenn der Raum auf die Bühne gesetzt wird
     public void SetDoorOpen(Direction direction, bool isOpen)
@@ -25,7 +56,7 @@ public class Room : MonoBehaviour
             {
                 if (doors[i].wallBlocker != null)
                 {
-                    // Wenn offen: Blocker deinstallieren/deaktivieren. Wenn zu: Blocker an
+                    // Wenn offen: Blocker aus. Wenn zu: Blocker an (schließt die 6 Tiles)
                     doors[i].wallBlocker.SetActive(!isOpen);
                 }
                 return;
@@ -50,4 +81,15 @@ public class Room : MonoBehaviour
     {
         OnExitTriggered?.Invoke(dir);
     }
+
+#if UNITY_EDITOR
+    // Erlaubt das Testen direkt über Haken im Inspector während des Editierens oder Play-Modes
+    private void OnValidate()
+    {
+        SetDoorOpen(Direction.North, debugForceOpenNorth);
+        SetDoorOpen(Direction.East, debugForceOpenEast);
+        SetDoorOpen(Direction.South, debugForceOpenSouth);
+        SetDoorOpen(Direction.West, debugForceOpenWest);
+    }
+#endif
 }
