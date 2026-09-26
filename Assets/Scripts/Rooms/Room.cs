@@ -3,7 +3,16 @@ using UnityEngine;
 
 public class Room : MonoBehaviour
 {
-    public static event Action<Direction> OnExitTriggered;
+    public static event Action<Room, Direction> OnExitTriggered;
+
+    [Header("Grid Koordinate")]
+    [Tooltip("Koordinate dieses Raumes im MacroGrid")]
+    [SerializeField] private Vector2Int gridCoordinate;
+    public Vector2Int GridCoordinate
+    {
+        get => gridCoordinate;
+        set => gridCoordinate = value;
+    }
 
     [System.Serializable]
     public struct DoorSetup
@@ -79,7 +88,7 @@ public class Room : MonoBehaviour
     // Hilfsmethode: Wird vom Trigger am Rand aufgerufen
     public void TriggerExit(Direction dir)
     {
-        OnExitTriggered?.Invoke(dir);
+        OnExitTriggered?.Invoke(this, dir);
     }
 
 #if UNITY_EDITOR
