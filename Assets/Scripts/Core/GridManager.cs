@@ -14,31 +14,41 @@ public class GridManager : MonoBehaviour
     void Start()
     {
         GenerateGrid();
-        CenterCamera();
+        //CenterCamera();
 
         int startX = width / 2;
         int startY = height / 2;
         grid[startX, startY].SetOccupied();
+
+        // --- NEU: Mikro-Welt synchronisieren ---
+        if (MacroGridManager.Instance != null)
+        {
+            Vector2Int startCoord = new Vector2Int(startX, startY);
+            // Startraum registrieren (null nimmt das defaultRoomPrefab)
+            MacroGridManager.Instance.RegisterRoom(startCoord, null);
+            // Startraum laden und Kameras aktivieren
+            MacroGridManager.Instance.UpdateActiveRooms(startCoord);
+        }
     }
 
     void GenerateGrid()
     {
         grid = new GridCell[width, height];
-
         for (int x = 0; x < width; x++)
         {
             for (int y = 0; y < height; y++)
             {
-                // GEÄNDERT: Wir multiplizieren x und y mit dem offset
-                Vector3 spawnPosition = new Vector3(x * offset, y * offset, 0);
+                // Kachel direkt als Child unter diesem Transform erzeugen
+                GridCell newCell = Instantiate(cellPrefab, transform);
                 
-                GridCell newCell = Instantiate(cellPrefab, spawnPosition, Quaternion.identity);
+                // Lokale Position relativ zum GridManager setzen!
+                newCell.transform.localPosition = new Vector3(x * offset, y * offset, 0);
+                
                 newCell.Initialize(x, y);
-                newCell.transform.SetParent(transform);
                 grid[x, y] = newCell;
             }
         }
-    }
+}
 
     void CenterCamera()
     {

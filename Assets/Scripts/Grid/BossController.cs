@@ -6,7 +6,7 @@ public class BossController : MonoBehaviour
 {
     public GridManager gridManager;
     public GameManager gameManager;
-    public SlimeController slime;
+    public MacroSlimeMarker slime;
 
     // Linke untere Ecke des 2x2-Bosses auf dem Grid
     public int originX = 35;

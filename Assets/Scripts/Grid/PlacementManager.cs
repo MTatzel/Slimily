@@ -138,8 +138,21 @@ public class PlacementManager : MonoBehaviour
                 int x = startX + cell.localPosition.x;
                 int y = startY + cell.localPosition.y;
                 gridManager.grid[x, y].SetOccupied();
+
+                // --- NEU: Raum für die Mikro-Ebene registrieren ---
+                if (MacroGridManager.Instance != null)
+                {
+                    Vector2Int coord = new Vector2Int(x, y);
+                    MacroGridManager.Instance.RegisterRoom(coord, null);
+                }
             }
             
+            // Nach dem Platzieren aller Blöcke die Türen der aktiven Räume updaten
+            if (MacroGridManager.Instance != null)
+            {
+                MacroGridManager.Instance.UpdateActiveRooms(MacroGridManager.Instance.CurrentCoordinate);
+            }
+
             inventoryManager.ConsumeShape(currentSlotIndex);
             placementsThisTurn++;
             Debug.Log($"Form platziert ({placementsThisTurn}/{maxPlacementsPerTurn} in dieser Runde).");

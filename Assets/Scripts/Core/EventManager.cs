@@ -5,7 +5,7 @@ using System.Collections;
 public class EventManager : MonoBehaviour
 {
     public GridManager gridManager;
-    public SlimeController slime;
+    public MacroSlimeMarker slime;
     public GameManager gameManager;
     public PlacementManager placementManager;
     public InventoryManager inventoryManager;

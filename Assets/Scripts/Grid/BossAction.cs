@@ -15,7 +15,7 @@ public abstract class BossAction : MonoBehaviour
     public bool isExecuting => currentWindup > 0;
 
     // Startet das Vorbereiten / Casten
-    public virtual void StartCast(GridManager gridManager, SlimeController slime)
+    public virtual void StartCast(GridManager gridManager, MacroSlimeMarker slime)
     {
         currentWindup = totalWindupTurns;
         targetedCells = CalculateTargetCells(gridManager, slime);
@@ -25,7 +25,7 @@ public abstract class BossAction : MonoBehaviour
     }
 
     // Wird jede Runde im Boss-Turn aufgerufen
-    public virtual IEnumerator TickTurn(GridManager gridManager, SlimeController slime)
+    public virtual IEnumerator TickTurn(GridManager gridManager, MacroSlimeMarker slime)
     {
         if (currentWindup > 1)
         {
@@ -52,6 +52,6 @@ public abstract class BossAction : MonoBehaviour
         targetedCells.Clear();
     }
 
-    protected abstract List<Vector2Int> CalculateTargetCells(GridManager gridManager, SlimeController slime);
-    protected abstract IEnumerator ExecuteActionEffect(GridManager gridManager, SlimeController slime);
+    protected abstract List<Vector2Int> CalculateTargetCells(GridManager gridManager, MacroSlimeMarker slime);
+    protected abstract IEnumerator ExecuteActionEffect(GridManager gridManager, MacroSlimeMarker slime);
 }
