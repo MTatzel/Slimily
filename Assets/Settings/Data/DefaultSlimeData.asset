@@ -19,8 +19,14 @@ MonoBehaviour:
   groundDeceleration: 60
   airAcceleration: 35
   jumpVelocity: 14
+  jumpTangentMomentumMultiplier: 0
+  ceilingDropVelocity: 3
   groundLayer:
     serializedVersion: 2
     m_Bits: 128
   skinWidth: 0.005
   alignRotationSpeed: 720
+  surfaceSnapDistance: 0.35
+  cornerCheckDistance: 0.5
+  surfaceRadius: 0.65
+  detachCooldown: 0.15

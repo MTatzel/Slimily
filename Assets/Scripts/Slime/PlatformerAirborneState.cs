@@ -7,7 +7,9 @@ public class PlatformerAirborneState : PlatformerSlimeState
 
     public override void Enter()
     {
-        // Kein hartes Überschreiben im ersten Frame, damit keine Fehlausrichtung entsteht
+        // Slime richtet sich im Flug sanft wieder zur Welt-Oberseite (Up) aus
+        controller.TargetSurfaceNormal = Vector2.up;
+        controller.IsGrounded = false;
     }
 
     public override void FrameUpdate()

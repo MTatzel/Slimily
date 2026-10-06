@@ -12,6 +12,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
         justEntered = true;
         controller.IsGrounded = true;
         controller.Velocity = Vector2.zero;
+        controller.CurrentTangentSpeed = 0f;
     }
 
     public override void FrameUpdate()
@@ -22,6 +23,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
+        // Abriss in AirborneState NUR wenn gar keine Oberfläche mehr im Erkennungsradius existiert
         if (!controller.IsGrounded)
         {
             stateMachine.ChangeState(controller.AirborneState);
@@ -29,16 +31,13 @@ public class PlatformerGroundedState : PlatformerSlimeState
         }
 
         Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
-        bool isCeiling = surfaceNormal.y < -0.5f;
-        bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+        bool isCeiling = Vector2.Dot(surfaceNormal, Vector2.down) > 0.5f;
 
-        // 1. Dropdown an der Decke via Taste S
+        // 1. Manuelles Lösen an der Decke (Dropdown via Taste S / Pfeil nach unten)
         if (isCeiling && controller.MoveInput.y < -0.1f)
         {
-            controller.TriggerDetach();
-            // Schwung in X mitnehmen, sanfter Fall nach unten
-            float currentMoveX = controller.Velocity.x;
-            controller.Velocity = new Vector2(currentMoveX, -1.5f);
+            controller.TriggerDetach(data.detachCooldown);
+            controller.Velocity = Vector2.down * data.ceilingDropVelocity;
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
@@ -47,57 +46,36 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (controller.HasBufferedJump)
         {
             controller.ConsumeJumpBuffer();
-            controller.TriggerDetach();
+            controller.TriggerDetach(data.detachCooldown);
 
-            if (isCeiling)
-            {
-                float currentMoveX = controller.Velocity.x;
-                float verticalDrop = -data.jumpVelocity * 0.4f;
-                controller.Velocity = new Vector2(currentMoveX, verticalDrop);
-            }
-            else if (isWall)
-            {
-                Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
-                controller.Velocity = jumpDir * data.jumpVelocity;
-            }
-            else
-            {
-                float currentMoveX = controller.Velocity.x;
-                controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
-            }
+            // Der Absprungvektor führt exakt senkrecht von der Oberfläche weg (Richtung: Oberflächennormale / transform.up).
+            // An der Decke springt der Slime nach unten in den Raum hinein.
+            Vector2 jumpDir = surfaceNormal;
+            Vector2 tangent = controller.SurfaceTangent;
+
+            Vector2 jumpVel = jumpDir * data.jumpVelocity + tangent * (controller.CurrentTangentSpeed * data.jumpTangentMomentumMultiplier);
+            controller.Velocity = jumpVel;
 
             stateMachine.ChangeState(controller.AirborneState);
+            return;
         }
     }
 
     public override void PhysicsUpdate()
     {
-        Vector2 normal = controller.CurrentSurfaceNormal;
-        bool isWall = Mathf.Abs(normal.x) > 0.5f;
-        bool isCeiling = normal.y < -0.5f;
-
-        float activeInput = 0f;
-
-        if (isWall)
-        {
-            activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
-        }
-        else if (isCeiling)
-        {
-            activeInput = -controller.MoveInput.x;
-        }
-        else
-        {
-            activeInput = controller.MoveInput.x;
-        }
-
-        float targetSpeed = activeInput * data.moveSpeed;
-        Vector2 vel = controller.Velocity;
+        // 3. Eingabe entlang der horizontalen Achse (Input.x) steuert die Bewegung entlang der Oberflächentangente.
+        // Stick rechts (Input.x > 0) = im Uhrzeigersinn um die Form/den Block herum.
+        // Stick links (Input.x < 0) = gegen den Uhrzeigersinn.
+        float targetSpeed = controller.MoveInput.x * data.moveSpeed;
 
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
-        vel.x = Mathf.MoveTowards(vel.x, targetSpeed, accel * Time.fixedDeltaTime);
-        vel.y = 0f;
+        controller.CurrentTangentSpeed = Mathf.MoveTowards(
+            controller.CurrentTangentSpeed, 
+            targetSpeed, 
+            accel * Time.fixedDeltaTime
+        );
 
-        controller.Velocity = vel;
+        // Welt-Velocity spiegelt die Bewegung entlang der Oberflächentangente wider
+        controller.Velocity = controller.SurfaceTangent * controller.CurrentTangentSpeed;
     }
 }
