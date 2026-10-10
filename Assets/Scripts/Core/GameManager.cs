@@ -76,6 +76,12 @@ public class GameManager : MonoBehaviour
         if (MacroGridManager.Instance != null)
         {
             MacroGridManager.Instance.Initialize(config);
+
+            // --- HIER: Slime direkt an den Startraum setzen ---
+            if (slimeController != null)
+            {
+                MacroGridManager.Instance.PlaceSlimeInRoom(config.startCoordinate, slimeController.transform);
+            }
         }
 
         // 3. Makro-Kamera auf das Grid zentrieren
@@ -120,15 +126,12 @@ public class GameManager : MonoBehaviour
  /// <summary>
     /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
     /// </summary>
+    /// <summary>
+    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
+    /// </summary>
     public void SetViewMode(bool isMacro)
     {
         FindReferencesIfNeeded();
-
-        // Das Inventar/Hotbar-Panel soll nun immer sichtbar bleiben
-        if (inventoryScreen != null && !inventoryScreen.activeSelf)
-        {
-            inventoryScreen.SetActive(true);
-        }
 
         if (isMacro)
         {
@@ -138,6 +141,8 @@ public class GameManager : MonoBehaviour
             if (macroCamera != null) macroCamera.gameObject.SetActive(true);
             if (mainCamera != null) mainCamera.gameObject.SetActive(false);
 
+            // Hotbar/Inventar für Makro-Ebene einblenden
+            if (inventoryScreen != null) inventoryScreen.SetActive(true);
             Canvas.ForceUpdateCanvases();
             if (inventoryManager != null) inventoryManager.ResetSelection();
 
@@ -146,11 +151,21 @@ public class GameManager : MonoBehaviour
         }
         else
         {
+            // Falls der Spieler mitten im Block-Platzieren TAB drückt: sauber abbrechen
+            PlacementManager placementMgr = FindFirstObjectByType<PlacementManager>();
+            if (placementMgr != null && currentState == GameState.Placement)
+            {
+                placementMgr.CancelSelection();
+            }
+
             currentState = GameState.FreeRoam;
 
             // Kameras umstellen
             if (macroCamera != null) macroCamera.gameObject.SetActive(false);
             if (mainCamera != null) mainCamera.gameObject.SetActive(true);
+
+            // Hotbar/Inventar für Mikro-Ebene komplett ausblenden
+            if (inventoryScreen != null) inventoryScreen.SetActive(false);
 
             // Slime-Steuerung & Physik aktivieren
             SetSlimeInputActive(true);

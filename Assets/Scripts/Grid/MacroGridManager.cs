@@ -432,4 +432,19 @@ public class MacroGridManager : MonoBehaviour
             cinemachineConfiner = cinemachineCam.GetComponent<CinemachineConfiner2D>();
         }
     }
+
+    public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)    
+    {
+        if (slimeTransform == null) return;
+
+        // Weltposition des Raums berechnen
+        Vector3 roomPos = new Vector3(coord.x * roomWidth, coord.y * roomHeight, 0f);
+        slimeTransform.position = roomPos;
+
+        Rigidbody2D rb = slimeTransform.GetComponent<Rigidbody2D>();
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector2.zero;
+        }
+    }
 }
