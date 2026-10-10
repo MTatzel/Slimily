@@ -433,18 +433,27 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
-    public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)    
+    /// <summary>
+    /// Teleportiert den Slime in den Startraum anhand der Grid-Koordinate.
+    /// </summary>
+    public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)
     {
         if (slimeTransform == null) return;
 
-        // Weltposition des Raums berechnen
-        Vector3 roomPos = new Vector3(coord.x * roomWidth, coord.y * roomHeight, 0f);
-        slimeTransform.position = roomPos;
+        // Raum-Position holen und Slime etwas nach oben versetzen (z.B. +2.5f Einheiten über den Pivot)
+        Vector3 targetPos = GetWorldPosition(coord) + new Vector3(0f, 2.5f, 0f);
+        slimeTransform.position = targetPos;
 
-        Rigidbody2D rb = slimeTransform.GetComponent<Rigidbody2D>();
-        if (rb != null)
+        if (slimeTransform.TryGetComponent<Rigidbody2D>(out var rb))
         {
+            rb.position = targetPos;
             rb.linearVelocity = Vector2.zero;
+        }
+
+        FindCameraIfNeeded();
+        if (cinemachineCam != null)
+        {
+            cinemachineCam.OnTargetObjectWarped(slimeTransform, targetPos - slimeTransform.position);
         }
     }
 }
