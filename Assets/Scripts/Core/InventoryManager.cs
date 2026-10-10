@@ -120,7 +120,7 @@ public class InventoryManager : MonoBehaviour
         UpdateCenterPreview();
     }
 
-    void UpdateCenterPreview()
+   void UpdateCenterPreview()
     {
         if (centerPreview == null || !centerPreview.gameObject.activeInHierarchy) return;
 
@@ -144,7 +144,9 @@ public class InventoryManager : MonoBehaviour
 
         if (hotbarSlots[currentSelectedIndex] != null)
         {
-            gameManager.inventoryScreen.SetActive(false);
+            // ALTE ZEILE (entfernen oder auskommentieren!):
+            // gameManager.inventoryScreen.SetActive(false);
+
             placementManager.SelectShape(hotbarSlots[currentSelectedIndex], currentSelectedIndex);
         }
         else

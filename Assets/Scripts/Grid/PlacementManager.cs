@@ -53,7 +53,7 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-    public void CancelSelection()
+    public void CancelSelection()   
     {
         currentShape = null;
         currentSlotIndex = -1;
@@ -66,7 +66,8 @@ public class PlacementManager : MonoBehaviour
 
         if (gameManager != null)
         {
-            gameManager.ChangeState(GameState.FreeRoam);
+            // Zurück in die Slot-Auswahl der Makro-Ebene:
+            gameManager.ChangeState(GameState.Inventory);
         }
     }
 

@@ -117,7 +117,10 @@ public class GameManager : MonoBehaviour
     /// <summary>
     /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
     /// </summary>
-   public void SetViewMode(bool isMacro)
+ /// <summary>
+    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
+    /// </summary>
+    public void SetViewMode(bool isMacro)
     {
         FindReferencesIfNeeded();
 
