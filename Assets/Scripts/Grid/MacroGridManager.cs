@@ -65,8 +65,6 @@ public class MacroGridManager : MonoBehaviour
             Destroy(gameObject);
             return;
         }
-
-        InitializeGrid();
     }
 
     private void OnEnable()
@@ -79,15 +77,56 @@ public class MacroGridManager : MonoBehaviour
         Room.OnExitTriggered -= HandleRoomExit;
     }
 
-    private void Start()
+    /// <summary>
+    /// Wird vom GameManager aufgerufen, um das Level datenbasiert aufzubauen.
+    /// </summary>
+    public void Initialize(LevelConfiguration config)
     {
+        // 1. Werte aus der Config übernehmen
+        if (config != null)
+        {
+            roomSpacing = config.roomSpacing;
+            if (config.defaultRoomPrefab != null)
+            {
+                defaultRoomPrefab = config.defaultRoomPrefab;
+            }
+            startCoordinate = config.startCoordinate;
+        }
+
         FindPlayerIfNeeded();
         FindCameraIfNeeded();
 
+        // 2. Bestehende Räume aufräumen (falls vorher schon ein Level lief)
+        foreach (var room in grid.Values)
+        {
+            if (room != null)
+            {
+                Destroy(room.gameObject);
+            }
+        }
+        grid.Clear();
+        roomPrefabs.Clear();
+
+        // 3. Vorlagen aus Inspector-Liste neu registrieren
+        InitializeGrid();
+
+        // 4. Startraum registrieren (falls noch nicht in roomEntries vorhanden)
+        if (!roomPrefabs.ContainsKey(startCoordinate) && defaultRoomPrefab != null)
+        {
+            RegisterRoom(startCoordinate, defaultRoomPrefab);
+        }
+
+        // 5. Startraum und Umfeld aktivieren
         currentCoordinate = startCoordinate;
         UpdateActiveRooms(currentCoordinate);
 
-        // Kamera initial auf den Startraum eichen
+        // 6. Makro-Marker auf der Karte synchronisieren
+        if (MacroSlimeMarker.Instance != null)
+        {
+            MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
+        }
+
+        // 7. Kamera initial auf den Startraum eichen
         if (grid.TryGetValue(currentCoordinate, out Room startRoom) && startRoom != null)
         {
             UpdateCameraConfiner(startRoom);
@@ -241,23 +280,29 @@ public class MacroGridManager : MonoBehaviour
         // 1. 5er-Fenster aktualisieren
         UpdateActiveRooms(targetCoord);
 
+        // 2. Makro-Marker auf der Karte nachziehen
+        if (MacroSlimeMarker.Instance != null)
+        {
+            MacroSlimeMarker.Instance.SetGridPosition(targetCoord);
+        }
+
         if (!grid.TryGetValue(targetCoord, out Room targetRoom) || targetRoom == null)
         {
             Debug.LogError($"[MacroGridManager] Zielraum bei {targetCoord} nicht auffindbar!");
             return;
         }
 
-        // 2. Gegenüberliegende Tür als Einstiegspunkt wählen
+        // 3. Gegenüberliegende Tür als Einstiegspunkt wählen
         Direction enterFromDirection = GetOppositeDirection(exitDirection);
         Transform spawnPoint = targetRoom.GetSpawnPoint(enterFromDirection);
 
-        // 3. Teleportation des Spielers durchführen
+        // 4. Teleportation des Spielers durchführen
         Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
         Vector3 targetPos = (spawnPoint != null) ? spawnPoint.position : GetWorldPosition(currentCoordinate);
         
         TeleportPlayer(targetPos, exitDirection);
 
-        // 4. Cinemachine 3.x anpassen & warpen
+        // 5. Cinemachine 3.x anpassen & warpen
         Vector3 deltaPosition = targetPos - previousPos;
         UpdateCameraForTransition(targetRoom, deltaPosition);
     }
@@ -272,15 +317,12 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        // Spieler versetzen
         playerTransform.position = targetPos;
 
         if (playerTransform.TryGetComponent<Rigidbody2D>(out var rb))
         {
             rb.position = targetPos;
 
-            // Optionaler minimaler Schubs ins Rauminnere (Hollow-Knight-Feel),
-            // damit der Slime nicht am Türrahmen kleben bleibt:
             Vector2 forwardDir = DirectionToOffset(exitDirection);
             if (Vector2.Dot(rb.linearVelocity, forwardDir) < 2f)
             {
@@ -290,7 +332,6 @@ public class MacroGridManager : MonoBehaviour
 
         if (playerTransform.TryGetComponent<PlatformerSlimeController>(out var slimeController))
         {
-            // Wand-Haftung für den Lade-Sprung kurz lösen
             slimeController.TriggerDetach(0.15f);
         }
     }
@@ -310,10 +351,8 @@ public class MacroGridManager : MonoBehaviour
     {
         FindCameraIfNeeded();
 
-        // 1. Confiner auf neuen Raum setzen
         UpdateCameraConfiner(targetRoom);
 
-        // 2. CinemachineCamera warpen, damit Damping nicht über 100 Einheiten zieht
         if (cinemachineCam != null && playerTransform != null)
         {
             cinemachineCam.OnTargetObjectWarped(playerTransform, deltaPosition);

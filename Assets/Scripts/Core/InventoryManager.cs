@@ -20,23 +20,20 @@ public class InventoryManager : MonoBehaviour
     private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
     private int currentSelectedIndex = 0;
 
-    void Awake()
+   void Awake()
     {
         InitializeSlotPreviews();
+
+        hotbarSlots = new ShapeData[8];
+        AddRandomShape();
+        AddRandomShape();
+        AddRandomShape();
     }
 
     void Start()
     {
-        hotbarSlots = new ShapeData[8];
-
-        // Initiale Formen hinzufügen
-        AddRandomShape();
-        AddRandomShape();
-        AddRandomShape();
-
         RefreshAllPreviews();
         UpdateCursorPosition();
-        Debug.Log($"Slot 0 hat Daten: {hotbarSlots[0] != null} | Slot-Name: {(hotbarSlots[0] != null ? hotbarSlots[0].shapeName : "LEER")}");
     }
 
     public void InitializeSlotPreviews()
@@ -53,6 +50,7 @@ public class InventoryManager : MonoBehaviour
                 preview = uiSlotTransforms[i].gameObject.AddComponent<ShapePreviewUI>();
             }
 
+            // Garantiert immer zuweisen, auch wenn die Komponente schon im Editor existierte:
             preview.uiBlockPrefab = uiBlockPrefab;
             preview.container = uiSlotTransforms[i];
             slotPreviews[i] = preview;
@@ -124,7 +122,7 @@ public class InventoryManager : MonoBehaviour
 
     void UpdateCenterPreview()
     {
-        if (centerPreview == null) return;
+        if (centerPreview == null || !centerPreview.gameObject.activeInHierarchy) return;
 
         if (currentSelectedIndex >= 0 && currentSelectedIndex < hotbarSlots.Length && hotbarSlots[currentSelectedIndex] != null)
         {

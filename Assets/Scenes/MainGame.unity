@@ -464,10 +464,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::InventoryManager
   gameManager: {fileID: 1474843351}
   placementManager: {fileID: 1962367019}
-  selectionCursor: {fileID: 0}
-  uiSlotTransforms: []
-  centerPreview: {fileID: 0}
-  uiBlockPrefab: {fileID: 0}
+  selectionCursor: {fileID: 245707688}
+  uiSlotTransforms:
+  - {fileID: 1592483311}
+  - {fileID: 94045732}
+  - {fileID: 467921841}
+  - {fileID: 1551995904}
+  - {fileID: 128684063}
+  - {fileID: 392245480}
+  - {fileID: 1339104906}
+  - {fileID: 1231176295}
+  centerPreview: {fileID: 2019361023}
+  uiBlockPrefab: {fileID: 7927188076553032652, guid: 0ce881a3c620cfd41a6ea5d322a84258, type: 3}
   hotbarSlots:
   - shapeName: 
     cells: []
@@ -2287,8 +2295,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::GridManager
   width: 50
   height: 50
-  cellPrefab: {fileID: 8062373963270768255, guid: dd1c1028ed630b4419c6d2f2ff3e88d8, type: 3}
   offset: 1.1
+  cellPrefab: {fileID: 8062373963270768255, guid: dd1c1028ed630b4419c6d2f2ff3e88d8, type: 3}
 --- !u!4 &1399349738
 Transform:
   m_ObjectHideFlags: 0
@@ -2457,8 +2465,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GameManager
   currentState: 0
+  currentLevelConfig: {fileID: 11400000, guid: 89df1af0c7275e34f8915dbc58ec3d2e, type: 2}
+  macroCamera: {fileID: 757121921}
+  mainCamera: {fileID: 0}
   inventoryScreen: {fileID: 1288865611}
   inventoryManager: {fileID: 99645604}
+  slimeController: {fileID: 0}
+  slimeRigidbody: {fileID: 0}
 --- !u!4 &1474843352
 Transform:
   m_ObjectHideFlags: 0
@@ -2715,6 +2728,7 @@ MonoBehaviour:
   gameManager: {fileID: 1474843351}
   maxPlacementsPerTurn: 2
   placementsThisTurn: 0
+  macroCamera: {fileID: 757121921}
 --- !u!1 &2019361021
 GameObject:
   m_ObjectHideFlags: 0
@@ -2733,7 +2747,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &2019361022
 RectTransform:
   m_ObjectHideFlags: 0
