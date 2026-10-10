@@ -3,73 +3,78 @@ using System.Collections.Generic;
 
 public class GridManager : MonoBehaviour
 {
-    public int width = 50;
-    public int height = 50;
+    public static GridManager Instance { get; private set; }
+
+    [HideInInspector] public int width;
+    [HideInInspector] public int height;
+    [HideInInspector] public float offset;
+
     public GridCell cellPrefab;
+    public GridCell[,] grid;
 
-    // Das Herzstück deines Prototypen: Ein 2D-Array, das alle Felder speichert
-    public GridCell[,] grid; 
-    public float offset = 1.1f; // NEU: 1.1 bedeutet, jedes Feld rückt 10% weiter auseinander
-
-    void Start()
+    private void Awake()
     {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+    }
+
+    public void Initialize(LevelConfiguration config)
+    {
+        ClearGrid();
+
+        width = config.gridWidth;
+        height = config.gridHeight;
+        offset = config.cellOffset;
+
         GenerateGrid();
-        //CenterCamera();
 
-        int startX = width / 2;
-        int startY = height / 2;
-        grid[startX, startY].SetOccupied();
-
-        // --- NEU: Mikro-Welt synchronisieren ---
-        if (MacroGridManager.Instance != null)
+        // Startkachel besetzen
+        if (config.startCoordinate.x >= 0 && config.startCoordinate.x < width &&
+            config.startCoordinate.y >= 0 && config.startCoordinate.y < height)
         {
-            Vector2Int startCoord = new Vector2Int(startX, startY);
-            // Startraum registrieren (null nimmt das defaultRoomPrefab)
-            MacroGridManager.Instance.RegisterRoom(startCoord, null);
-            // Startraum laden und Kameras aktivieren
-            MacroGridManager.Instance.UpdateActiveRooms(startCoord);
+            grid[config.startCoordinate.x, config.startCoordinate.y].SetOccupied();
         }
     }
 
-    void GenerateGrid()
+    private void ClearGrid()
     {
-        grid = new GridCell[width, height];
+        if (grid == null) return;
+
         for (int x = 0; x < width; x++)
         {
             for (int y = 0; y < height; y++)
             {
-                // Kachel direkt als Child unter diesem Transform erzeugen
+                if (grid[x, y] != null)
+                {
+                    Destroy(grid[x, y].gameObject);
+                }
+            }
+        }
+        grid = null;
+    }
+
+    private void GenerateGrid()
+    {
+        grid = new GridCell[width, height];
+
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
                 GridCell newCell = Instantiate(cellPrefab, transform);
-                
-                // Lokale Position relativ zum GridManager setzen!
                 newCell.transform.localPosition = new Vector3(x * offset, y * offset, 0);
-                
                 newCell.Initialize(x, y);
                 grid[x, y] = newCell;
             }
         }
-}
-
-    void CenterCamera()
-    {
-        // GEÄNDERT: Die Berechnung der Mitte muss jetzt auch den Offset berücksichtigen
-        float centerX = ((float)width * offset) / 2 - (offset / 2);
-        float centerY = ((float)height * offset) / 2 - (offset / 2);
-        
-        Camera.main.transform.position = new Vector3(centerX, centerY, -10f);
-        
-        // GEÄNDERT: Die Kamera muss weiter herauszoomen, da das Feld durch den Offset größer ist
-        //Camera.main.orthographicSize = (height * offset) / 2 + 2; 
     }
 
-    // 1. Setzt den Zustand einer einzelnen Zelle sicher
     public void SetCellState(int x, int y, CellState newState)
     {
         if (x < 0 || x >= width || y < 0 || y >= height) return;
         grid[x, y].SetState(newState);
     }
 
-    // 2. Setzt eine ganze Liste von Koordinaten auf einen Zustand (z.B. Zerstören oder Blockieren)
     public void SetCellsState(List<Vector2Int> cells, CellState newState)
     {
         if (cells == null) return;
@@ -79,7 +84,6 @@ public class GridManager : MonoBehaviour
         }
     }
 
-    // 3. Schaltet Telegrafie/Warn-Blinken für eine Liste von Feldern an oder aus
     public void SetCellsWarning(List<Vector2Int> cells, bool warn)
     {
         if (cells == null) return;

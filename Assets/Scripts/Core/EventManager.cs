@@ -11,13 +11,16 @@ public class EventManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public BossController boss;
 
-    void Update()
+    void Update()   
     {
-        // Zug kann nur beendet werden, wenn der Spieler frei agieren darf
-        if (gameManager != null && gameManager.currentState != GameState.FreeRoam) return;
+        // 1. Niemals im Platformer (FreeRoam) auf Space/Enter für Zug-Ende reagieren!
+        // Der Zug soll nur auf der Makro-Ebene (Inventory) beendet werden können.
+        if (gameManager != null && gameManager.currentState != GameState.Inventory) return;
         if (Keyboard.current == null) return;
 
-        if (Keyboard.current.spaceKey.wasPressedThisFrame || Keyboard.current.enterKey.wasPressedThisFrame)
+        // Vorerst: Space komplett entfernen, damit Sprünge sicher frei bleiben.
+        // Optional auf eine separate Taste legen (z. B. 'E') oder ganz auskommentieren:
+        if (Keyboard.current.eKey.wasPressedThisFrame)
         {
             StartCoroutine(TurnSequenceRoutine());
         }
@@ -51,10 +54,10 @@ public class EventManager : MonoBehaviour
             inventoryManager.CheckAndRefillIfEmpty();
         }
 
-        // 4. Spieler wieder freigeben
+        // 4. Spieler wieder freigeben (zurück auf Makro-Ebene)
         if (gameManager != null)
         {
-            gameManager.ChangeState(GameState.FreeRoam);
+            gameManager.ChangeState(GameState.Inventory);
         }
 
         Debug.Log("--- GEGNER-PHASE BEENDET | SPIELER IST DRAN ---");

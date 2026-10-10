@@ -18,6 +18,14 @@ public class PlacementManager : MonoBehaviour
     
     private List<GridCell> lastHoveredCells = new List<GridCell>();
 
+    [SerializeField] private Camera macroCamera;
+
+    private Camera GetActiveRaycastCamera()
+    {
+        if (macroCamera != null && macroCamera.gameObject.activeInHierarchy) return macroCamera;
+        return Camera.main;
+    }
+
     public bool CanPlaceMoreThisTurn()
     {
         return placementsThisTurn < maxPlacementsPerTurn;
@@ -45,7 +53,7 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-    public void CancelSelection()
+    public void CancelSelection()   
     {
         currentShape = null;
         currentSlotIndex = -1;
@@ -58,7 +66,8 @@ public class PlacementManager : MonoBehaviour
 
         if (gameManager != null)
         {
-            gameManager.ChangeState(GameState.FreeRoam);
+            // Zurück in die Slot-Auswahl der Makro-Ebene:
+            gameManager.ChangeState(GameState.Inventory);
         }
     }
 
@@ -88,7 +97,7 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-    void UpdatePreview()
+   void UpdatePreview()
     {
         foreach (GridCell cell in lastHoveredCells)
         {
@@ -96,12 +105,15 @@ public class PlacementManager : MonoBehaviour
         }
         lastHoveredCells.Clear();
 
-        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
-        Vector3 mousePos = Camera.main.ScreenToWorldPoint(mouseScreenPosition);
-        mousePos.z = 0; 
+        Camera activeCam = GetActiveRaycastCamera();
+        if (activeCam == null || gridManager == null) return;
 
-        int startX = Mathf.RoundToInt(mousePos.x / gridManager.offset);
-        int startY = Mathf.RoundToInt(mousePos.y / gridManager.offset);
+        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
+        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
+        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
+
+        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
+        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
 
         if (startX >= 0 && startX < gridManager.width && startY >= 0 && startY < gridManager.height)
         {
@@ -122,14 +134,17 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-    void TryPlaceShape()
+   void TryPlaceShape()
     {
-        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
-        Vector3 mousePos = Camera.main.ScreenToWorldPoint(mouseScreenPosition);
-        mousePos.z = 0; 
+        Camera activeCam = GetActiveRaycastCamera();
+        if (activeCam == null || gridManager == null) return;
 
-        int startX = Mathf.RoundToInt(mousePos.x / gridManager.offset);
-        int startY = Mathf.RoundToInt(mousePos.y / gridManager.offset);
+        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
+        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
+        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
+
+        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
+        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
 
         if (CanPlaceShape(startX, startY))
         {
@@ -139,7 +154,6 @@ public class PlacementManager : MonoBehaviour
                 int y = startY + cell.localPosition.y;
                 gridManager.grid[x, y].SetOccupied();
 
-                // --- NEU: Raum für die Mikro-Ebene registrieren ---
                 if (MacroGridManager.Instance != null)
                 {
                     Vector2Int coord = new Vector2Int(x, y);
@@ -147,7 +161,6 @@ public class PlacementManager : MonoBehaviour
                 }
             }
             
-            // Nach dem Platzieren aller Blöcke die Türen der aktiven Räume updaten
             if (MacroGridManager.Instance != null)
             {
                 MacroGridManager.Instance.UpdateActiveRooms(MacroGridManager.Instance.CurrentCoordinate);
