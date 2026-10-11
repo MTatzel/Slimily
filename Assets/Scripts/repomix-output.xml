@@ -1,0 +1,2813 @@
+This file is a merged representation of a subset of the codebase, containing files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching these patterns are excluded: **/*.meta, repomix-output.*
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+Core/
+  EventManager.cs
+  GameManager.cs
+  GridManager.cs
+  InventoryManager.cs
+Data/
+  LevelConfiguration.cs
+Grid/
+  BossAction.cs
+  BossController.cs
+  GridCell.cs
+  MacroGridManager.cs
+  MacroSlimeMarker.cs
+  PlacementManager.cs
+  ShapeData.cs
+  ShapePreviewUI.cs
+Rooms/
+  Direction.cs
+  Room.cs
+  RoomDoor.cs
+  RoomExitTrigger.cs
+Slime/
+  PlatformerAirborneState.cs
+  PlatformerGroundedState.cs
+  PlatformerPhysicsData.cs
+  PlatformerSlimeController.cs
+  PlatformerSlimeState.cs
+  PlatformerStateMachine.cs
+.repomixignore
+repomix.config.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="Core/EventManager.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+using System.Collections;
+
+public class EventManager : MonoBehaviour
+{
+    public GridManager gridManager;
+    public MacroSlimeMarker slime;
+    public GameManager gameManager;
+    public PlacementManager placementManager;
+    public InventoryManager inventoryManager;
+    public BossController boss;
+
+    void Update()   
+    {
+        // 1. Niemals im Platformer (FreeRoam) auf Space/Enter für Zug-Ende reagieren!
+        // Der Zug soll nur auf der Makro-Ebene (Inventory) beendet werden können.
+        if (gameManager != null && gameManager.currentState != GameState.Inventory) return;
+        if (Keyboard.current == null) return;
+
+        // Vorerst: Space komplett entfernen, damit Sprünge sicher frei bleiben.
+        // Optional auf eine separate Taste legen (z. B. 'E') oder ganz auskommentieren:
+        if (Keyboard.current.eKey.wasPressedThisFrame)
+        {
+            StartCoroutine(TurnSequenceRoutine());
+        }
+    }
+
+    // Der zentrale Runden-Ablauf
+    IEnumerator TurnSequenceRoutine()
+    {
+        // 1. Spieler-Eingaben sperren
+        if (gameManager != null)
+        {
+            gameManager.ChangeState(GameState.EnemyTurn);
+        }
+
+        Debug.Log("--- SPIELER-ZUG BEENDET | GEGNER-PHASE STARTET ---");
+
+        // 2. Boss ausführen und warten, bis er fertig ist
+        if (boss != null)
+        {
+            yield return StartCoroutine(boss.ExecuteBossTurn());
+        }
+
+        // 3. Runden-Reset für den Spieler
+        if (placementManager != null)
+        {
+            placementManager.ResetTurnPlacements();
+        }
+
+        if (inventoryManager != null)
+        {
+            inventoryManager.CheckAndRefillIfEmpty();
+        }
+
+        // 4. Spieler wieder freigeben (zurück auf Makro-Ebene)
+        if (gameManager != null)
+        {
+            gameManager.ChangeState(GameState.Inventory);
+        }
+
+        Debug.Log("--- GEGNER-PHASE BEENDET | SPIELER IST DRAN ---");
+    }
+}
+</file>
+
+<file path="Core/GameManager.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public enum GameState
+{
+    FreeRoam,    // Platformer-Modus (Mikro-Ebene)
+    MacroPlan,   // Bau- & Planungsphase auf dem Grid (Makro-Ebene)
+    Inventory,
+    Placement,
+    EnemyTurn
+}
+
+public class GameManager : MonoBehaviour
+{
+    public static GameManager Instance { get; private set; }
+
+    [Header("Aktueller Spielstatus")]
+    public GameState currentState = GameState.MacroPlan;
+
+    [Header("Level Konfiguration")]
+    [SerializeField] private LevelConfiguration currentLevelConfig;
+
+    [Header("Kameras")]
+    [SerializeField] private Camera macroCamera;
+    [SerializeField] private Camera mainCamera; // Platformer-Kamera
+
+    [Header("UI")]
+    public GameObject inventoryScreen;
+    public InventoryManager inventoryManager;
+
+    [Header("Spieler-Referenz (Micro)")]
+    [SerializeField] private PlatformerSlimeController slimeController;
+    [SerializeField] private Rigidbody2D slimeRigidbody;
+
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+        }
+        else
+        {
+            Destroy(gameObject);
+            return;
+        }
+    }
+
+    private void Start()
+    {
+        FindReferencesIfNeeded();
+
+        if (currentLevelConfig != null)
+        {
+            LoadLevel(currentLevelConfig);
+        }
+        else
+        {
+            Debug.LogError("[GameManager] Keine LevelConfiguration zugewiesen!");
+        }
+
+        // Startet direkt im Makro-Planungsmodus (Grid aktiv, Slime pausiert)
+        SetViewMode(isMacro: true);
+    }
+
+    public void LoadLevel(LevelConfiguration config)
+    {
+        currentLevelConfig = config;
+
+        // 1. Makro-Grid aufbauen
+        if (GridManager.Instance != null)
+        {
+            GridManager.Instance.Initialize(config);
+        }
+
+        // 2. Mikro-Räume & Slime initialisieren
+        if (MacroGridManager.Instance != null)
+        {
+            MacroGridManager.Instance.Initialize(config);
+
+            // --- HIER: Slime direkt an den Startraum setzen ---
+            if (slimeController != null)
+            {
+                MacroGridManager.Instance.PlaceSlimeInRoom(config.startCoordinate, slimeController.transform);
+            }
+        }
+
+        // 3. Makro-Kamera auf das Grid zentrieren
+        PositionMacroCamera(config);
+    }
+
+    private void PositionMacroCamera(LevelConfiguration config)
+    {
+        if (macroCamera == null)
+        {
+            macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
+        }
+
+        if (macroCamera != null)
+        {
+            float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
+            float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
+
+            macroCamera.transform.localPosition = new Vector3(centerX, centerY, -10f);
+            macroCamera.orthographicSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
+        }
+    }
+
+    void Update()
+    {
+        if (Keyboard.current == null) return;
+
+        // Mit TAB zwischen Makro- (Bauen) und Mikro-Ebene (FreeRoam) wechseln
+        if (Keyboard.current.tabKey.wasPressedThisFrame)
+        {
+            // Nicht umschalten, solange man gerade einen Block platziert
+            if (currentState == GameState.Placement) return;
+
+            bool toMacro = (currentState == GameState.FreeRoam);
+            SetViewMode(toMacro);
+        }
+    }
+
+    /// <summary>
+    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
+    /// </summary>
+ /// <summary>
+    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
+    /// </summary>
+    /// <summary>
+    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
+    /// </summary>
+    public void SetViewMode(bool isMacro)
+    {
+        FindReferencesIfNeeded();
+
+        if (isMacro)
+        {
+            currentState = GameState.Inventory;
+
+            // Kameras umstellen
+            if (macroCamera != null) macroCamera.gameObject.SetActive(true);
+            if (mainCamera != null) mainCamera.gameObject.SetActive(false);
+
+            // Hotbar/Inventar für Makro-Ebene einblenden
+            if (inventoryScreen != null) inventoryScreen.SetActive(true);
+            Canvas.ForceUpdateCanvases();
+            if (inventoryManager != null) inventoryManager.ResetSelection();
+
+            // Slime-Steuerung & Physik deaktivieren
+            SetSlimeInputActive(false);
+        }
+        else
+        {
+            // Falls der Spieler mitten im Block-Platzieren TAB drückt: sauber abbrechen
+            PlacementManager placementMgr = FindFirstObjectByType<PlacementManager>();
+            if (placementMgr != null && currentState == GameState.Placement)
+            {
+                placementMgr.CancelSelection();
+            }
+
+            currentState = GameState.FreeRoam;
+
+            // Kameras umstellen
+            if (macroCamera != null) macroCamera.gameObject.SetActive(false);
+            if (mainCamera != null) mainCamera.gameObject.SetActive(true);
+
+            // Hotbar/Inventar für Mikro-Ebene komplett ausblenden
+            if (inventoryScreen != null) inventoryScreen.SetActive(false);
+
+            // Slime-Steuerung & Physik aktivieren
+            SetSlimeInputActive(true);
+        }
+    }
+
+    private void SetSlimeInputActive(bool active)
+    {
+        if (slimeController != null)
+        {
+            slimeController.enabled = active;
+        }
+
+        if (slimeRigidbody != null)
+        {
+            if (!active)
+            {
+                slimeRigidbody.linearVelocity = Vector2.zero;
+                slimeRigidbody.simulated = false;
+            }
+            else
+            {
+                slimeRigidbody.simulated = true;
+            }
+        }
+    }
+
+    private void FindReferencesIfNeeded()
+    {
+        if (macroCamera == null)
+        {
+            macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
+        }
+
+        if (mainCamera == null)
+        {
+            var camObj = GameObject.Find("Main Camera");
+            if (camObj != null) mainCamera = camObj.GetComponent<Camera>();
+            else mainCamera = Camera.main;
+        }
+
+        if (slimeController == null)
+        {
+            slimeController = FindAnyObjectByType<PlatformerSlimeController>();
+        }
+
+        if (slimeRigidbody == null && slimeController != null)
+        {
+            slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
+        }
+    }
+
+    public void ChangeState(GameState newState)
+    {
+        currentState = newState;
+    }
+}
+</file>
+
+<file path="Core/GridManager.cs">
+using UnityEngine;
+using System.Collections.Generic;
+
+public class GridManager : MonoBehaviour
+{
+    public static GridManager Instance { get; private set; }
+
+    [HideInInspector] public int width;
+    [HideInInspector] public int height;
+    [HideInInspector] public float offset;
+
+    public GridCell cellPrefab;
+    public GridCell[,] grid;
+
+    private void Awake()
+    {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+    }
+
+    public void Initialize(LevelConfiguration config)
+    {
+        ClearGrid();
+
+        width = config.gridWidth;
+        height = config.gridHeight;
+        offset = config.cellOffset;
+
+        GenerateGrid();
+
+        // Startkachel besetzen
+        if (config.startCoordinate.x >= 0 && config.startCoordinate.x < width &&
+            config.startCoordinate.y >= 0 && config.startCoordinate.y < height)
+        {
+            grid[config.startCoordinate.x, config.startCoordinate.y].SetOccupied();
+        }
+    }
+
+    private void ClearGrid()
+    {
+        if (grid == null) return;
+
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                if (grid[x, y] != null)
+                {
+                    Destroy(grid[x, y].gameObject);
+                }
+            }
+        }
+        grid = null;
+    }
+
+    private void GenerateGrid()
+    {
+        grid = new GridCell[width, height];
+
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                GridCell newCell = Instantiate(cellPrefab, transform);
+                newCell.transform.localPosition = new Vector3(x * offset, y * offset, 0);
+                newCell.Initialize(x, y);
+                grid[x, y] = newCell;
+            }
+        }
+    }
+
+    public void SetCellState(int x, int y, CellState newState)
+    {
+        if (x < 0 || x >= width || y < 0 || y >= height) return;
+        grid[x, y].SetState(newState);
+    }
+
+    public void SetCellsState(List<Vector2Int> cells, CellState newState)
+    {
+        if (cells == null) return;
+        foreach (var pos in cells)
+        {
+            SetCellState(pos.x, pos.y, newState);
+        }
+    }
+
+    public void SetCellsWarning(List<Vector2Int> cells, bool warn)
+    {
+        if (cells == null) return;
+        foreach (var pos in cells)
+        {
+            if (pos.x >= 0 && pos.x < width && pos.y >= 0 && pos.y < height)
+            {
+                grid[pos.x, pos.y].SetWarning(warn);
+            }
+        }
+    }
+}
+</file>
+
+<file path="Core/InventoryManager.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class InventoryManager : MonoBehaviour
+{
+    public GameManager gameManager;
+    public PlacementManager placementManager;
+
+    // UI-Elemente
+    public RectTransform selectionCursor;
+    public RectTransform[] uiSlotTransforms;
+
+    // Vorschau-Referenzen
+    public ShapePreviewUI centerPreview;
+    public GameObject uiBlockPrefab;
+
+    // Daten-Array für 8 Slots
+    public ShapeData[] hotbarSlots = new ShapeData[8];
+
+    private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
+    private int currentSelectedIndex = 0;
+
+   void Awake()
+    {
+        InitializeSlotPreviews();
+
+        hotbarSlots = new ShapeData[8];
+        AddRandomShape();
+        AddRandomShape();
+        AddRandomShape();
+    }
+
+    void Start()
+    {
+        RefreshAllPreviews();
+        UpdateCursorPosition();
+    }
+
+    public void InitializeSlotPreviews()
+    {
+        if (uiSlotTransforms == null) return;
+
+        for (int i = 0; i < uiSlotTransforms.Length; i++)
+        {
+            if (uiSlotTransforms[i] == null) continue;
+
+            ShapePreviewUI preview = uiSlotTransforms[i].GetComponent<ShapePreviewUI>();
+            if (preview == null)
+            {
+                preview = uiSlotTransforms[i].gameObject.AddComponent<ShapePreviewUI>();
+            }
+
+            // Garantiert immer zuweisen, auch wenn die Komponente schon im Editor existierte:
+            preview.uiBlockPrefab = uiBlockPrefab;
+            preview.container = uiSlotTransforms[i];
+            slotPreviews[i] = preview;
+        }
+    }
+
+    void Update()
+    {
+        if (gameManager == null || gameManager.currentState != GameState.Inventory) return;
+        if (Keyboard.current == null) return;
+
+        if (Keyboard.current.aKey.wasPressedThisFrame || Keyboard.current.leftArrowKey.wasPressedThisFrame)
+        {
+            if (currentSelectedIndex > 0)
+            {
+                currentSelectedIndex--;
+                UpdateSelection();
+            }
+        }
+
+        if (Keyboard.current.dKey.wasPressedThisFrame || Keyboard.current.rightArrowKey.wasPressedThisFrame)
+        {
+            if (currentSelectedIndex < hotbarSlots.Length - 1)
+            {
+                currentSelectedIndex++;
+                UpdateSelection();
+            }
+        }
+
+        if (Keyboard.current.enterKey.wasPressedThisFrame || Keyboard.current.numpadEnterKey.wasPressedThisFrame)
+        {
+            TrySelectCurrentSlot();
+        }
+    }
+
+    void UpdateSelection()
+    {
+        UpdateCursorPosition();
+        UpdateCenterPreview();
+    }
+
+    public void UpdateCursorPosition()
+    {
+        if (selectionCursor == null || uiSlotTransforms == null || uiSlotTransforms.Length == 0) return;
+        if (currentSelectedIndex >= 0 && currentSelectedIndex < uiSlotTransforms.Length)
+        {
+            selectionCursor.position = uiSlotTransforms[currentSelectedIndex].position;
+        }
+    }
+
+    public void ResetSelection()
+    {
+        currentSelectedIndex = 0;
+        UpdateSelection();
+    }
+
+    public void RefreshAllPreviews()
+    {
+        for (int i = 0; i < hotbarSlots.Length; i++)
+        {
+            if (i < slotPreviews.Length && slotPreviews[i] != null)
+            {
+                slotPreviews[i].DisplayShape(hotbarSlots[i], blockSize: 16f, spacing: 2f);
+            }
+        }
+
+        UpdateCenterPreview();
+    }
+
+   void UpdateCenterPreview()
+    {
+        if (centerPreview == null || !centerPreview.gameObject.activeInHierarchy) return;
+
+        if (currentSelectedIndex >= 0 && currentSelectedIndex < hotbarSlots.Length && hotbarSlots[currentSelectedIndex] != null)
+        {
+            centerPreview.DisplayShape(hotbarSlots[currentSelectedIndex], blockSize: 48f, spacing: 4f);
+        }
+        else
+        {
+            centerPreview.Clear();
+        }
+    }
+
+    void TrySelectCurrentSlot()
+    {
+        if (placementManager != null && !placementManager.CanPlaceMoreThisTurn())
+        {
+            Debug.Log("Maximale Platzierungen für diesen Zug erreicht!");
+            return;
+        }
+
+        if (hotbarSlots[currentSelectedIndex] != null)
+        {
+            // ALTE ZEILE (entfernen oder auskommentieren!):
+            // gameManager.inventoryScreen.SetActive(false);
+
+            placementManager.SelectShape(hotbarSlots[currentSelectedIndex], currentSelectedIndex);
+        }
+        else
+        {
+            Debug.Log($"Slot {currentSelectedIndex + 1} ist leer!");
+        }
+    }
+
+    public void ConsumeShape(int index)
+    {
+        if (index < 0 || index >= hotbarSlots.Length) return;
+
+        hotbarSlots[index] = null;
+
+        for (int i = index; i < hotbarSlots.Length - 1; i++)
+        {
+            hotbarSlots[i] = hotbarSlots[i + 1];
+        }
+        hotbarSlots[hotbarSlots.Length - 1] = null;
+
+        RefreshAllPreviews();
+    }
+
+    public void CheckAndRefillIfEmpty()
+    {
+        bool isEmpty = true;
+        for (int i = 0; i < hotbarSlots.Length; i++)
+        {
+            if (hotbarSlots[i] != null)
+            {
+                isEmpty = false;
+                break;
+            }
+        }
+
+        if (isEmpty)
+        {
+            AddRandomShape();
+            RefreshAllPreviews();
+            Debug.Log("Inventar war leer: Eine neue Form wurde nachgefüllt.");
+        }
+    }
+
+    public void AddRandomShape()
+    {
+        int freeIndex = -1;
+        for (int i = 0; i < hotbarSlots.Length; i++)
+        {
+            if (hotbarSlots[i] == null)
+            {
+                freeIndex = i;
+                break;
+            }
+        }
+
+        if (freeIndex == -1) return;
+
+        hotbarSlots[freeIndex] = GenerateRandomShape();
+    }
+
+    private ShapeData GenerateRandomShape()
+    {
+        int roll = Random.Range(0, 3);
+
+        if (roll == 0)
+        {
+            ShapeData shape = new ShapeData("2x2 Block");
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(1, 1)));
+            return shape;
+        }
+        else if (roll == 1)
+        {
+            ShapeData shape = new ShapeData("L-Form");
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 2), BlockModifier.Ice));
+            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
+            return shape;
+        }
+        else
+        {
+            ShapeData shape = new ShapeData("3er Linie");
+            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
+            shape.cells.Add(new ShapeCell(new Vector2Int(2, 0), BlockModifier.Fire));
+            return shape;
+        }
+    }
+}
+</file>
+
+<file path="Data/LevelConfiguration.cs">
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "LevelConfig_New", menuName = "Slimily/Level Configuration")]
+public class LevelConfiguration : ScriptableObject
+{
+    [Header("Grid-Dimensionen")]
+    public int gridWidth = 50;
+    public int gridHeight = 50;
+    public float cellOffset = 1.1f;
+    public Vector2Int startCoordinate = new Vector2Int(25, 25);
+
+    [Header("Räume & Layout")]
+    public Room defaultRoomPrefab;
+    public float roomSpacing = 100f;
+
+    [Header("Boss & Encounter")]
+    public GameObject bossPrefab;
+    public Vector2Int bossSpawnCoordinate = new Vector2Int(25, 40);
+
+    [Header("Optik & Theming")]
+    public Sprite backgroundSprite;
+    public Color gridEmptyColor = Color.white;
+}
+</file>
+
+<file path="Grid/BossAction.cs">
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+public abstract class BossAction : MonoBehaviour
+{
+    [Header("Cast-Einstellungen")]
+    public int totalWindupTurns = 1;     // Wie viele Runden Vorwarnzeit (1 = nächste Runde; 3 = nach 3 Runden)
+    [HideInInspector] public int currentWindup = 0;
+
+    [Header("Visuelle Telegrafie")]
+    public Color telegraphColor = new Color(1f, 0.5f, 0f); // Standard: Orange
+
+    [HideInInspector] public List<Vector2Int> targetedCells = new List<Vector2Int>();
+    public bool isExecuting => currentWindup > 0;
+
+    // Startet das Vorbereiten / Casten
+    public virtual void StartCast(GridManager gridManager, MacroSlimeMarker slime)
+    {
+        currentWindup = totalWindupTurns;
+        targetedCells = CalculateTargetCells(gridManager, slime);
+        
+        // Warnung auf dem Grid anschalten
+        gridManager.SetCellsWarning(targetedCells, true);
+    }
+
+    // Wird jede Runde im Boss-Turn aufgerufen
+    public virtual IEnumerator TickTurn(GridManager gridManager, MacroSlimeMarker slime)
+    {
+        if (currentWindup > 1)
+        {
+            currentWindup--; // Zählt z.B. von 3 auf 2 oder 2 auf 1 runter (Boss castet weiter)
+            yield break;
+        }
+
+        if (currentWindup == 1)
+        {
+            currentWindup = 0;
+            // Warnung abschalten
+            gridManager.SetCellsWarning(targetedCells, false);
+
+            // Eigentlichen Effekt ausführen
+            yield return StartCoroutine(ExecuteActionEffect(gridManager, slime));
+            targetedCells.Clear();
+        }
+    }
+
+    public virtual void CancelCast(GridManager gridManager)
+    {
+        currentWindup = 0;
+        gridManager.SetCellsWarning(targetedCells, false);
+        targetedCells.Clear();
+    }
+
+    protected abstract List<Vector2Int> CalculateTargetCells(GridManager gridManager, MacroSlimeMarker slime);
+    protected abstract IEnumerator ExecuteActionEffect(GridManager gridManager, MacroSlimeMarker slime);
+}
+</file>
+
+<file path="Grid/BossController.cs">
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+public class BossController : MonoBehaviour
+{
+    public GridManager gridManager;
+    public GameManager gameManager;
+    public MacroSlimeMarker slime;
+
+    // Linke untere Ecke des 2x2-Bosses auf dem Grid
+    public int originX = 35;
+    public int originY = 35;
+
+    private List<Vector2Int> occupiedOffsets = new List<Vector2Int>
+    {
+        new Vector2Int(0, 0),
+        new Vector2Int(1, 0),
+        new Vector2Int(0, 1),
+        new Vector2Int(1, 1)
+    };
+
+    void Start()
+    {
+        UpdateWorldPosition();
+        OccupyGridCells(true);
+    }
+
+    // Setzt die 4 Kacheln auf besetzt/unbesetzt
+    public void OccupyGridCells(bool occupy)
+    {
+        if (gridManager == null || gridManager.grid == null) return;
+
+        foreach (var offset in occupiedOffsets)
+        {
+            int checkX = originX + offset.x;
+            int checkY = originY + offset.y;
+
+            if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
+            {
+                GridCell cell = gridManager.grid[checkX, checkY];
+
+                if (occupy)
+                {
+                    cell.SetBlocked();   // Setzt Zustand auf Blocked & färbt Dunkelblau
+                }
+                else
+                {
+                    cell.DestroyBlock(); // Setzt Zustand zurück auf Empty & färbt Weiß
+                }
+            }
+        }
+    }
+
+    // Zentriert das 2x2 Sprite exakt über den 4 Feldern
+    public void UpdateWorldPosition()
+    {
+        if (gridManager == null) return;
+
+        // + 0.5f sorgt dafür, dass das Sprite genau im Zentrum der 4 Felder liegt
+        float worldX = (originX + 0.5f) * gridManager.offset;
+        float worldY = (originY + 0.5f) * gridManager.offset;
+
+        transform.position = new Vector3(worldX, worldY, -2f); // -2f, damit er vor Slime und Grid rendert
+    }
+
+    // Hier läuft die Rundenlogik des Bosses ab
+    public IEnumerator ExecuteBossTurn()
+    {
+        Debug.Log("Boss beginnt seinen Zug...");
+
+        // Kurze Pause für das Spielgefühl (0.5s warten)
+        yield return new WaitForSeconds(0.5f);
+
+        // BEISPIEL-AKTION: 1 Feld in Richtung Slime rücken (falls möglich)
+        MoveTowardsSlime();
+
+        yield return new WaitForSeconds(0.3f);
+        Debug.Log("Boss hat seinen Zug beendet.");
+    }
+
+    void MoveTowardsSlime()
+    {
+        if (slime == null) return;
+
+        int stepX = 0;
+        int stepY = 0;
+
+        if (slime.currentX < originX) stepX = -1;
+        else if (slime.currentX > originX) stepX = 1;
+
+        if (slime.currentY < originY) stepY = -1;
+        else if (slime.currentY > originY) stepY = 1;
+
+        // Nur eine Achse pro Zug bewegen (z. B. primär X, sonst Y)
+        if (stepX != 0) stepY = 0;
+
+        int targetX = originX + stepX;
+        int targetY = originY + stepY;
+
+        // Prüfen, ob die 4 Zielfelder innerhalb des Grids liegen
+        if (targetX >= 0 && targetX + 1 < gridManager.width &&
+            targetY >= 0 && targetY + 1 < gridManager.height)
+        {
+            // Alte Felder freigeben
+            OccupyGridCells(false);
+
+            originX = targetX;
+            originY = targetY;
+
+            // Neue Felder blockieren & Sprite bewegen
+            OccupyGridCells(true);
+            UpdateWorldPosition();
+            Debug.Log($"Boss bewegt sich auf Position: {originX}, {originY}");
+        }
+    }
+}
+</file>
+
+<file path="Grid/GridCell.cs">
+using UnityEngine;
+
+public enum CellState
+{
+    Empty,      // Weiß: Leeres Feld
+    Built,      // Grau: Gebauter Block (Slime kann laufen)
+    Blocked     // Dunkelblau: Boss / Hindernis (unpassierbar & unbaubar)
+}
+
+public class GridCell : MonoBehaviour
+{
+    public int x, y;
+    public CellState currentState = CellState.Empty;
+
+    [Header("Renderers")]
+    [SerializeField] private SpriteRenderer baseRenderer;
+    [SerializeField] private SpriteRenderer overlayRenderer;
+
+    public bool isTargeted = false; 
+    public bool isHovered = false; 
+    public float pulseSpeed = 4f;
+
+    // Grundfarben des Bodens
+    private static readonly Color ColorEmpty = Color.white;
+    private static readonly Color ColorBuilt = Color.gray;
+    private static readonly Color ColorBlocked = new Color(0.1f, 0.2f, 0.6f); // Dunkelblau
+
+    // Aktuelle Warnfarbe für das Overlay
+    private Color currentWarningColor = new Color(1f, 0.5f, 0f); // Standard: Orange
+
+    // Hilfseigenschaften für andere Skripte
+    public bool IsWalkableForSlime => currentState == CellState.Built;
+    public bool IsBuildable => currentState == CellState.Empty;
+
+    void Awake()
+    {
+        // Falls im Inspector nicht zugewiesen, automatisch zuweisen
+        if (baseRenderer == null)
+            baseRenderer = GetComponent<SpriteRenderer>();
+
+        if (overlayRenderer != null)
+            overlayRenderer.gameObject.SetActive(false);
+    }
+
+    public void Initialize(int gridX, int gridY)
+    {
+        x = gridX;
+        y = gridY;
+        gameObject.name = $"Feld_{x}_{y}";
+        SetState(CellState.Empty);
+    }
+
+    public void SetState(CellState newState)
+    {
+        currentState = newState;
+        UpdateBaseColor();
+    }
+
+    public void SetOccupied() => SetState(CellState.Built);
+    public void DestroyBlock() => SetState(CellState.Empty);
+    public void SetBlocked() => SetState(CellState.Blocked);
+
+    // Telegrafie mit flexibler Warnfarbe
+    public void SetWarning(bool warn, Color warningColor = default)
+    {
+        isTargeted = warn;
+        currentWarningColor = (warningColor == default) ? new Color(1f, 0.5f, 0f) : warningColor;
+        UpdateOverlay();
+    }
+
+    // Maus-Vorschau beim Platzieren von Formen
+    public void SetPreview(bool isValid)
+    {
+        isHovered = true;
+        if (overlayRenderer != null)
+        {
+            overlayRenderer.gameObject.SetActive(true);
+            // Halbtransparentes Grün oder Rot über die Kachel legen
+            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.45f) : new Color(1f, 0f, 0f, 0.45f);
+        }
+    }
+
+    public void RevertPreview()
+    {
+        isHovered = false;
+        UpdateOverlay();
+    }
+
+    public Color GetBaseColor()
+    {
+        switch (currentState)
+        {
+            case CellState.Built: return ColorBuilt;
+            case CellState.Blocked: return ColorBlocked;
+            default: return ColorEmpty;
+        }
+    }
+
+    public void UpdateBaseColor()
+    {
+        if (baseRenderer != null)
+        {
+            baseRenderer.color = GetBaseColor();
+        }
+    }
+
+    private void UpdateOverlay()
+    {
+        if (overlayRenderer == null) return;
+
+        if (isHovered) return; // Hover hat Vorrang
+
+        if (isTargeted)
+        {
+            overlayRenderer.gameObject.SetActive(true);
+        }
+        else
+        {
+            overlayRenderer.gameObject.SetActive(false);
+        }
+    }
+
+    void Update()
+    {
+        if (isHovered || !isTargeted || overlayRenderer == null) return;
+
+        // Lässt nur die Deckkraft (Alpha) des Overlays pulsieren
+        float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f; // Pendelt zwischen 0.2 und 0.7
+        Color pulsedColor = currentWarningColor;
+        pulsedColor.a = alpha;
+        overlayRenderer.color = pulsedColor;
+    }
+}
+</file>
+
+<file path="Grid/MacroGridManager.cs">
+using System.Collections.Generic;
+using UnityEngine;
+using Unity.Cinemachine;
+
+public class MacroGridManager : MonoBehaviour
+{
+    public static MacroGridManager Instance { get; private set; }
+
+    [System.Serializable]
+    public struct RoomEntry
+    {
+        public Vector2Int coordinate;
+        public Room roomPrefab;
+    }
+
+    [Header("Raum-Konfiguration")]
+    [Tooltip("Liste aller vordefinierten Räume im Grid und ihrer Prefabs")]
+    [SerializeField] private List<RoomEntry> roomEntries = new List<RoomEntry>();
+
+    [Tooltip("Standard-Prefab, falls für eine Koordinate kein spezifisches Prefab hinterlegt ist")]
+    [SerializeField] private Room defaultRoomPrefab;
+
+    [Header("Streaming & Platzierung")]
+    [Tooltip("Welt-Abstand zwischen Räumen (Standard: 100 Einheiten)")]
+    [SerializeField] private float roomSpacing = 100f;
+
+    [Tooltip("Startkoordinate des Slimes beim Spielstart")]
+    [SerializeField] private Vector2Int startCoordinate = Vector2Int.zero;
+
+    [Tooltip("Wenn aktiv: Entfernte Räume werden zerstört statt deaktiviert")]
+    [SerializeField] private bool destroyFarRooms = false;
+
+    [Header("Spieler-Referenz")]
+    [Tooltip("Referenz zum Slime / Spieler (wird automatisch gesucht, falls leer)")]
+    [SerializeField] private Transform playerTransform;
+
+    [Header("Cinemachine 3.x Kamera")]
+    [Tooltip("Haupt-CinemachineCamera (wird automatisch gesucht, falls leer)")]
+    [SerializeField] private CinemachineCamera cinemachineCam;
+
+    [Tooltip("Confiner2D Komponente der Kamera (wird automatisch gesucht, falls leer)")]
+    [SerializeField] private CinemachineConfiner2D cinemachineConfiner;
+
+    // Das 2D-Raster (Koordinate -> Raum-Instanz)
+    private readonly Dictionary<Vector2Int, Room> grid = new Dictionary<Vector2Int, Room>();
+
+    // Vorlagen pro Koordinate für das spätere Instanziieren
+    private readonly Dictionary<Vector2Int, Room> roomPrefabs = new Dictionary<Vector2Int, Room>();
+
+    private Vector2Int currentCoordinate;
+    private float lastTransitionTime = -1f;
+    private const float TransitionCooldown = 0.25f;
+
+    public Vector2Int CurrentCoordinate => currentCoordinate;
+    public IReadOnlyDictionary<Vector2Int, Room> Grid => grid;
+
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+        }
+        else
+        {
+            Destroy(gameObject);
+            return;
+        }
+    }
+
+    private void OnEnable()
+    {
+        Room.OnExitTriggered += HandleRoomExit;
+    }
+
+    private void OnDisable()
+    {
+        Room.OnExitTriggered -= HandleRoomExit;
+    }
+
+    /// <summary>
+    /// Wird vom GameManager aufgerufen, um das Level datenbasiert aufzubauen.
+    /// </summary>
+    public void Initialize(LevelConfiguration config)
+    {
+        // 1. Werte aus der Config übernehmen
+        if (config != null)
+        {
+            roomSpacing = config.roomSpacing;
+            if (config.defaultRoomPrefab != null)
+            {
+                defaultRoomPrefab = config.defaultRoomPrefab;
+            }
+            startCoordinate = config.startCoordinate;
+        }
+
+        FindPlayerIfNeeded();
+        FindCameraIfNeeded();
+
+        // 2. Bestehende Räume aufräumen (falls vorher schon ein Level lief)
+        foreach (var room in grid.Values)
+        {
+            if (room != null)
+            {
+                Destroy(room.gameObject);
+            }
+        }
+        grid.Clear();
+        roomPrefabs.Clear();
+
+        // 3. Vorlagen aus Inspector-Liste neu registrieren
+        InitializeGrid();
+
+        // 4. Startraum registrieren (falls noch nicht in roomEntries vorhanden)
+        if (!roomPrefabs.ContainsKey(startCoordinate) && defaultRoomPrefab != null)
+        {
+            RegisterRoom(startCoordinate, defaultRoomPrefab);
+        }
+
+        // 5. Startraum und Umfeld aktivieren
+        currentCoordinate = startCoordinate;
+        UpdateActiveRooms(currentCoordinate);
+
+        // 6. Makro-Marker auf der Karte synchronisieren
+        if (MacroSlimeMarker.Instance != null)
+        {
+            MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
+        }
+
+        // 7. Kamera initial auf den Startraum eichen
+        if (grid.TryGetValue(currentCoordinate, out Room startRoom) && startRoom != null)
+        {
+            UpdateCameraConfiner(startRoom);
+        }
+    }
+
+    private void InitializeGrid()
+    {
+        foreach (var entry in roomEntries)
+        {
+            if (entry.roomPrefab != null)
+            {
+                if (entry.roomPrefab.gameObject.scene.IsValid())
+                {
+                    entry.roomPrefab.GridCoordinate = entry.coordinate;
+                    entry.roomPrefab.transform.position = GetWorldPosition(entry.coordinate);
+                    grid[entry.coordinate] = entry.roomPrefab;
+                }
+                else
+                {
+                    roomPrefabs[entry.coordinate] = entry.roomPrefab;
+                    grid[entry.coordinate] = null;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Aktualisiert das 5er-Fenster (aktueller Raum + 4 Nachbarn).
+    /// </summary>
+    public void UpdateActiveRooms(Vector2Int center)
+    {
+        currentCoordinate = center;
+        HashSet<Vector2Int> targetCoords = GetActiveWindowCoordinates(center);
+
+        // 1. Die 5 aktiven Räume instanziieren / aktivieren
+        foreach (Vector2Int coord in targetCoords)
+        {
+            if (HasRoom(coord))
+            {
+                Room room = GetOrCreateRoom(coord);
+                if (room != null)
+                {
+                    room.gameObject.SetActive(true);
+                    room.transform.position = GetWorldPosition(coord);
+                    room.GridCoordinate = coord;
+                }
+            }
+        }
+
+        // 2. Weiter entfernte Räume deaktivieren oder zerstören
+        List<Vector2Int> loadedCoords = new List<Vector2Int>(grid.Keys);
+        foreach (Vector2Int coord in loadedCoords)
+        {
+            if (!targetCoords.Contains(coord))
+            {
+                Room room = grid[coord];
+                if (room != null)
+                {
+                    if (destroyFarRooms)
+                    {
+                        Destroy(room.gameObject);
+                        grid[coord] = null;
+                    }
+                    else
+                    {
+                        room.gameObject.SetActive(false);
+                    }
+                }
+            }
+        }
+
+        // 3. Türen für alle aktiven Räume anpassen
+        foreach (Vector2Int coord in targetCoords)
+        {
+            if (grid.TryGetValue(coord, out Room room) && room != null && room.gameObject.activeSelf)
+            {
+                UpdateRoomDoors(room, coord);
+            }
+        }
+    }
+
+    private HashSet<Vector2Int> GetActiveWindowCoordinates(Vector2Int center)
+    {
+        return new HashSet<Vector2Int>
+        {
+            center,
+            center + Vector2Int.up,    // Nord
+            center + Vector2Int.right, // Ost
+            center + Vector2Int.down,  // Süd
+            center + Vector2Int.left   // West
+        };
+    }
+
+    private Room GetOrCreateRoom(Vector2Int coord)
+    {
+        if (grid.TryGetValue(coord, out Room existingRoom) && existingRoom != null)
+        {
+            return existingRoom;
+        }
+
+        Room prefabToSpawn = null;
+        if (roomPrefabs.TryGetValue(coord, out Room specificPrefab) && specificPrefab != null)
+        {
+            prefabToSpawn = specificPrefab;
+        }
+        else if (defaultRoomPrefab != null)
+        {
+            prefabToSpawn = defaultRoomPrefab;
+        }
+
+        if (prefabToSpawn != null)
+        {
+            Vector3 worldPos = GetWorldPosition(coord);
+            Room newRoom = Instantiate(prefabToSpawn, worldPos, Quaternion.identity, transform);
+            newRoom.GridCoordinate = coord;
+            newRoom.name = $"{prefabToSpawn.name}_[{coord.x},{coord.y}]";
+            grid[coord] = newRoom;
+            return newRoom;
+        }
+
+        return null;
+    }
+
+    private void UpdateRoomDoors(Room room, Vector2Int coord)
+    {
+        room.SetDoorOpen(Direction.North, HasRoom(coord + Vector2Int.up));
+        room.SetDoorOpen(Direction.East, HasRoom(coord + Vector2Int.right));
+        room.SetDoorOpen(Direction.South, HasRoom(coord + Vector2Int.down));
+        room.SetDoorOpen(Direction.West, HasRoom(coord + Vector2Int.left));
+    }
+
+    private void HandleRoomExit(Room fromRoom, Direction exitDirection)
+    {
+        if (Time.time - lastTransitionTime < TransitionCooldown)
+        {
+            return;
+        }
+
+        Vector2Int sourceCoord = (fromRoom != null) ? fromRoom.GridCoordinate : currentCoordinate;
+        Vector2Int targetCoord = sourceCoord + DirectionToOffset(exitDirection);
+
+        if (!HasRoom(targetCoord))
+        {
+            Debug.LogWarning($"[MacroGridManager] Kein Raum in Richtung {exitDirection} bei Koordinate {targetCoord} vorhanden!");
+            return;
+        }
+
+        lastTransitionTime = Time.time;
+
+        // 1. 5er-Fenster aktualisieren
+        UpdateActiveRooms(targetCoord);
+
+        // 2. Makro-Marker auf der Karte nachziehen
+        if (MacroSlimeMarker.Instance != null)
+        {
+            MacroSlimeMarker.Instance.SetGridPosition(targetCoord);
+        }
+
+        if (!grid.TryGetValue(targetCoord, out Room targetRoom) || targetRoom == null)
+        {
+            Debug.LogError($"[MacroGridManager] Zielraum bei {targetCoord} nicht auffindbar!");
+            return;
+        }
+
+        // 3. Gegenüberliegende Tür als Einstiegspunkt wählen
+        Direction enterFromDirection = GetOppositeDirection(exitDirection);
+        Transform spawnPoint = targetRoom.GetSpawnPoint(enterFromDirection);
+
+        // 4. Teleportation des Spielers durchführen
+        Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
+        Vector3 targetPos = (spawnPoint != null) ? spawnPoint.position : GetWorldPosition(currentCoordinate);
+        
+        TeleportPlayer(targetPos, exitDirection);
+
+        // 5. Cinemachine 3.x anpassen & warpen
+        Vector3 deltaPosition = targetPos - previousPos;
+        UpdateCameraForTransition(targetRoom, deltaPosition);
+    }
+
+    private void TeleportPlayer(Vector3 targetPos, Direction exitDirection)
+    {
+        FindPlayerIfNeeded();
+
+        if (playerTransform == null)
+        {
+            Debug.LogError("[MacroGridManager] Kein Spieler gefunden zum Teleportieren!");
+            return;
+        }
+
+        playerTransform.position = targetPos;
+
+        if (playerTransform.TryGetComponent<Rigidbody2D>(out var rb))
+        {
+            rb.position = targetPos;
+
+            Vector2 forwardDir = DirectionToOffset(exitDirection);
+            if (Vector2.Dot(rb.linearVelocity, forwardDir) < 2f)
+            {
+                rb.linearVelocity = forwardDir * 4f; 
+            }
+        }
+
+        if (playerTransform.TryGetComponent<PlatformerSlimeController>(out var slimeController))
+        {
+            slimeController.TriggerDetach(0.15f);
+        }
+    }
+
+    private void UpdateCameraConfiner(Room targetRoom)
+    {
+        FindCameraIfNeeded();
+
+        if (cinemachineConfiner != null && targetRoom != null && targetRoom.CameraBounds != null)
+        {
+            cinemachineConfiner.BoundingShape2D = targetRoom.CameraBounds;
+            cinemachineConfiner.InvalidateBoundingShapeCache();
+        }
+    }
+
+    private void UpdateCameraForTransition(Room targetRoom, Vector3 deltaPosition)
+    {
+        FindCameraIfNeeded();
+
+        UpdateCameraConfiner(targetRoom);
+
+        if (cinemachineCam != null && playerTransform != null)
+        {
+            cinemachineCam.OnTargetObjectWarped(playerTransform, deltaPosition);
+        }
+    }
+
+    public Vector3 GetWorldPosition(Vector2Int gridCoord)
+    {
+        return new Vector3(gridCoord.x * roomSpacing, gridCoord.y * roomSpacing, 0f);
+    }
+
+    public bool HasRoom(Vector2Int coord)
+    {
+        return roomPrefabs.ContainsKey(coord) || (grid.TryGetValue(coord, out Room r) && r != null);
+    }
+
+    public void RegisterRoom(Vector2Int coord, Room roomPrefab)
+    {
+        roomPrefabs[coord] = roomPrefab;
+        if (!grid.ContainsKey(coord))
+        {
+            grid[coord] = null;
+        }
+    }
+
+    public static Vector2Int DirectionToOffset(Direction dir)
+    {
+        return dir switch
+        {
+            Direction.North => Vector2Int.up,
+            Direction.South => Vector2Int.down,
+            Direction.East => Vector2Int.right,
+            Direction.West => Vector2Int.left,
+            _ => Vector2Int.zero
+        };
+    }
+
+    public static Direction GetOppositeDirection(Direction dir)
+    {
+        return dir switch
+        {
+            Direction.North => Direction.South,
+            Direction.South => Direction.North,
+            Direction.East => Direction.West,
+            Direction.West => Direction.East,
+            _ => dir
+        };
+    }
+
+    private void FindPlayerIfNeeded()
+    {
+        if (playerTransform != null) return;
+
+        var slime = FindFirstObjectByType<PlatformerSlimeController>();
+        if (slime != null)
+        {
+            playerTransform = slime.transform;
+            return;
+        }
+
+        var playerObj = GameObject.FindWithTag("Player");
+        if (playerObj != null)
+        {
+            playerTransform = playerObj.transform;
+        }
+    }
+
+    private void FindCameraIfNeeded()
+    {
+        if (cinemachineCam == null)
+        {
+            cinemachineCam = FindFirstObjectByType<CinemachineCamera>();
+        }
+
+        if (cinemachineConfiner == null && cinemachineCam != null)
+        {
+            cinemachineConfiner = cinemachineCam.GetComponent<CinemachineConfiner2D>();
+        }
+    }
+
+    /// <summary>
+    /// Teleportiert den Slime in den Startraum anhand der Grid-Koordinate.
+    /// </summary>
+    public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)
+    {
+        if (slimeTransform == null) return;
+
+        // Raum-Position holen und Slime etwas nach oben versetzen (z.B. +2.5f Einheiten über den Pivot)
+        Vector3 targetPos = GetWorldPosition(coord) + new Vector3(0f, 2.5f, 0f);
+        slimeTransform.position = targetPos;
+
+        if (slimeTransform.TryGetComponent<Rigidbody2D>(out var rb))
+        {
+            rb.position = targetPos;
+            rb.linearVelocity = Vector2.zero;
+        }
+
+        FindCameraIfNeeded();
+        if (cinemachineCam != null)
+        {
+            cinemachineCam.OnTargetObjectWarped(slimeTransform, targetPos - slimeTransform.position);
+        }
+    }
+}
+</file>
+
+<file path="Grid/MacroSlimeMarker.cs">
+using UnityEngine;
+
+public class MacroSlimeMarker : MonoBehaviour
+{
+    public static MacroSlimeMarker Instance { get; private set; }
+
+    [SerializeField] private GridManager gridManager;
+
+    public int currentX { get; private set; }
+    public int currentY { get; private set; }
+
+    private void Awake()
+    {
+        if (Instance == null)
+        {
+            Instance = this;
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    private void Start()
+    {
+        if (gridManager == null)
+        {
+            gridManager = GetComponentInParent<GridManager>();
+        }
+
+        // Startposition auf Makro-Grid setzen
+        SetGridPosition(gridManager.width / 2, gridManager.height / 2);
+    }
+
+    /// <summary>
+    /// Wird aufgerufen, wenn der Slime im Platformer einen neuen Raum betritt.
+    /// </summary>
+    public void SetGridPosition(int gridX, int gridY)
+    {
+        currentX = gridX;
+        currentY = gridY;
+        UpdateMarkerPosition();
+    }
+
+    public void SetGridPosition(Vector2Int gridCoord)
+    {
+        SetGridPosition(gridCoord.x, gridCoord.y);
+    }
+
+    private void UpdateMarkerPosition()
+    {
+        if (gridManager == null) return;
+
+        // Lokale Position relativ zum GridManager berechnen (beachtet den 10.000er Parent-Offset)
+        float localX = currentX * gridManager.offset;
+        float localY = currentY * gridManager.offset;
+
+        transform.localPosition = new Vector3(localX, localY, -1f);
+    }
+}
+</file>
+
+<file path="Grid/PlacementManager.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+using System.Collections.Generic;
+
+public class PlacementManager : MonoBehaviour
+{
+    public GridManager gridManager;
+    public EventManager eventManager;
+    public InventoryManager inventoryManager;
+    public GameManager gameManager;
+
+    // Runden-Begrenzung
+    public int maxPlacementsPerTurn = 2;
+    public int placementsThisTurn = 0;
+
+    private ShapeData currentShape = null;
+    private int currentSlotIndex = -1;
+    
+    private List<GridCell> lastHoveredCells = new List<GridCell>();
+
+    [SerializeField] private Camera macroCamera;
+
+    private Camera GetActiveRaycastCamera()
+    {
+        if (macroCamera != null && macroCamera.gameObject.activeInHierarchy) return macroCamera;
+        return Camera.main;
+    }
+
+    public bool CanPlaceMoreThisTurn()
+    {
+        return placementsThisTurn < maxPlacementsPerTurn;
+    }
+
+    public void ResetTurnPlacements()
+    {
+        placementsThisTurn = 0;
+    }
+
+    public void SelectShape(ShapeData shape, int slotIndex)
+    {
+        if (!CanPlaceMoreThisTurn())
+        {
+            Debug.Log("Platzierungslimit für diese Runde bereits erreicht!");
+            return;
+        }
+
+        currentShape = shape.Clone();
+        currentSlotIndex = slotIndex;
+        
+        if (gameManager != null)
+        {
+            gameManager.ChangeState(GameState.Placement);
+        }
+    }
+
+    public void CancelSelection()   
+    {
+        currentShape = null;
+        currentSlotIndex = -1;
+        
+        foreach (GridCell cell in lastHoveredCells)
+        {
+            cell.RevertPreview();
+        }
+        lastHoveredCells.Clear();
+
+        if (gameManager != null)
+        {
+            // Zurück in die Slot-Auswahl der Makro-Ebene:
+            gameManager.ChangeState(GameState.Inventory);
+        }
+    }
+
+    void Update()
+    {
+        if (gameManager != null && gameManager.currentState != GameState.Placement) return;
+        if (Mouse.current == null || Keyboard.current == null) return;
+
+        if (Keyboard.current.escapeKey.wasPressedThisFrame)
+        {
+            CancelSelection();
+            return;
+        }
+
+        if (currentShape == null) return;
+
+        if (Mouse.current.rightButton.wasPressedThisFrame)
+        {
+            currentShape.RotateClockwise();
+        }
+
+        UpdatePreview();
+
+        if (Mouse.current.leftButton.wasPressedThisFrame) 
+        {
+            TryPlaceShape();
+        }
+    }
+
+   void UpdatePreview()
+    {
+        foreach (GridCell cell in lastHoveredCells)
+        {
+            cell.RevertPreview();
+        }
+        lastHoveredCells.Clear();
+
+        Camera activeCam = GetActiveRaycastCamera();
+        if (activeCam == null || gridManager == null) return;
+
+        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
+        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
+        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
+
+        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
+        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
+
+        if (startX >= 0 && startX < gridManager.width && startY >= 0 && startY < gridManager.height)
+        {
+            bool isValid = CanPlaceShape(startX, startY);
+
+            foreach (ShapeCell cell in currentShape.cells)
+            {
+                int checkX = startX + cell.localPosition.x;
+                int checkY = startY + cell.localPosition.y;
+
+                if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
+                {
+                    GridCell hoverCell = gridManager.grid[checkX, checkY];
+                    hoverCell.SetPreview(isValid);
+                    lastHoveredCells.Add(hoverCell);
+                }
+            }
+        }
+    }
+
+   void TryPlaceShape()
+    {
+        Camera activeCam = GetActiveRaycastCamera();
+        if (activeCam == null || gridManager == null) return;
+
+        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
+        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
+        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
+
+        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
+        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
+
+        if (CanPlaceShape(startX, startY))
+        {
+            foreach (ShapeCell cell in currentShape.cells)
+            {
+                int x = startX + cell.localPosition.x;
+                int y = startY + cell.localPosition.y;
+                gridManager.grid[x, y].SetOccupied();
+
+                if (MacroGridManager.Instance != null)
+                {
+                    Vector2Int coord = new Vector2Int(x, y);
+                    MacroGridManager.Instance.RegisterRoom(coord, null);
+                }
+            }
+            
+            if (MacroGridManager.Instance != null)
+            {
+                MacroGridManager.Instance.UpdateActiveRooms(MacroGridManager.Instance.CurrentCoordinate);
+            }
+
+            inventoryManager.ConsumeShape(currentSlotIndex);
+            placementsThisTurn++;
+            Debug.Log($"Form platziert ({placementsThisTurn}/{maxPlacementsPerTurn} in dieser Runde).");
+
+            CancelSelection();
+        }
+    }
+
+    bool CanPlaceShape(int startX, int startY)
+    {
+        bool hasAdjacent = false;
+
+        foreach (ShapeCell cell in currentShape.cells)
+        {
+            int checkX = startX + cell.localPosition.x;
+            int checkY = startY + cell.localPosition.y;
+
+            if (checkX < 0 || checkX >= gridManager.width || checkY < 0 || checkY >= gridManager.height)
+                return false; 
+
+            if (!gridManager.grid[checkX, checkY].IsBuildable)
+                return false;
+
+            if (IsOccupied(checkX + 1, checkY) || 
+                IsOccupied(checkX - 1, checkY) || 
+                IsOccupied(checkX, checkY + 1) || 
+                IsOccupied(checkX, checkY - 1))
+            {
+                hasAdjacent = true;
+            }
+        }
+        
+        return hasAdjacent; 
+    }
+
+    bool IsOccupied(int x, int y)
+    {
+        if (x < 0 || x >= gridManager.width || y < 0 || y >= gridManager.height)
+            return false; 
+            
+        // Prüft, ob dort wirklich ein gebauter Weg (grau) liegt
+        return gridManager.grid[x, y].currentState == CellState.Built; 
+    }
+}
+</file>
+
+<file path="Grid/ShapeData.cs">
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+// 1. Alle verfügbaren Modifikatoren als Enum definieren
+public enum BlockModifier
+{
+    None,
+    Ice,        // Schneeflocke
+    Fire,       // Feuer
+    Electric,   // Blitz
+    Poison      // Gift
+}
+
+// 2. Ein einzelner Block innerhalb einer Form
+[System.Serializable]
+public class ShapeCell
+{
+    public Vector2Int localPosition;
+    
+    // Eine Liste, damit später problemlos mehrere Mods pro Feld möglich sind
+    public List<BlockModifier> modifiers = new List<BlockModifier>();
+
+    // Konstruktor für eine Zelle ohne Modifikator
+    public ShapeCell(Vector2Int pos)
+    {
+        localPosition = pos;
+    }
+
+    // Konstruktor für eine Zelle mit direktem Modifikator
+    public ShapeCell(Vector2Int pos, BlockModifier initialModifier)
+    {
+        localPosition = pos;
+        if (initialModifier != BlockModifier.None)
+        {
+            modifiers.Add(initialModifier);
+        }
+    }
+}
+
+// 3. Die Gesamtform, die im Inventar gespeichert wird
+[System.Serializable]
+public class ShapeData
+{
+    public string shapeName;
+    public List<ShapeCell> cells = new List<ShapeCell>();
+
+    public ShapeData(string name)
+    {
+        shapeName = name;
+    }
+
+    // Erstellt eine tiefe Kopie der Form (z. B. beim Platzieren oder Klonen)
+    public ShapeData Clone()
+    {
+        ShapeData copy = new ShapeData(shapeName);
+        foreach (ShapeCell cell in cells)
+        {
+            ShapeCell cellCopy = new ShapeCell(cell.localPosition);
+            cellCopy.modifiers.AddRange(cell.modifiers);
+            copy.cells.Add(cellCopy);
+        }
+        return copy;
+    }
+
+    // Rotiert alle Blöcke der Form um 90 Grad im Uhrzeigersinn
+    public void RotateClockwise()
+    {
+        foreach (ShapeCell cell in cells)
+        {
+            int oldX = cell.localPosition.x;
+            int oldY = cell.localPosition.y;
+            cell.localPosition = new Vector2Int(oldY, -oldX);
+        }
+    }
+
+    // Hilfsfunktion: Berechnet die Bounding Box (nützlich für die UI-Zentrierung)
+    public Vector2Int GetDimensions()
+    {
+        if (cells.Count == 0) return Vector2Int.zero;
+
+        int minX = int.MaxValue, maxX = int.MinValue;
+        int minY = int.MaxValue, maxY = int.MinValue;
+
+        foreach (ShapeCell cell in cells)
+        {
+            minX = Mathf.Min(minX, cell.localPosition.x);
+            maxX = Mathf.Max(maxX, cell.localPosition.x);
+            minY = Mathf.Min(minY, cell.localPosition.y);
+            maxY = Mathf.Max(maxY, cell.localPosition.y);
+        }
+
+        return new Vector2Int(maxX - minX + 1, maxY - minY + 1);
+    }
+}
+</file>
+
+<file path="Grid/ShapePreviewUI.cs">
+using UnityEngine;
+using UnityEngine.UI;
+using System.Collections.Generic;
+
+public class ShapePreviewUI : MonoBehaviour
+{
+    public GameObject uiBlockPrefab;
+    public RectTransform container;
+
+    // Erzeugt die Form visuell im angegebenen Container
+    public void DisplayShape(ShapeData shape, float blockSize = 24f, float spacing = 2f)
+    {
+        Clear();
+
+        if (shape == null || shape.cells.Count == 0 || container == null || uiBlockPrefab == null)
+            return;
+
+        // 1. Min/Max-Grenzen der Form ermitteln zur Zentrierung
+        int minX = int.MaxValue, maxX = int.MinValue;
+        int minY = int.MaxValue, maxY = int.MinValue;
+
+        foreach (ShapeCell cell in shape.cells)
+        {
+            minX = Mathf.Min(minX, cell.localPosition.x);
+            maxX = Mathf.Max(maxX, cell.localPosition.x);
+            minY = Mathf.Min(minY, cell.localPosition.y);
+            maxY = Mathf.Max(maxY, cell.localPosition.y);
+        }
+
+        float totalWidth = (maxX - minX + 1) * (blockSize + spacing) - spacing;
+        float totalHeight = (maxY - minY + 1) * (blockSize + spacing) - spacing;
+
+        // Start-Offset berechnen, damit die Form exakt mittig im Panel sitzt
+        float startOffsetX = -totalWidth / 2f + (blockSize / 2f);
+        float startOffsetY = -totalHeight / 2f + (blockSize / 2f);
+
+        // 2. Jeden Block instanziieren und positionieren
+        foreach (ShapeCell cell in shape.cells)
+        {
+            GameObject block = Instantiate(uiBlockPrefab, container);
+            RectTransform rt = block.GetComponent<RectTransform>();
+
+            rt.sizeDelta = new Vector2(blockSize, blockSize);
+
+            float posX = startOffsetX + (cell.localPosition.x - minX) * (blockSize + spacing);
+            float posY = startOffsetY + (cell.localPosition.y - minY) * (blockSize + spacing);
+            rt.anchoredPosition = new Vector2(posX, posY);
+
+            // Vorläufige Farb-Darstellung für Modifier
+            Image img = block.GetComponent<Image>();
+            if (img != null)
+            {
+                if (cell.modifiers.Contains(BlockModifier.Ice))
+                {
+                    img.color = new Color(0.4f, 0.8f, 1f); // Eisblau
+                }
+                else if (cell.modifiers.Contains(BlockModifier.Fire))
+                {
+                    img.color = new Color(1f, 0.3f, 0.2f); // Feuriges Rot
+                }
+                else
+                {
+                    img.color = Color.white;
+                }
+            }
+        }
+    }
+
+    public void Clear()
+    {
+        if (container == null) return;
+
+        for (int i = container.childCount - 1; i >= 0; i--)
+        {
+            Destroy(container.GetChild(i).gameObject);
+        }
+    }
+}
+</file>
+
+<file path="Rooms/Direction.cs">
+public enum Direction
+{
+    North,
+    South,
+    West,
+    East
+}
+</file>
+
+<file path="Rooms/Room.cs">
+using System;
+using UnityEngine;
+
+public class Room : MonoBehaviour
+{
+    public static event Action<Room, Direction> OnExitTriggered;
+
+    [Header("Grid Koordinate")]
+    [Tooltip("Koordinate dieses Raumes im MacroGrid")]
+    [SerializeField] private Vector2Int gridCoordinate;
+    public Vector2Int GridCoordinate
+    {
+        get => gridCoordinate;
+        set => gridCoordinate = value;
+    }
+
+    [System.Serializable]
+    public struct DoorSetup
+    {
+        public Direction direction;
+        [Tooltip("Das Tür-Prefab in der 6-Tile-Lücke (Sprite + Collider auf Layer 'Ground')")]
+        public GameObject wallBlocker;  
+        [Tooltip("Einstiegspunkt, wenn man aus dieser Richtung kommt")]
+        public Transform spawnPoint;    
+    }
+
+    [Header("Exits & Spawns")]
+    [SerializeField] private DoorSetup[] doors;
+
+    [Header("Kamera-Begrenzung")]
+    [Tooltip("Der Trigger-Collider (Box oder Polygon) für CinemachineConfiner2D")]
+    [SerializeField] private Collider2D cameraBounds;
+    public Collider2D CameraBounds => cameraBounds;
+
+    // --- Editor-Testwerte ---
+    [Header("Debug / Erzwingen")]
+    [SerializeField] private bool debugForceOpenNorth;
+    [SerializeField] private bool debugForceOpenEast;
+    [SerializeField] private bool debugForceOpenSouth;
+    [SerializeField] private bool debugForceOpenWest;
+
+    private void Awake()
+    {
+        // Falls im Inspector nicht zugewiesen, sucht das Skript nach einem Trigger-Collider
+        if (cameraBounds == null)
+        {
+            Collider2D[] colliders = GetComponentsInChildren<Collider2D>();
+            foreach (var col in colliders)
+            {
+                if (col.isTrigger)
+                {
+                    cameraBounds = col;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Wird vom RoomManager aufgerufen, wenn der Raum auf die Bühne gesetzt wird
+    public void SetDoorOpen(Direction direction, bool isOpen)
+    {
+        for (int i = 0; i < doors.Length; i++)
+        {
+            if (doors[i].direction == direction)
+            {
+                if (doors[i].wallBlocker != null)
+                {
+                    // Wenn offen: Blocker aus. Wenn zu: Blocker an (schließt die 6 Tiles)
+                    doors[i].wallBlocker.SetActive(!isOpen);
+                }
+                return;
+            }
+        }
+    }
+
+    public Transform GetSpawnPoint(Direction enterFromDirection)
+    {
+        for (int i = 0; i < doors.Length; i++)
+        {
+            if (doors[i].direction == enterFromDirection)
+            {
+                return doors[i].spawnPoint;
+            }
+        }
+        return transform;
+    }
+
+    // Hilfsmethode: Wird vom Trigger am Rand aufgerufen
+    public void TriggerExit(Direction dir)
+    {
+        OnExitTriggered?.Invoke(this, dir);
+    }
+
+#if UNITY_EDITOR
+    // Erlaubt das Testen direkt über Haken im Inspector während des Editierens oder Play-Modes
+    private void OnValidate()
+    {
+        SetDoorOpen(Direction.North, debugForceOpenNorth);
+        SetDoorOpen(Direction.East, debugForceOpenEast);
+        SetDoorOpen(Direction.South, debugForceOpenSouth);
+        SetDoorOpen(Direction.West, debugForceOpenWest);
+    }
+#endif
+}
+</file>
+
+<file path="Rooms/RoomDoor.cs">
+using UnityEngine;
+
+public enum DoorDirection
+{
+    North,
+    East,
+    South,
+    West
+}
+
+[SelectionBase]
+public class RoomDoor : MonoBehaviour
+{
+    [Header("Identifikation")]
+    [SerializeField] private DoorDirection direction;
+    public DoorDirection Direction => direction;
+
+    [Header("Komponenten")]
+    [SerializeField] private Collider2D doorCollider;
+    [SerializeField] private SpriteRenderer doorRenderer;
+
+    [Header("Status (Debug / Initial)")]
+    [SerializeField] private bool isOpen;
+    public bool IsOpen => isOpen;
+
+    private void Awake()
+    {
+        // Falls im Inspector nicht zugewiesen, automatisch holen
+        if (doorCollider == null) doorCollider = GetComponent<Collider2D>();
+        if (doorRenderer == null) doorRenderer = GetComponent<SpriteRenderer>();
+
+        UpdateVisualsAndPhysics();
+    }
+
+    /// <summary>
+    /// Öffnet oder schließt die Tür (wird von der Raum-/Makro-Logik aufgerufen).
+    /// </summary>
+    public void SetOpen(bool open)
+    {
+        if (isOpen == open) return;
+
+        isOpen = open;
+        UpdateVisualsAndPhysics();
+    }
+
+    private void UpdateVisualsAndPhysics()
+    {
+        if (doorCollider != null)
+        {
+            // Zu = Collider aktiv (Slime kann klettern/stehen)
+            // Offen = Collider inaktiv (Slime kann durchlaufen)
+            doorCollider.enabled = !isOpen;
+        }
+
+        if (doorRenderer != null)
+        {
+            // Zu = Tür sichtbar
+            // Offen = Ausgeblendet (später hier Animation abspielen)
+            doorRenderer.enabled = !isOpen;
+        }
+    }
+
+#if UNITY_EDITOR
+    // Erlaubt das direkte Umschalten im Inspector während der Bearbeitung
+    private void OnValidate()
+    {
+        if (doorCollider == null) doorCollider = GetComponent<Collider2D>();
+        if (doorRenderer == null) doorRenderer = GetComponent<SpriteRenderer>();
+        UpdateVisualsAndPhysics();
+    }
+#endif
+}
+</file>
+
+<file path="Rooms/RoomExitTrigger.cs">
+using UnityEngine;
+
+public class RoomExitTrigger : MonoBehaviour
+{
+    [SerializeField] private Direction exitDirection;
+    [SerializeField] private Room parentRoom;
+
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other.CompareTag("Player"))
+        {
+            parentRoom.TriggerExit(exitDirection);
+        }
+    }
+}
+</file>
+
+<file path="Slime/PlatformerAirborneState.cs">
+using UnityEngine;
+
+public class PlatformerAirborneState : PlatformerSlimeState
+{
+    public PlatformerAirborneState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
+        : base(controller, stateMachine, data) { }
+
+    public override void Enter()
+    {
+        // Kein hartes Überschreiben im ersten Frame, damit keine Fehlausrichtung entsteht
+    }
+
+    public override void FrameUpdate()
+    {
+        // Das Anheften wird nun direkt in MoveAndResolveCollisions präzise und race-condition-frei ausgelöst.
+    }
+
+    public override void PhysicsUpdate()
+    {
+        // Reale Welt-Schwerkraft zieht nach unten
+        ApplyGravity();
+
+        // Horizontale Luftsteuerung in Welt-X
+        ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
+    }
+}
+</file>
+
+<file path="Slime/PlatformerGroundedState.cs">
+using UnityEngine;
+
+public class PlatformerGroundedState : PlatformerSlimeState
+{
+    private bool justEntered;
+
+    public PlatformerGroundedState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
+        : base(controller, stateMachine, data) { }
+
+    public override void Enter()
+    {
+        justEntered = true;
+        controller.IsGrounded = true;
+        controller.Velocity = Vector2.zero;
+    }
+
+    public override void FrameUpdate()
+    {
+        if (justEntered)
+        {
+            justEntered = false;
+            return;
+        }
+
+        if (!controller.IsGrounded)
+        {
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
+        bool isCeiling = surfaceNormal.y < -0.5f;
+        bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+
+        // 1. Dropdown an der Decke via Taste S
+        if (isCeiling && controller.MoveInput.y < -0.1f)
+        {
+            controller.TriggerDetach();
+            // Schwung in X mitnehmen, sanfter Fall nach unten
+            float currentMoveX = controller.Velocity.x;
+            controller.Velocity = new Vector2(currentMoveX, -1.5f);
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // 2. Sprung von der Fläche (entweder frisch gedrückt oder gepuffert)
+        if (controller.HasBufferedJump)
+        {
+            controller.ConsumeJumpBuffer();
+            controller.TriggerDetach();
+
+            if (isCeiling)
+            {
+                float currentMoveX = controller.Velocity.x;
+                float verticalDrop = -data.jumpVelocity * 0.4f;
+                controller.Velocity = new Vector2(currentMoveX, verticalDrop);
+            }
+            else if (isWall)
+            {
+                Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
+                controller.Velocity = jumpDir * data.jumpVelocity;
+            }
+            else
+            {
+                float currentMoveX = controller.Velocity.x;
+                controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
+            }
+
+            stateMachine.ChangeState(controller.AirborneState);
+        }
+    }
+
+    public override void PhysicsUpdate()
+    {
+        Vector2 normal = controller.CurrentSurfaceNormal;
+        bool isWall = Mathf.Abs(normal.x) > 0.5f;
+        bool isCeiling = normal.y < -0.5f;
+
+        float activeInput = 0f;
+
+        if (isWall)
+        {
+            activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
+        }
+        else if (isCeiling)
+        {
+            activeInput = -controller.MoveInput.x;
+        }
+        else
+        {
+            activeInput = controller.MoveInput.x;
+        }
+
+        float targetSpeed = activeInput * data.moveSpeed;
+        Vector2 vel = controller.Velocity;
+
+        float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
+        vel.x = Mathf.MoveTowards(vel.x, targetSpeed, accel * Time.fixedDeltaTime);
+        vel.y = 0f;
+
+        controller.Velocity = vel;
+    }
+}
+</file>
+
+<file path="Slime/PlatformerPhysicsData.cs">
+using UnityEngine;
+
+[CreateAssetMenu(fileName = "PlatformerPhysicsData", menuName = "Slime Platformer/Physics Data")]
+public class PlatformerPhysicsData : ScriptableObject
+{
+    [Header("Gravity & Air")]
+    public float gravity = -35f;
+    public float maxFallSpeed = 20f;
+
+    [Header("Movement")]
+    public float moveSpeed = 8f;
+    public float groundAcceleration = 70f;
+    public float groundDeceleration = 60f;
+    public float airAcceleration = 35f;
+
+    [Header("Jumping")]
+    public float jumpVelocity = 14f;
+
+    [Header("Sensors & Collision")]
+    public LayerMask groundLayer;
+    public float skinWidth = 0.015f;
+    public float alignRotationSpeed = 720f; // Grad pro Sekunde für sanftes Ausrichten
+}
+</file>
+
+<file path="Slime/PlatformerSlimeController.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+[RequireComponent(typeof(Rigidbody2D), typeof(BoxCollider2D))]
+public class PlatformerSlimeController : MonoBehaviour
+{
+    [SerializeField] private PlatformerPhysicsData data;
+    [SerializeField] private Transform visualTransform; // Child mit dem SpriteRenderer
+
+    private Rigidbody2D rb;
+    private BoxCollider2D boxCollider;
+    private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[4];
+    private ContactFilter2D contactFilter;
+
+    // --- State Machine & Zustände ---
+    public PlatformerStateMachine StateMachine { get; private set; }
+    public PlatformerGroundedState GroundedState { get; private set; }
+    public PlatformerAirborneState AirborneState { get; private set; }
+
+    // --- Zentralisierter Input ---
+    public Vector2 MoveInput { get; private set; }
+    public bool JumpTriggered { get; private set; }
+    public bool JumpHeld { get; private set; }
+
+    // --- Kollisions- & Orientierungsstatus ---
+    public Vector2 Velocity { get; set; }
+    public bool IsGrounded { get; set; }
+    public bool HitCeiling { get; private set; }
+    public bool HitWall { get; private set; }
+    public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
+    public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+
+    // Cooldown, um nach einem Absprung nicht sofort wieder eingesaugt zu werden
+    private float detachCooldownTimer;
+
+    [Header("Juice & Buffers")]
+    [SerializeField] private float jumpBufferDuration = 0.12f;
+    private float jumpBufferTimer;
+
+    public bool HasBufferedJump => jumpBufferTimer > 0f;
+
+    public void ConsumeJumpBuffer()
+    {
+        jumpBufferTimer = 0f;
+    }
+
+    private void Awake()
+    {
+        rb = GetComponent<Rigidbody2D>();
+        boxCollider = GetComponent<BoxCollider2D>();
+
+        rb.constraints = RigidbodyConstraints2D.FreezeRotation;
+
+        contactFilter = new ContactFilter2D
+        {
+            layerMask = data.groundLayer,
+            useLayerMask = true,
+            useTriggers = false
+        };
+
+        StateMachine = new PlatformerStateMachine();
+        GroundedState = new PlatformerGroundedState(this, StateMachine, data);
+        AirborneState = new PlatformerAirborneState(this, StateMachine, data);
+    }
+
+    private void Start()
+    {
+        StateMachine.Initialize(AirborneState);
+    }
+
+    private void Update()
+    {
+        ReadInput();
+        StateMachine.Update();
+        UpdateSurfaceRotation();
+
+        if (detachCooldownTimer > 0f)
+        {
+            detachCooldownTimer -= Time.deltaTime;
+        }
+    }
+
+    private void FixedUpdate()
+    {
+        StateMachine.FixedUpdate();
+        MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
+    }
+
+    public void TriggerDetach(float duration = 0.12f)
+    {
+        detachCooldownTimer = duration;
+        IsGrounded = false;
+        TargetSurfaceNormal = Vector2.up;
+    }
+
+    public bool CanAttach() => detachCooldownTimer <= 0f;
+
+    private void ReadInput()
+{
+    Vector2 input = Vector2.zero;
+    var keyboard = Keyboard.current;
+
+    if (keyboard != null)
+    {
+        if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
+        if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
+        if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
+        if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
+
+        // Wenn Taste in diesem Frame gedrückt wurde: Puffer aufladen
+        if (keyboard.spaceKey.wasPressedThisFrame)
+        {
+            jumpBufferTimer = jumpBufferDuration;
+        }
+
+        JumpHeld = keyboard.spaceKey.isPressed;
+    }
+
+    // Puffer herunterzählen
+    if (jumpBufferTimer > 0f)
+    {
+        jumpBufferTimer -= Time.deltaTime;
+    }
+
+    MoveInput = input;
+}
+
+    private void UpdateSurfaceRotation()
+    {
+        transform.rotation = Quaternion.identity;
+
+        if (visualTransform != null)
+        {
+            float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
+            visualTransform.rotation = Quaternion.Euler(0f, 0f, targetAngle);
+
+            float halfColHeight = boxCollider.size.y * 0.5f;
+            Vector2 visualOffset = -TargetSurfaceNormal * (halfColHeight - 0.26f);
+            visualTransform.localPosition = (Vector2)boxCollider.offset + visualOffset;
+        }
+
+        CurrentSurfaceNormal = TargetSurfaceNormal;
+    }
+
+    private void MoveAndResolveCollisions(Vector2 deltaMovement)
+    {
+        IsGrounded = false;
+        HitCeiling = false;
+        HitWall = false;
+
+        Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
+        Vector2 position = rb.position;
+        Vector2 castOrigin = position + boxCollider.offset;
+
+        Vector2 surfaceNormal = CurrentSurfaceNormal;
+        Vector2 surfaceTangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
+
+        bool isGroundedMode = StateMachine.CurrentState == GroundedState;
+
+        if (isGroundedMode)
+        {
+            // 1. BEWEGUNG ENTLANG DER FLÄCHE
+            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+            {
+                float moveDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
+                Vector2 moveDir = surfaceTangent * Mathf.Sign(deltaMovement.x);
+
+                int hits = Physics2D.BoxCast(
+                    castOrigin,
+                    boxSize,
+                    0f,
+                    moveDir,
+                    contactFilter,
+                    hitBuffer,
+                    moveDist
+                );
+
+                if (hits > 0)
+                {
+                    RaycastHit2D hit = hitBuffer[0];
+                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                    position += moveDir * actualDist;
+                    HitWall = true;
+
+                    TargetSurfaceNormal = hit.normal;
+                    CurrentSurfaceNormal = hit.normal;
+                    Velocity = Vector2.zero;
+                }
+                else
+                {
+                    position += surfaceTangent * deltaMovement.x;
+                }
+            }
+
+            // 2. HAFTUNG ZUR FLÄCHE
+            castOrigin = position + boxCollider.offset;
+            float snapDist = data.skinWidth * 3f;
+            Vector2 surfaceSnapDir = -surfaceNormal;
+
+            int groundHits = Physics2D.BoxCast(
+                castOrigin,
+                boxSize,
+                0f,
+                surfaceSnapDir,
+                contactFilter,
+                hitBuffer,
+                snapDist
+            );
+
+            if (groundHits > 0)
+            {
+                RaycastHit2D hit = hitBuffer[0];
+                float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                position += surfaceSnapDir * actualDist;
+                IsGrounded = true;
+                TargetSurfaceNormal = hit.normal;
+            }
+            else
+            {
+                IsGrounded = false;
+            }
+        }
+        else
+        {
+            // --- FLUG-MODUS ---
+
+            // Y-Achse
+            if (Mathf.Abs(deltaMovement.y) > 0.0001f)
+            {
+                float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
+                float yDir = Mathf.Sign(deltaMovement.y);
+
+                int yHits = Physics2D.BoxCast(
+                    castOrigin,
+                    boxSize,
+                    0f,
+                    Vector2.up * yDir,
+                    contactFilter,
+                    hitBuffer,
+                    yDist
+                );
+
+                if (yHits > 0)
+                {
+                    RaycastHit2D hit = hitBuffer[0];
+                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                    position.y += yDir * actualDist;
+
+                    // Anheften nur erlauben, wenn der Detach-Cooldown abgelaufen ist
+                    if (CanAttach())
+                    {
+                        TargetSurfaceNormal = hit.normal;
+                        CurrentSurfaceNormal = hit.normal;
+                        Velocity = Vector2.zero;
+                        IsGrounded = true;
+                        StateMachine.ChangeState(GroundedState);
+                    }
+                }
+                else
+                {
+                    position.y += deltaMovement.y;
+                }
+            }
+
+            // X-Achse
+            castOrigin = position + boxCollider.offset;
+            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+            {
+                float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
+                float xDir = Mathf.Sign(deltaMovement.x);
+
+                int xHits = Physics2D.BoxCast(
+                    castOrigin,
+                    boxSize,
+                    0f,
+                    Vector2.right * xDir,
+                    contactFilter,
+                    hitBuffer,
+                    xDist
+                );
+
+                if (xHits > 0)
+                {
+                    RaycastHit2D hit = hitBuffer[0];
+                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                    position.x += xDir * actualDist;
+
+                    if (CanAttach())
+                    {
+                        HitWall = true;
+                        TargetSurfaceNormal = hit.normal;
+                        CurrentSurfaceNormal = hit.normal;
+                        Velocity = Vector2.zero;
+                        IsGrounded = true;
+                        StateMachine.ChangeState(GroundedState);
+                    }
+                    else
+                    {
+                        Velocity = new Vector2(0f, Velocity.y);
+                    }
+                }
+                else
+                {
+                    position.x += deltaMovement.x;
+                }
+            }
+        }
+
+        rb.MovePosition(position);
+    }
+
+    private void OnDrawGizmos()
+    {
+        BoxCollider2D col = GetComponent<BoxCollider2D>();
+        if (col == null) return;
+
+        Gizmos.color = IsGrounded ? Color.green : Color.cyan;
+        Vector2 center = (Vector2)transform.position + col.offset;
+        Gizmos.DrawWireCube(center, col.size);
+    }
+}
+</file>
+
+<file path="Slime/PlatformerSlimeState.cs">
+using UnityEngine;
+
+public abstract class PlatformerSlimeState
+{
+    protected PlatformerSlimeController controller;
+    protected PlatformerStateMachine stateMachine;
+    protected PlatformerPhysicsData data;
+
+    public PlatformerSlimeState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data)
+    {
+        this.controller = controller;
+        this.stateMachine = stateMachine;
+        this.data = data;
+    }
+
+    public virtual void Enter() { }
+    public virtual void Exit() { }
+    public virtual void FrameUpdate() { }
+    public virtual void PhysicsUpdate() { }
+
+    // --- Zentrale Hilfsmethoden für alle abgeleiteten Zustände ---
+
+    /// <summary>
+    /// Berechnet die horizontale Bewegung basierend auf dem Input und der übergebenen Beschleunigung.
+    /// </summary>
+    protected void ApplyHorizontalMovement(float accel, float decel)
+    {
+        float targetSpeed = controller.MoveInput.x * data.moveSpeed;
+        Vector2 vel = controller.Velocity;
+
+        float rate = (Mathf.Abs(targetSpeed) > 0.01f) ? accel : decel;
+        vel.x = Mathf.MoveTowards(vel.x, targetSpeed, rate * Time.fixedDeltaTime);
+
+        controller.Velocity = vel;
+    }
+
+    /// <summary>
+    /// Wendet die konfigurierte Schwerkraft bis zum Geschwindigkeitslimit an.
+    /// </summary>
+    protected void ApplyGravity()
+    {
+        Vector2 vel = controller.Velocity;
+        vel.y += data.gravity * Time.fixedDeltaTime;
+        vel.y = Mathf.Max(vel.y, -data.maxFallSpeed);
+        controller.Velocity = vel;
+    }
+}
+</file>
+
+<file path="Slime/PlatformerStateMachine.cs">
+public class PlatformerStateMachine
+{
+    public PlatformerSlimeState CurrentState { get; private set; }
+
+    public void Initialize(PlatformerSlimeState startingState)
+    {
+        CurrentState = startingState;
+        CurrentState.Enter();
+    }
+
+    public void ChangeState(PlatformerSlimeState newState)
+    {
+        CurrentState?.Exit();
+        CurrentState = newState;
+        CurrentState.Enter();
+    }
+
+    public void Update()
+    {
+        CurrentState?.FrameUpdate();
+    }
+
+    public void FixedUpdate()
+    {
+        CurrentState?.PhysicsUpdate();
+    }
+}
+</file>
+
+<file path=".repomixignore">
+# Add patterns to ignore here, one per line
+# Example:
+# *.log
+# tmp/
+</file>
+
+<file path="repomix.config.json">
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "filePathStyle": "target-relative",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "truncateBase64": false,
+    "copyToClipboard": false,
+    "includeFullDirectoryStructure": false,
+    "tokenCountTree": false,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false,
+      "includeLogs": false,
+      "includeLogsCount": 50
+    }
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/*.meta",
+      "repomix-output.*"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
+</file>
+
+</files>
