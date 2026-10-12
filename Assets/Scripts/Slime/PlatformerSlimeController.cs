@@ -30,7 +30,6 @@ public class PlatformerSlimeController : MonoBehaviour
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
 
-    // Cooldown, um nach einem Absprung nicht sofort wieder eingesaugt zu werden
     private float detachCooldownTimer;
 
     [Header("Juice & Buffers")]
@@ -116,6 +115,24 @@ public class PlatformerSlimeController : MonoBehaviour
             JumpHeld = keyboard.spaceKey.isPressed;
         }
 
+        // Auch Controller-Stick abfragen, falls vorhanden
+        var gamepad = Gamepad.current;
+        if (gamepad != null)
+        {
+            Vector2 stick = gamepad.leftStick.ReadValue();
+            if (stick.sqrMagnitude > 0.04f)
+            {
+                input = stick;
+            }
+
+            if (gamepad.buttonSouth.wasPressedThisFrame)
+            {
+                jumpBufferTimer = jumpBufferDuration;
+            }
+
+            JumpHeld |= gamepad.buttonSouth.isPressed;
+        }
+
         if (jumpBufferTimer > 0f)
         {
             jumpBufferTimer -= Time.deltaTime;
@@ -130,14 +147,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
         if (visualTransform != null)
         {
-            // Sanftes Drehen des visuellen Sprites
             float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
             Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
 
             float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 720f;
             visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
 
-            // Sprite-Position leicht versetzen je nach Normale
             float halfColHeight = boxCollider.size.y * 0.5f;
             Vector2 targetOffset = (Vector2)boxCollider.offset - TargetSurfaceNormal * (halfColHeight - 0.26f);
             visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 15f * Time.deltaTime);
@@ -162,7 +177,6 @@ public class PlatformerSlimeController : MonoBehaviour
             float remainingMove = Mathf.Abs(moveAmount);
             float moveSign = Mathf.Sign(moveAmount);
 
-            // Bis zu 2 Durchläufe: 1. Bis zur Ecke laufen, 2. Restdistanz um die Innenecke herum mitnehmen
             int maxIterations = 2;
             while (remainingMove > 0.0001f && maxIterations > 0)
             {
@@ -185,7 +199,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     castDist
                 );
 
-                // Prüfen, ob eine gefundene Fläche den Vorwärtsweg tatsächlich blockiert
                 int blockingHitIndex = -1;
                 for (int i = 0; i < hits; i++)
                 {
@@ -203,22 +216,17 @@ public class PlatformerSlimeController : MonoBehaviour
                     position += moveDir * actualDist;
                     remainingMove = Mathf.Max(0f, remainingMove - actualDist);
 
-                    // Innenecke prüfen: Liegt die Wand bei ca. 90 Grad zur aktuellen Fläche?
                     bool isInnerCorner = Mathf.Abs(Vector2.Dot(currentNormal, hit.normal)) < 0.35f;
 
                     if (isInnerCorner)
                     {
-                        // Normale auf die neue Wand umstellen
                         TargetSurfaceNormal = hit.normal;
                         CurrentSurfaceNormal = hit.normal;
                         HitWall = true;
-
-                        // Vorzeichen moveSign bleibt identisch, da die Tangente zyklisch um den Raum läuft.
-                        // Der nächste Iterationsschritt nimmt die Restbewegung direkt an der neuen Wand mit!
+                        // moveSign bleibt erhalten und nimmt Restbewegung an der neuen Wand mit!
                     }
                     else
                     {
-                        // Echtes Hindernis ohne Innenecken-Übergang
                         HitWall = true;
                         Velocity = Vector2.zero;
                         remainingMove = 0f;
@@ -249,7 +257,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
             if (groundHits > 0)
             {
-                // In einer Ecke den Kontakt wählen, der am besten zu unserer Wandnormale passt
                 RaycastHit2D bestGroundHit = hitBuffer[0];
                 for (int i = 0; i < groundHits; i++)
                 {

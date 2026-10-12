@@ -4,6 +4,11 @@ public class PlatformerGroundedState : PlatformerSlimeState
 {
     private bool justEntered;
 
+    // --- Sticky Momentum & Intent-Buffer ---
+    private float currentTraverseSign = 0f;      // +1 = CCW, -1 = CW, 0 = Stillstand
+    private Vector2 initialInputVector = Vector2.zero; // Richtung, mit der die Bewegung gestartet wurde
+    private bool isTraversing = false;
+
     public PlatformerGroundedState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
         : base(controller, stateMachine, data) { }
 
@@ -12,6 +17,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
         justEntered = true;
         controller.IsGrounded = true;
         controller.Velocity = Vector2.zero;
+
+        currentTraverseSign = 0f;
+        initialInputVector = Vector2.zero;
+        isTraversing = false;
     }
 
     public override void FrameUpdate()
@@ -37,8 +46,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
         {
             controller.TriggerDetach();
 
-            // Welt-Richtung direkt aus dem Tastatur-Input ableiten,
-            // um Vorzeichen-Konflikte der Decken-Tangente zu vermeiden:
             float airMoveX = controller.MoveInput.x * data.moveSpeed;
             controller.Velocity = new Vector2(airMoveX, -2f);
 
@@ -54,7 +61,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isCeiling)
             {
-                // Welt-X aus dem Input ableiten und kontrollierten Abstoßimpuls nach unten setzen:
                 float airMoveX = controller.MoveInput.x * data.moveSpeed;
                 float verticalDrop = -data.jumpVelocity * 0.5f;
                 controller.Velocity = new Vector2(airMoveX, verticalDrop);
@@ -77,43 +83,78 @@ public class PlatformerGroundedState : PlatformerSlimeState
     public override void PhysicsUpdate()
     {
         Vector2 normal = controller.CurrentSurfaceNormal;
-        bool isWall = Mathf.Abs(normal.x) > 0.5f;
-        bool isCeiling = normal.y < -0.5f;
+        Vector2 tangent = new Vector2(normal.y, -normal.x); // Zyklische Tangente
+        Vector2 input = controller.MoveInput;
+        float inputSqrMag = input.sqrMagnitude;
 
-        float activeInput = 0f;
+        float targetSpeed = 0f;
 
-        if (isWall)
+        // Fall A: Keine Eingabe (Taste losgelassen / Stick in Neutralstellung)
+        if (inputSqrMag < 0.04f)
         {
-            // Primär: Vertikale Eingabe (W / S) steuert Wände auf und ab
-            if (Mathf.Abs(controller.MoveInput.y) > 0.1f)
-            {
-                activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
-            }
-            // Nahtloser Übergang an Innenecken: Wer weiter gegen die Wand drückt, klettert automatisch hoch!
-            else if (Mathf.Abs(controller.MoveInput.x) > 0.1f)
-            {
-                if (normal.x < 0f) // Rechte Wand
-                {
-                    activeInput = (controller.MoveInput.x > 0.1f) ? 1f : -1f;
-                }
-                else // Linke Wand
-                {
-                    activeInput = (controller.MoveInput.x < -0.1f) ? -1f : 1f;
-                }
-            }
+            isTraversing = false;
+            currentTraverseSign = 0f;
+            initialInputVector = Vector2.zero;
         }
-        else if (isCeiling)
-        {
-            activeInput = -controller.MoveInput.x;
-        }
+        // Fall B: Eingabe aktiv
         else
         {
-            activeInput = controller.MoveInput.x;
+            Vector2 normInput = input.normalized;
+
+            if (!isTraversing)
+            {
+                // Frische Bewegung auf dieser Fläche starten
+                float proj = Vector2.Dot(input, tangent);
+
+                if (Mathf.Abs(proj) > 0.15f)
+                {
+                    isTraversing = true;
+                    currentTraverseSign = Mathf.Sign(proj);
+                    initialInputVector = normInput;
+                }
+            }
+            else
+            {
+                // Prüfen, ob der Spieler aktiv in die Gegenrichtung steuert (Input umgedreht)
+                float reversalCheck = Vector2.Dot(normInput, initialInputVector);
+
+                if (reversalCheck < -0.35f)
+                {
+                    // Spieler hat aktiv umgekehrt (z. B. von A auf D gewechselt oder Stick zurückgezogen)
+                    isTraversing = false;
+                    currentTraverseSign = 0f;
+                    initialInputVector = Vector2.zero;
+
+                    float proj = Vector2.Dot(input, tangent);
+                    if (Mathf.Abs(proj) > 0.15f)
+                    {
+                        isTraversing = true;
+                        currentTraverseSign = Mathf.Sign(proj);
+                        initialInputVector = normInput;
+                    }
+                }
+                else
+                {
+                    // Spieler hält die ursprüngliche Taste ODER dreht den Analogstick flüssig mit
+                    float currentProj = Vector2.Dot(input, tangent);
+
+                    // Falls der Stick sich aktiv an der neuen Fläche orientiert, Richtungsreferenz nachziehen
+                    if (currentProj * currentTraverseSign > 0.35f)
+                    {
+                        initialInputVector = normInput;
+                    }
+
+                    // Sticky Momentum bleibt aktiv: currentTraverseSign wird beibehalten!
+                }
+            }
+
+            if (isTraversing)
+            {
+                targetSpeed = currentTraverseSign * data.moveSpeed;
+            }
         }
 
-        float targetSpeed = activeInput * data.moveSpeed;
         Vector2 vel = controller.Velocity;
-
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
         vel.x = Mathf.MoveTowards(vel.x, targetSpeed, accel * Time.fixedDeltaTime);
         vel.y = 0f;
