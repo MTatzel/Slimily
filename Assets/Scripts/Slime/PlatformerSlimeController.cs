@@ -95,6 +95,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
+    public float GetColliderExtent(Vector2 direction)
+    {
+        Vector2 halfSize = boxCollider.size * 0.5f;
+        return Mathf.Abs(direction.x) * halfSize.x + Mathf.Abs(direction.y) * halfSize.y;
+    }
+
     private void ReadInput()
     {
         Vector2 input = Vector2.zero;
@@ -115,7 +121,6 @@ public class PlatformerSlimeController : MonoBehaviour
             JumpHeld = keyboard.spaceKey.isPressed;
         }
 
-        // Auch Controller-Stick abfragen, falls vorhanden
         var gamepad = Gamepad.current;
         if (gamepad != null)
         {
@@ -172,12 +177,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
         if (isGroundedMode)
         {
-            // 1. BEWEGUNG ENTLANG DER FLÄCHE (inkl. Innenecken-Übergang)
             float moveAmount = deltaMovement.x;
             float remainingMove = Mathf.Abs(moveAmount);
             float moveSign = Mathf.Sign(moveAmount);
 
-            int maxIterations = 2;
+            // Bis zu 3 Iterationen, um bei schnellen Bewegungen auch mehrere Ecken im selben Frame zu packen
+            int maxIterations = 3;
             while (remainingMove > 0.0001f && maxIterations > 0)
             {
                 maxIterations--;
@@ -189,6 +194,7 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 castOrigin = position + boxCollider.offset;
                 float castDist = remainingMove + data.skinWidth;
 
+                // 1. INNENECKEN-CHECK (Frontal-Hindernis im Weg?)
                 int hits = Physics2D.BoxCast(
                     castOrigin,
                     boxSize,
@@ -211,6 +217,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
                 if (blockingHitIndex >= 0)
                 {
+                    // Innenecke gefunden
                     RaycastHit2D hit = hitBuffer[blockingHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position += moveDir * actualDist;
@@ -223,7 +230,6 @@ public class PlatformerSlimeController : MonoBehaviour
                         TargetSurfaceNormal = hit.normal;
                         CurrentSurfaceNormal = hit.normal;
                         HitWall = true;
-                        // moveSign bleibt erhalten und nimmt Restbewegung an der neuen Wand mit!
                     }
                     else
                     {
@@ -231,15 +237,87 @@ public class PlatformerSlimeController : MonoBehaviour
                         Velocity = Vector2.zero;
                         remainingMove = 0f;
                     }
+                    continue;
+                }
+
+                // 2. AUSSENECKEN-CHECK (Bricht die Fläche unter uns weg?)
+                float stepDist = remainingMove;
+                Vector2 tentativePos = position + moveDir * stepDist;
+                Vector2 tentativeCenter = tentativePos + boxCollider.offset;
+
+                float extentNormal = GetColliderExtent(-currentNormal);
+                float extentTangent = GetColliderExtent(moveDir);
+
+                // Prüfen, ob der Mittelpunkt an der neuen Position noch Boden hat
+                float floorCheckDist = extentNormal + data.skinWidth * 4f;
+                RaycastHit2D groundProbe = Physics2D.Raycast(tentativeCenter, -currentNormal, floorCheckDist, data.groundLayer);
+
+                if (groundProbe.collider != null && Vector2.Dot(groundProbe.normal, currentNormal) > 0.6f)
+                {
+                    // Normaler Vorwärtsschritt ohne Kantenabriss
+                    position = tentativePos;
+                    remainingMove = 0f;
                 }
                 else
                 {
-                    position += moveDir * remainingMove;
-                    remainingMove = 0f;
+                    // Außenkante erkannt: Die Wand der neuen Fläche liegt in Richtung moveDir
+                    Vector2 wallProbeOrigin = tentativeCenter - currentNormal * (extentNormal * 0.7f);
+                    float probeBackDist = stepDist + extentTangent + data.skinWidth * 4f;
+
+                    RaycastHit2D wallHit = Physics2D.Raycast(wallProbeOrigin, -moveDir, probeBackDist, data.groundLayer);
+
+                    if (wallHit.collider != null && Vector2.Dot(wallHit.normal, moveDir) > 0.6f)
+                    {
+                        // Exakten Kantenpunkt C ermitteln
+                        Vector2 currentCenter = position + boxCollider.offset;
+                        RaycastHit2D currentFloorHit = Physics2D.Raycast(currentCenter, -currentNormal, floorCheckDist, data.groundLayer);
+
+                        Vector2 cornerPoint;
+                        if (currentFloorHit.collider != null)
+                        {
+                            float cornerAlongNormal = Vector2.Dot(currentFloorHit.point, currentNormal);
+                            float cornerAlongMove = Vector2.Dot(wallHit.point, moveDir);
+                            cornerPoint = currentNormal * cornerAlongNormal + moveDir * cornerAlongMove;
+                        }
+                        else
+                        {
+                            cornerPoint = wallHit.point;
+                        }
+
+                        // Distanz bis zur Kante berechnen
+                        float distToCorner = Mathf.Max(0f, Vector2.Dot(cornerPoint - currentCenter, moveDir));
+                        float pastCornerDist = Mathf.Max(0f, stepDist - distToCorner);
+
+                        // Umheften auf die neue Wand
+                        Vector2 newNormal = wallHit.normal;
+                        Vector2 newTangent = new Vector2(newNormal.y, -newNormal.x);
+                        Vector2 newMoveDir = newTangent * moveSign;
+
+                        float newExtentNormal = GetColliderExtent(-newNormal);
+                        float newExtentTangent = GetColliderExtent(newMoveDir);
+
+                        // Slime exakt an der neuen Wand positionieren und Restweg nach unten mitnehmen
+                        Vector2 targetCenter = cornerPoint 
+                            + newNormal * newExtentNormal 
+                            + newMoveDir * (newExtentTangent + pastCornerDist);
+
+                        position = targetCenter - boxCollider.offset;
+
+                        TargetSurfaceNormal = newNormal;
+                        CurrentSurfaceNormal = newNormal;
+                        HitWall = false;
+                        remainingMove = 0f; // Restdistanz wurde im Wrap bereits mitgenommen
+                    }
+                    else
+                    {
+                        // Fallback: Keine Wand gefunden
+                        position = tentativePos;
+                        remainingMove = 0f;
+                    }
                 }
             }
 
-            // 2. HAFTUNG ZUR FLÄCHE (Surface Snap)
+            // 3. HAFTUNG ZUR FLÄCHE (Surface Snap)
             Vector2 finalNormal = CurrentSurfaceNormal;
             Vector2 snapDir = -finalNormal;
             Vector2 snapOrigin = position + boxCollider.offset;
