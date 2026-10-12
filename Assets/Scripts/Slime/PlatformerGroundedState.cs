@@ -36,9 +36,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (isCeiling && controller.MoveInput.y < -0.1f)
         {
             controller.TriggerDetach();
-            // Schwung in X mitnehmen, sanfter Fall nach unten
-            float currentMoveX = controller.Velocity.x;
-            controller.Velocity = new Vector2(currentMoveX, -1.5f);
+
+            // Welt-Richtung direkt aus dem Tastatur-Input ableiten,
+            // um Vorzeichen-Konflikte der Decken-Tangente zu vermeiden:
+            float airMoveX = controller.MoveInput.x * data.moveSpeed;
+            controller.Velocity = new Vector2(airMoveX, -2f);
+
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
@@ -51,9 +54,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isCeiling)
             {
-                float currentMoveX = controller.Velocity.x;
-                float verticalDrop = -data.jumpVelocity * 0.4f;
-                controller.Velocity = new Vector2(currentMoveX, verticalDrop);
+                // Welt-X aus dem Input ableiten und kontrollierten Abstoßimpuls nach unten setzen:
+                float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                float verticalDrop = -data.jumpVelocity * 0.5f;
+                controller.Velocity = new Vector2(airMoveX, verticalDrop);
             }
             else if (isWall)
             {
@@ -80,7 +84,23 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         if (isWall)
         {
-            activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
+            // Primär: Vertikale Eingabe (W / S) steuert Wände auf und ab
+            if (Mathf.Abs(controller.MoveInput.y) > 0.1f)
+            {
+                activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
+            }
+            // Nahtloser Übergang an Innenecken: Wer weiter gegen die Wand drückt, klettert automatisch hoch!
+            else if (Mathf.Abs(controller.MoveInput.x) > 0.1f)
+            {
+                if (normal.x < 0f) // Rechte Wand
+                {
+                    activeInput = (controller.MoveInput.x > 0.1f) ? 1f : -1f;
+                }
+                else // Linke Wand
+                {
+                    activeInput = (controller.MoveInput.x < -0.1f) ? -1f : 1f;
+                }
+            }
         }
         else if (isCeiling)
         {

@@ -70,6 +70,8 @@ Slime/
   PlatformerSlimeState.cs
   PlatformerStateMachine.cs
 .repomixignore
+PROJEKT_KONTEXT.md
+PROJEKT_KONTEXT.md.txt
 repomix.config.json
 </directory_structure>
 
@@ -2256,9 +2258,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (isCeiling && controller.MoveInput.y < -0.1f)
         {
             controller.TriggerDetach();
-            // Schwung in X mitnehmen, sanfter Fall nach unten
-            float currentMoveX = controller.Velocity.x;
-            controller.Velocity = new Vector2(currentMoveX, -1.5f);
+
+            // Welt-Richtung direkt aus dem Tastatur-Input ableiten,
+            // um Vorzeichen-Konflikte der Decken-Tangente zu vermeiden:
+            float airMoveX = controller.MoveInput.x * data.moveSpeed;
+            controller.Velocity = new Vector2(airMoveX, -2f);
+
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
@@ -2271,9 +2276,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isCeiling)
             {
-                float currentMoveX = controller.Velocity.x;
-                float verticalDrop = -data.jumpVelocity * 0.4f;
-                controller.Velocity = new Vector2(currentMoveX, verticalDrop);
+                // Welt-X aus dem Input ableiten und kontrollierten Abstoßimpuls nach unten setzen:
+                float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                float verticalDrop = -data.jumpVelocity * 0.5f;
+                controller.Velocity = new Vector2(airMoveX, verticalDrop);
             }
             else if (isWall)
             {
@@ -2758,6 +2764,14 @@ public class PlatformerStateMachine
 # Example:
 # *.log
 # tmp/
+</file>
+
+<file path="PROJEKT_KONTEXT.md">
+Projekt-Kontext: Slimily1. High-Level Spielkonzept & GenreGenre: Hybrid aus rundenbasiertem Makro-Dungeon-Builder (Grid/Inventar) und kinetischem 2D-Mikro-Platformer.Kern-Gameplay-Loop:Makro-Ebene: Aus dem Inventar Tetris-/Polyomino-förmige Raum-Shapes auf einem Raster platzieren, Pfade erschaffen und Rundenzüge verwalten, während ein Boss gegnerische Züge ausführt.Mikro-Ebene: In Echtzeit mit dem Slime-Charakter durch die platzierten Räume navigieren, Hindernisse überwinden und Türen/Ausgänge erreichen.2. Architektur & System-AufteilungMakro-Ebene (Grid / Planung / Runden)GameManager: Zentraler State-Machine-Verwalter (GameState: u. a. Inventory, Placement, FreeRoam, EnemyTurn).GridManager & GridCell: Verwaltet das globale Daten-Raster, Zellzustände (Empty, Occupied, Blocked, Built) und Baufähigkeitsregeln.PlacementManager: Handhabt das Auswählen, Rotieren (Rechtsklick), Vorschau-Rendern und finale Platzieren von ShapeData-Strukturen auf dem Grid inklusive Rundenlimit pro Zug.InventoryManager: Verwaltet verfügbare Shapes im Deck/Inventar und sorgt für Nachschub.MacroGridManager: Koppelt logische Grid-Koordinaten mit physischen Platformer-Raum-Instanzen (RegisterRoom, UpdateActiveRooms).EventManager: Steuert die Rundenabfolge (Spielerzug abschließen, Gegner-/Bosszug initiieren, Reset der Platzierungslimits).BossController: Führt in der Gegnerphase autonome Raster-Aktionen und Bewegungen in Richtung des Makro-Slime-Markers durch.Mikro-Ebene (Platformer / Bewegung)PlatformerSlimeController: Zentrale Steuerungseinheit des spielbaren Slimes im 2D-Platformer.Verwendet ein modulares State-Machine-Pattern (PlatformerStateMachine, PlatformerSlimeState).Setzt auf deterministische, kinematisierte Logik mit Kontaktpunkt- und Raycast-Abfragen (Col.GetContacts, Physics-Raycasts), um Unberechenbarkeiten der reinen Unity-Rigidbody-Standardphysik zu umgehen.Ermittelt dynamisch die Oberflächennormale (SurfaceNormal) und die korrespondierende Bewegungstangente (SurfaceTangent) zur Ausrichtung des Slimes im Raum.States:PlatformerGroundedState: Bewegung entlang der Wandoberfläche via Tangente, Andruckhaftung an der Fläche und Ausrichtung der Rotation (AlignToNormal).PlatformerAirborneState: Standard-Luftphase mit Schwerkrafteinfluss, sanfter Rückdrehung zur Welt-Vertikalen und Flächenerkennung zur Landung.PlatformerPhysicsData: ScriptableObject zur Kapselung aller physischen Tuning-Parameter (Geschwindigkeiten, Sprungkräfte, Check-Distanzen, Layer-Masks).Brücke / Transition (Makro $\leftrightarrow$ Mikro)Umschaltung zwischen Makro-Ansicht (Karten-Übersicht) und Mikro-Ansicht (Slime-Platformer) über dedizierte Kameras (MacroCamera vs. Raum-/Slime-Kamera).Input-Filterung je nach aktuellem GameState (keine Doppelbelegung von Platformer-Sprung und Makro-Rundenabschluss).Physische Position des Slimes im Platformer aktualisiert synchron die logische Position auf dem Makro-Raster (MacroSlimeMarker).3. Bereits gelöste / Etablierte MechanikenState-Handling: Robuste Zustandstrennung zwischen Rundenbau, Platzierung und Platformer-Bewegung.Input-Entkopplung: Klare Trennung der Steuerung (z. B. Leertaste für Platformer-Sprung, dedizierte Tasten für Makro-Aktionen).Makro-Raum-Generierung: Validierte Platzierung von Shapes an angrenzende Räume inklusive Registrierung im MacroGridManager.Kamera- & Raum-Initialisierung: Zuverlässiger Fokus- und Übergangswechsel beim Betreten der Platformer-Ebene.4. Offene Baustellen & Nächste SchritteVerfeinerung der Slime-Physik (Kinematic Movement):Robustes, zitterfreies 360°-Anhaften an senkrechten Wänden und Decken ohne Abrutschen.Sauberes Überwinden von 90°-Innen- und Außenkanten beim Laufen entlang von Flächen.Wand- und Deckensprünge relativ zur aktuellen Flächennormale (SurfaceNormal).Feinabstimmung der PlatformerPhysicsData-Werte für ein direktes, responsives Spielgefühl.
+</file>
+
+<file path="PROJEKT_KONTEXT.md.txt">
+
 </file>
 
 <file path="repomix.config.json">
