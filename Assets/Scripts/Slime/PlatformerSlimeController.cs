@@ -181,7 +181,6 @@ public class PlatformerSlimeController : MonoBehaviour
             float remainingMove = Mathf.Abs(moveAmount);
             float moveSign = Mathf.Sign(moveAmount);
 
-            // Bis zu 3 Iterationen, um bei schnellen Bewegungen auch mehrere Ecken im selben Frame zu packen
             int maxIterations = 3;
             while (remainingMove > 0.0001f && maxIterations > 0)
             {
@@ -191,10 +190,15 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
                 Vector2 moveDir = currentTangent * moveSign;
 
-                Vector2 castOrigin = position + boxCollider.offset;
-                float castDist = remainingMove + data.skinWidth;
+                Vector2 currentCenter = position + boxCollider.offset;
+                float extentNormal = GetColliderExtent(-currentNormal);
+                float extentTangent = GetColliderExtent(moveDir);
 
-                // 1. INNENECKEN-CHECK (Frontal-Hindernis im Weg?)
+                float stepDist = remainingMove;
+                Vector2 castOrigin = currentCenter;
+                float castDist = stepDist + data.skinWidth;
+
+                // 1. INNENECKEN-CHECK (Frontale Wand im Weg?)
                 int hits = Physics2D.BoxCast(
                     castOrigin,
                     boxSize,
@@ -217,7 +221,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
                 if (blockingHitIndex >= 0)
                 {
-                    // Innenecke gefunden
                     RaycastHit2D hit = hitBuffer[blockingHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position += moveDir * actualDist;
@@ -240,78 +243,83 @@ public class PlatformerSlimeController : MonoBehaviour
                     continue;
                 }
 
-                // 2. AUSSENECKEN-CHECK (Bricht die Fläche unter uns weg?)
-                float stepDist = remainingMove;
-                Vector2 tentativePos = position + moveDir * stepDist;
-                Vector2 tentativeCenter = tentativePos + boxCollider.offset;
+                // 2. AUSSENECKEN-CHECK (Bricht der Boden vor uns ab?)
+                Vector2 leadingEdge = currentCenter + moveDir * (extentTangent + stepDist);
+                float floorCheckDist = extentNormal + Mathf.Max(0.2f, data.skinWidth * 8f);
 
-                float extentNormal = GetColliderExtent(-currentNormal);
-                float extentTangent = GetColliderExtent(moveDir);
+                RaycastHit2D leadingGroundHit = Physics2D.Raycast(leadingEdge, -currentNormal, floorCheckDist, data.groundLayer);
 
-                // Prüfen, ob der Mittelpunkt an der neuen Position noch Boden hat
-                float floorCheckDist = extentNormal + data.skinWidth * 4f;
-                RaycastHit2D groundProbe = Physics2D.Raycast(tentativeCenter, -currentNormal, floorCheckDist, data.groundLayer);
-
-                if (groundProbe.collider != null && Vector2.Dot(groundProbe.normal, currentNormal) > 0.6f)
+                if (leadingGroundHit.collider != null && Vector2.Dot(leadingGroundHit.normal, currentNormal) > 0.6f)
                 {
-                    // Normaler Vorwärtsschritt ohne Kantenabriss
-                    position = tentativePos;
+                    // Durchgehender Boden: Normalen Schritt ausführen
+                    position += moveDir * stepDist;
                     remainingMove = 0f;
                 }
                 else
                 {
-                    // Außenkante erkannt: Die Wand der neuen Fläche liegt in Richtung moveDir
-                    Vector2 wallProbeOrigin = tentativeCenter - currentNormal * (extentNormal * 0.7f);
-                    float probeBackDist = stepDist + extentTangent + data.skinWidth * 4f;
+                    // Außenkante voraus: Wand unterhalb der Kante abtasten
+                    float probeDepth = Mathf.Min(0.2f, extentNormal * 0.5f);
+                    Vector2 probeOrigin = leadingEdge - currentNormal * (extentNormal + probeDepth);
+                    float probeDist = extentTangent + stepDist + 0.6f;
 
-                    RaycastHit2D wallHit = Physics2D.Raycast(wallProbeOrigin, -moveDir, probeBackDist, data.groundLayer);
+                    RaycastHit2D wallHit = Physics2D.Raycast(probeOrigin, -moveDir, probeDist, data.groundLayer);
 
-                    if (wallHit.collider != null && Vector2.Dot(wallHit.normal, moveDir) > 0.6f)
+                    if (wallHit.collider != null && Vector2.Dot(wallHit.normal, moveDir) > 0.4f)
                     {
-                        // Exakten Kantenpunkt C ermitteln
-                        Vector2 currentCenter = position + boxCollider.offset;
-                        RaycastHit2D currentFloorHit = Physics2D.Raycast(currentCenter, -currentNormal, floorCheckDist, data.groundLayer);
+                        Vector2 newNormal = wallHit.normal;
 
-                        Vector2 cornerPoint;
-                        if (currentFloorHit.collider != null)
+                        // Exakten Scheitelpunkt C aus Boden- und Wandebene berechnen
+                        RaycastHit2D safeFloorHit = Physics2D.Raycast(currentCenter - moveDir * (extentTangent * 0.5f), -currentNormal, floorCheckDist, data.groundLayer);
+
+                        float cornerAlongNormal;
+                        if (safeFloorHit.collider != null)
                         {
-                            float cornerAlongNormal = Vector2.Dot(currentFloorHit.point, currentNormal);
-                            float cornerAlongMove = Vector2.Dot(wallHit.point, moveDir);
-                            cornerPoint = currentNormal * cornerAlongNormal + moveDir * cornerAlongMove;
+                            cornerAlongNormal = Vector2.Dot(safeFloorHit.point, currentNormal);
                         }
                         else
                         {
-                            cornerPoint = wallHit.point;
+                            cornerAlongNormal = Vector2.Dot(currentCenter - currentNormal * extentNormal, currentNormal);
                         }
 
-                        // Distanz bis zur Kante berechnen
-                        float distToCorner = Mathf.Max(0f, Vector2.Dot(cornerPoint - currentCenter, moveDir));
-                        float pastCornerDist = Mathf.Max(0f, stepDist - distToCorner);
+                        float cornerAlongWall = Vector2.Dot(wallHit.point, newNormal);
+                        Vector2 cornerPoint = currentNormal * cornerAlongNormal + newNormal * cornerAlongWall;
 
-                        // Umheften auf die neue Wand
-                        Vector2 newNormal = wallHit.normal;
-                        Vector2 newTangent = new Vector2(newNormal.y, -newNormal.x);
-                        Vector2 newMoveDir = newTangent * moveSign;
+                        float distToCorner = Vector2.Dot(cornerPoint - currentCenter, moveDir);
 
-                        float newExtentNormal = GetColliderExtent(-newNormal);
-                        float newExtentTangent = GetColliderExtent(newMoveDir);
+                        if (distToCorner > stepDist)
+                        {
+                            // Kante noch nicht erreicht: Normal vorwärts bis vor die Kante laufen
+                            position += moveDir * stepDist;
+                            remainingMove = 0f;
+                        }
+                        else
+                        {
+                            // Kante in diesem Frame erreicht: Um die Ecke wickeln
+                            float distOnOldSurface = Mathf.Max(0f, distToCorner);
+                            float pastCornerDist = stepDist - distOnOldSurface;
 
-                        // Slime exakt an der neuen Wand positionieren und Restweg nach unten mitnehmen
-                        Vector2 targetCenter = cornerPoint 
-                            + newNormal * newExtentNormal 
-                            + newMoveDir * (newExtentTangent + pastCornerDist);
+                            Vector2 newTangent = new Vector2(newNormal.y, -newNormal.x);
+                            Vector2 newMoveDir = newTangent * moveSign;
 
-                        position = targetCenter - boxCollider.offset;
+                            float newExtentNormal = GetColliderExtent(-newNormal);
+                            float newExtentTangent = GetColliderExtent(newMoveDir);
 
-                        TargetSurfaceNormal = newNormal;
-                        CurrentSurfaceNormal = newNormal;
-                        HitWall = false;
-                        remainingMove = 0f; // Restdistanz wurde im Wrap bereits mitgenommen
+                            Vector2 targetCenter = cornerPoint 
+                                + newNormal * newExtentNormal 
+                                + newMoveDir * (newExtentTangent + pastCornerDist);
+
+                            position = targetCenter - boxCollider.offset;
+
+                            TargetSurfaceNormal = newNormal;
+                            CurrentSurfaceNormal = newNormal;
+                            IsGrounded = true;
+                            remainingMove = 0f; // Restbewegung an neuer Wand mitgenommen
+                        }
                     }
                     else
                     {
-                        // Fallback: Keine Wand gefunden
-                        position = tentativePos;
+                        // Fallback: Keine Seitenwand gefunden
+                        position += moveDir * stepDist;
                         remainingMove = 0f;
                     }
                 }
@@ -321,7 +329,7 @@ public class PlatformerSlimeController : MonoBehaviour
             Vector2 finalNormal = CurrentSurfaceNormal;
             Vector2 snapDir = -finalNormal;
             Vector2 snapOrigin = position + boxCollider.offset;
-            float snapDist = data.skinWidth * 4f;
+            float snapDist = Mathf.Max(0.18f, data.skinWidth * 8f);
 
             int groundHits = Physics2D.BoxCast(
                 snapOrigin,
