@@ -5,8 +5,8 @@ public class PlatformerGroundedState : PlatformerSlimeState
     private bool justEntered;
 
     // --- Sticky Momentum & Intent-Buffer ---
-    private float currentTraverseSign = 0f;      // +1 = CCW, -1 = CW, 0 = Stillstand
-    private Vector2 initialInputVector = Vector2.zero; // Richtung, mit der die Bewegung gestartet wurde
+    private float currentTraverseSign = 0f;
+    private Vector2 initialInputVector = Vector2.zero;
     private bool isTraversing = false;
 
     public PlatformerGroundedState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
@@ -41,33 +41,37 @@ public class PlatformerGroundedState : PlatformerSlimeState
         bool isCeiling = surfaceNormal.y < -0.5f;
         bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
 
-        // 1. Dropdown an der Decke via Taste S
-        if (isCeiling && controller.MoveInput.y < -0.1f)
+        // Prüfen, ob S gerade noch vom Wand-Abstieg gehalten wird (verhindert versehentlichen Detach an der Ecke)
+        bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
+
+        // 1. Dropdown an der Decke / Unterseite via Taste S
+        // Nur auslösen, wenn S nicht als aktive Kletter-Taste von der Wand mitgebracht wurde!
+        if (isCeiling && controller.MoveInput.y < -0.1f && !isHoldingDownFromWall)
         {
-            controller.TriggerDetach();
+            controller.TriggerDetach(surfaceNormal);
 
             float airMoveX = controller.MoveInput.x * data.moveSpeed;
-            controller.Velocity = new Vector2(airMoveX, -2f);
+            controller.Velocity = new Vector2(airMoveX, -3f);
 
             stateMachine.ChangeState(controller.AirborneState);
             return;
         }
 
-        // 2. Sprung von der Fläche (entweder frisch gedrückt oder gepuffert)
+        // 2. Sprung von der Fläche (Boden, Wand oder Decke)
         if (controller.HasBufferedJump)
         {
             controller.ConsumeJumpBuffer();
-            controller.TriggerDetach();
+            controller.TriggerDetach(surfaceNormal);
 
             if (isCeiling)
             {
                 float airMoveX = controller.MoveInput.x * data.moveSpeed;
-                float verticalDrop = -data.jumpVelocity * 0.5f;
+                float verticalDrop = -data.jumpVelocity * 0.6f;
                 controller.Velocity = new Vector2(airMoveX, verticalDrop);
             }
             else if (isWall)
             {
-                Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
+                Vector2 jumpDir = (surfaceNormal * 1.0f + Vector2.up * 1.1f).normalized;
                 controller.Velocity = jumpDir * data.jumpVelocity;
             }
             else
@@ -83,27 +87,24 @@ public class PlatformerGroundedState : PlatformerSlimeState
     public override void PhysicsUpdate()
     {
         Vector2 normal = controller.CurrentSurfaceNormal;
-        Vector2 tangent = new Vector2(normal.y, -normal.x); // Zyklische Tangente
+        Vector2 tangent = new Vector2(normal.y, -normal.x);
         Vector2 input = controller.MoveInput;
         float inputSqrMag = input.sqrMagnitude;
 
         float targetSpeed = 0f;
 
-        // Fall A: Keine Eingabe (Taste losgelassen / Stick in Neutralstellung)
         if (inputSqrMag < 0.04f)
         {
             isTraversing = false;
             currentTraverseSign = 0f;
             initialInputVector = Vector2.zero;
         }
-        // Fall B: Eingabe aktiv
         else
         {
             Vector2 normInput = input.normalized;
 
             if (!isTraversing)
             {
-                // Frische Bewegung auf dieser Fläche starten
                 float proj = Vector2.Dot(input, tangent);
 
                 if (Mathf.Abs(proj) > 0.15f)
@@ -115,12 +116,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
             }
             else
             {
-                // Prüfen, ob der Spieler aktiv in die Gegenrichtung steuert (Input umgedreht)
                 float reversalCheck = Vector2.Dot(normInput, initialInputVector);
 
                 if (reversalCheck < -0.35f)
                 {
-                    // Spieler hat aktiv umgekehrt (z. B. von A auf D gewechselt oder Stick zurückgezogen)
                     isTraversing = false;
                     currentTraverseSign = 0f;
                     initialInputVector = Vector2.zero;
@@ -135,16 +134,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
                 }
                 else
                 {
-                    // Spieler hält die ursprüngliche Taste ODER dreht den Analogstick flüssig mit
                     float currentProj = Vector2.Dot(input, tangent);
 
-                    // Falls der Stick sich aktiv an der neuen Fläche orientiert, Richtungsreferenz nachziehen
                     if (currentProj * currentTraverseSign > 0.35f)
                     {
                         initialInputVector = normInput;
                     }
-
-                    // Sticky Momentum bleibt aktiv: currentTraverseSign wird beibehalten!
                 }
             }
 

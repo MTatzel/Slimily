@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Tilemaps;
 
 [RequireComponent(typeof(Rigidbody2D), typeof(BoxCollider2D))]
 public class PlatformerSlimeController : MonoBehaviour
@@ -31,6 +32,7 @@ public class PlatformerSlimeController : MonoBehaviour
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
 
     private float detachCooldownTimer;
+    private Vector2 lastDetachedNormal = Vector2.zero;
 
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
@@ -64,6 +66,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void Start()
     {
+        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsSortMode.None);
+        foreach (var tm in allTilemaps)
+        {
+            tm.RefreshAllTiles();
+        }
+
         StateMachine.Initialize(AirborneState);
     }
 
@@ -85,20 +93,123 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
     }
 
-    public void TriggerDetach(float duration = 0.12f)
+    public void TriggerDetach(float duration = 0.15f)
+    {
+        TriggerDetach(CurrentSurfaceNormal, duration);
+    }
+
+    public void TriggerDetach(Vector2 fromSurfaceNormal, float duration = 0.15f)
     {
         detachCooldownTimer = duration;
+        lastDetachedNormal = SnapToCardinal(fromSurfaceNormal);
+
         IsGrounded = false;
         TargetSurfaceNormal = Vector2.up;
         CurrentSurfaceNormal = Vector2.up;
+
+        rb.position += lastDetachedNormal * (data.skinWidth * 3f + 0.03f);
     }
 
     public bool CanAttach() => detachCooldownTimer <= 0f;
+
+    /// <summary>
+    /// Erlaubt das sofortige Anheften an jede Fläche mit anderer Ausrichtung (z.B. Wand -> Decke),
+    /// sperrt aber während des Cooldowns die Fläche, von der gerade abgesprungen wurde.
+    /// </summary>
+    public bool CanAttachTo(Vector2 candidateNormal)
+    {
+        if (detachCooldownTimer <= 0f) return true;
+
+        Vector2 snappedCandidate = SnapToCardinal(candidateNormal);
+        return Vector2.Dot(snappedCandidate, lastDetachedNormal) < 0.5f;
+    }
 
     public float GetColliderExtent(Vector2 direction)
     {
         Vector2 halfSize = boxCollider.size * 0.5f;
         return Mathf.Abs(direction.x) * halfSize.x + Mathf.Abs(direction.y) * halfSize.y;
+    }
+
+    private Vector2 SnapToCardinal(Vector2 rawNormal)
+    {
+        if (Mathf.Abs(rawNormal.x) > Mathf.Abs(rawNormal.y))
+        {
+            return new Vector2(Mathf.Sign(rawNormal.x), 0f);
+        }
+        return new Vector2(0f, Mathf.Sign(rawNormal.y));
+    }
+
+    private bool FindFrontalWallHit(
+        Vector2 currentCenter,
+        Vector2 currentNormal,
+        Vector2 moveDir,
+        float extentNormal,
+        float extentTangent,
+        float castDist,
+        out float distanceToWall,
+        out Vector2 wallNormal)
+    {
+        distanceToWall = float.MaxValue;
+        wallNormal = Vector2.zero;
+        bool found = false;
+
+        float rayLength = extentTangent + castDist;
+        Vector2 rayOriginBase = currentCenter - currentNormal * (extentNormal - data.skinWidth * 2f);
+        Vector2 rayOriginMid = currentCenter;
+
+        RaycastHit2D hitBase = Physics2D.Raycast(rayOriginBase, moveDir, rayLength, data.groundLayer);
+        if (hitBase.collider != null && hitBase.distance > 0.0005f && Vector2.Dot(hitBase.normal, moveDir) < -0.35f)
+        {
+            float d = Mathf.Max(0f, hitBase.distance - extentTangent);
+            if (d < distanceToWall)
+            {
+                distanceToWall = d;
+                wallNormal = SnapToCardinal(hitBase.normal);
+                found = true;
+            }
+        }
+
+        RaycastHit2D hitMid = Physics2D.Raycast(rayOriginMid, moveDir, rayLength, data.groundLayer);
+        if (hitMid.collider != null && hitMid.distance > 0.0005f && Vector2.Dot(hitMid.normal, moveDir) < -0.35f)
+        {
+            float d = Mathf.Max(0f, hitMid.distance - extentTangent);
+            if (d < distanceToWall)
+            {
+                distanceToWall = d;
+                wallNormal = SnapToCardinal(hitMid.normal);
+                found = true;
+            }
+        }
+
+        float normalClearance = 0.05f;
+        Vector2 liftedOrigin = currentCenter + currentNormal * (normalClearance * 0.5f);
+        Vector2 shrunkBoxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f))
+            - new Vector2(Mathf.Abs(currentNormal.x), Mathf.Abs(currentNormal.y)) * normalClearance;
+
+        int hits = Physics2D.BoxCast(
+            liftedOrigin,
+            shrunkBoxSize,
+            0f,
+            moveDir,
+            contactFilter,
+            hitBuffer,
+            castDist
+        );
+
+        for (int i = 0; i < hits; i++)
+        {
+            if (hitBuffer[i].distance > 0.0005f && Vector2.Dot(hitBuffer[i].normal, moveDir) < -0.35f)
+            {
+                if (hitBuffer[i].distance < distanceToWall)
+                {
+                    distanceToWall = hitBuffer[i].distance;
+                    wallNormal = SnapToCardinal(hitBuffer[i].normal);
+                    found = true;
+                }
+            }
+        }
+
+        return found;
     }
 
     private void ReadInput()
@@ -186,7 +297,7 @@ public class PlatformerSlimeController : MonoBehaviour
             {
                 maxIterations--;
 
-                Vector2 currentNormal = CurrentSurfaceNormal;
+                Vector2 currentNormal = SnapToCardinal(CurrentSurfaceNormal);
                 Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
                 Vector2 moveDir = currentTangent * moveSign;
 
@@ -194,81 +305,77 @@ public class PlatformerSlimeController : MonoBehaviour
                 float extentNormal = GetColliderExtent(-currentNormal);
                 float extentTangent = GetColliderExtent(moveDir);
 
-                float stepDist = remainingMove;
-                Vector2 castOrigin = currentCenter;
-                float castDist = stepDist + data.skinWidth;
+                // 1. INNENECKEN- & WAND-CHECK
+                float lookAheadDist = remainingMove + extentTangent + data.skinWidth * 2f;
 
-                // 1. INNENECKEN-CHECK (Frontale Wand im Weg?)
-                int hits = Physics2D.BoxCast(
-                    castOrigin,
-                    boxSize,
-                    0f,
+                if (FindFrontalWallHit(
+                    currentCenter,
+                    currentNormal,
                     moveDir,
-                    contactFilter,
-                    hitBuffer,
-                    castDist
-                );
-
-                int blockingHitIndex = -1;
-                for (int i = 0; i < hits; i++)
+                    extentNormal,
+                    extentTangent,
+                    lookAheadDist,
+                    out float hitDist,
+                    out Vector2 hitWallNormal))
                 {
-                    if (Vector2.Dot(hitBuffer[i].normal, moveDir) < -0.3f)
+                    float actualDistToWall = Mathf.Max(0f, hitDist - data.skinWidth);
+
+                    if (actualDistToWall <= remainingMove + 0.005f)
                     {
-                        blockingHitIndex = i;
-                        break;
-                    }
-                }
+                        position += moveDir * actualDistToWall;
+                        remainingMove = Mathf.Max(0f, remainingMove - actualDistToWall);
 
-                if (blockingHitIndex >= 0)
-                {
-                    RaycastHit2D hit = hitBuffer[blockingHitIndex];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position += moveDir * actualDist;
-                    remainingMove = Mathf.Max(0f, remainingMove - actualDist);
+                        bool isInnerCorner = Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f;
 
-                    bool isInnerCorner = Mathf.Abs(Vector2.Dot(currentNormal, hit.normal)) < 0.35f;
-
-                    if (isInnerCorner)
-                    {
-                        TargetSurfaceNormal = hit.normal;
-                        CurrentSurfaceNormal = hit.normal;
-                        HitWall = true;
+                        if (isInnerCorner)
+                        {
+                            TargetSurfaceNormal = hitWallNormal;
+                            CurrentSurfaceNormal = hitWallNormal;
+                            HitWall = true;
+                        }
+                        else
+                        {
+                            HitWall = true;
+                            Velocity = Vector2.zero;
+                            remainingMove = 0f;
+                        }
                     }
                     else
                     {
-                        HitWall = true;
-                        Velocity = Vector2.zero;
+                        position += moveDir * remainingMove;
                         remainingMove = 0f;
                     }
+
                     continue;
                 }
 
-                // 2. AUSSENECKEN-CHECK (Bricht der Boden vor uns ab?)
-                Vector2 leadingEdge = currentCenter + moveDir * (extentTangent + stepDist);
-                float floorCheckDist = extentNormal + Mathf.Max(0.2f, data.skinWidth * 8f);
+                // 2. AUSSENECKEN-CHECK
+                float stepDist = remainingMove;
+                Vector2 tentativePos = position + moveDir * stepDist;
+                Vector2 tentativeCenter = tentativePos + boxCollider.offset;
 
-                RaycastHit2D leadingGroundHit = Physics2D.Raycast(leadingEdge, -currentNormal, floorCheckDist, data.groundLayer);
+                Vector2 leadingEdge = tentativeCenter + moveDir * extentTangent;
+                float floorCheckDist = extentNormal + Mathf.Max(0.25f, data.skinWidth * 8f);
 
-                if (leadingGroundHit.collider != null && Vector2.Dot(leadingGroundHit.normal, currentNormal) > 0.6f)
+                RaycastHit2D floorCheck = Physics2D.Raycast(leadingEdge, -currentNormal, floorCheckDist, data.groundLayer);
+
+                if (floorCheck.collider != null && Vector2.Dot(SnapToCardinal(floorCheck.normal), currentNormal) > 0.6f)
                 {
-                    // Durchgehender Boden: Normalen Schritt ausführen
-                    position += moveDir * stepDist;
+                    position = tentativePos;
                     remainingMove = 0f;
                 }
                 else
                 {
-                    // Außenkante voraus: Wand unterhalb der Kante abtasten
                     float probeDepth = Mathf.Min(0.2f, extentNormal * 0.5f);
                     Vector2 probeOrigin = leadingEdge - currentNormal * (extentNormal + probeDepth);
                     float probeDist = extentTangent + stepDist + 0.6f;
 
                     RaycastHit2D wallHit = Physics2D.Raycast(probeOrigin, -moveDir, probeDist, data.groundLayer);
 
-                    if (wallHit.collider != null && Vector2.Dot(wallHit.normal, moveDir) > 0.4f)
+                    if (wallHit.collider != null && Vector2.Dot(SnapToCardinal(wallHit.normal), moveDir) > 0.5f)
                     {
-                        Vector2 newNormal = wallHit.normal;
+                        Vector2 newNormal = SnapToCardinal(wallHit.normal);
 
-                        // Exakten Scheitelpunkt C aus Boden- und Wandebene berechnen
                         RaycastHit2D safeFloorHit = Physics2D.Raycast(currentCenter - moveDir * (extentTangent * 0.5f), -currentNormal, floorCheckDist, data.groundLayer);
 
                         float cornerAlongNormal;
@@ -288,13 +395,11 @@ public class PlatformerSlimeController : MonoBehaviour
 
                         if (distToCorner > stepDist)
                         {
-                            // Kante noch nicht erreicht: Normal vorwärts bis vor die Kante laufen
                             position += moveDir * stepDist;
                             remainingMove = 0f;
                         }
                         else
                         {
-                            // Kante in diesem Frame erreicht: Um die Ecke wickeln
                             float distOnOldSurface = Mathf.Max(0f, distToCorner);
                             float pastCornerDist = stepDist - distOnOldSurface;
 
@@ -305,7 +410,7 @@ public class PlatformerSlimeController : MonoBehaviour
                             float newExtentTangent = GetColliderExtent(newMoveDir);
 
                             Vector2 targetCenter = cornerPoint 
-                                + newNormal * newExtentNormal 
+                                + newNormal * (newExtentNormal + data.skinWidth) 
                                 + newMoveDir * (newExtentTangent + pastCornerDist);
 
                             position = targetCenter - boxCollider.offset;
@@ -313,12 +418,11 @@ public class PlatformerSlimeController : MonoBehaviour
                             TargetSurfaceNormal = newNormal;
                             CurrentSurfaceNormal = newNormal;
                             IsGrounded = true;
-                            remainingMove = 0f; // Restbewegung an neuer Wand mitgenommen
+                            remainingMove = 0f;
                         }
                     }
                     else
                     {
-                        // Fallback: Keine Seitenwand gefunden
                         position += moveDir * stepDist;
                         remainingMove = 0f;
                     }
@@ -326,7 +430,7 @@ public class PlatformerSlimeController : MonoBehaviour
             }
 
             // 3. HAFTUNG ZUR FLÄCHE (Surface Snap)
-            Vector2 finalNormal = CurrentSurfaceNormal;
+            Vector2 finalNormal = SnapToCardinal(CurrentSurfaceNormal);
             Vector2 snapDir = -finalNormal;
             Vector2 snapOrigin = position + boxCollider.offset;
             float snapDist = Mathf.Max(0.18f, data.skinWidth * 8f);
@@ -343,31 +447,53 @@ public class PlatformerSlimeController : MonoBehaviour
 
             if (groundHits > 0)
             {
-                RaycastHit2D bestGroundHit = hitBuffer[0];
+                int bestIndex = -1;
                 for (int i = 0; i < groundHits; i++)
                 {
-                    if (Vector2.Dot(hitBuffer[i].normal, finalNormal) > 0.5f)
+                    if (hitBuffer[i].distance > 0.0001f && Vector2.Dot(SnapToCardinal(hitBuffer[i].normal), finalNormal) > 0.7f)
                     {
-                        bestGroundHit = hitBuffer[i];
+                        bestIndex = i;
                         break;
                     }
                 }
 
-                float actualSnapDist = Mathf.Max(0f, bestGroundHit.distance - data.skinWidth);
-                position += snapDir * actualSnapDist;
+                if (bestIndex >= 0)
+                {
+                    RaycastHit2D bestGroundHit = hitBuffer[bestIndex];
+                    float actualSnapDist = Mathf.Max(0f, bestGroundHit.distance - data.skinWidth);
+                    position += snapDir * actualSnapDist;
 
-                IsGrounded = true;
-                TargetSurfaceNormal = bestGroundHit.normal;
-                CurrentSurfaceNormal = bestGroundHit.normal;
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
+                else
+                {
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
             }
             else
             {
-                IsGrounded = false;
+                RaycastHit2D centerGroundHit = Physics2D.Raycast(snapOrigin, snapDir, GetColliderExtent(snapDir) + snapDist, data.groundLayer);
+                if (centerGroundHit.collider != null && Vector2.Dot(SnapToCardinal(centerGroundHit.normal), finalNormal) > 0.7f)
+                {
+                    float dist = Mathf.Max(0f, centerGroundHit.distance - GetColliderExtent(snapDir) - data.skinWidth);
+                    position += snapDir * dist;
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
+                else
+                {
+                    IsGrounded = false;
+                }
             }
         }
         else
         {
-            // --- FLUG-MODUS ---
+            // --- FLUG-MODUS (Airborne) ---
 
             // Y-Achse
             Vector2 castOriginY = position + boxCollider.offset;
@@ -375,30 +501,47 @@ public class PlatformerSlimeController : MonoBehaviour
             {
                 float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
                 float yDir = Mathf.Sign(deltaMovement.y);
+                Vector2 moveDirY = Vector2.up * yDir;
 
                 int yHits = Physics2D.BoxCast(
                     castOriginY,
                     boxSize,
                     0f,
-                    Vector2.up * yDir,
+                    moveDirY,
                     contactFilter,
                     hitBuffer,
                     yDist
                 );
 
-                if (yHits > 0)
+                int validHitIndex = -1;
+                for (int i = 0; i < yHits; i++)
                 {
-                    RaycastHit2D hit = hitBuffer[0];
+                    if (Vector2.Dot(hitBuffer[i].normal, moveDirY) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                    {
+                        validHitIndex = i;
+                        break;
+                    }
+                }
+
+                if (validHitIndex >= 0)
+                {
+                    RaycastHit2D hit = hitBuffer[validHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position.y += yDir * actualDist;
 
-                    if (CanAttach())
+                    Vector2 snappedNormal = SnapToCardinal(hit.normal);
+
+                    if (CanAttachTo(snappedNormal))
                     {
-                        TargetSurfaceNormal = hit.normal;
-                        CurrentSurfaceNormal = hit.normal;
+                        TargetSurfaceNormal = snappedNormal;
+                        CurrentSurfaceNormal = snappedNormal;
                         Velocity = Vector2.zero;
                         IsGrounded = true;
                         StateMachine.ChangeState(GroundedState);
+                    }
+                    else
+                    {
+                        Velocity = new Vector2(Velocity.x, 0f);
                     }
                 }
                 else
@@ -413,28 +556,41 @@ public class PlatformerSlimeController : MonoBehaviour
             {
                 float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
                 float xDir = Mathf.Sign(deltaMovement.x);
+                Vector2 moveDirX = Vector2.right * xDir;
 
                 int xHits = Physics2D.BoxCast(
                     castOriginX,
                     boxSize,
                     0f,
-                    Vector2.right * xDir,
+                    moveDirX,
                     contactFilter,
                     hitBuffer,
                     xDist
                 );
 
-                if (xHits > 0)
+                int validHitIndex = -1;
+                for (int i = 0; i < xHits; i++)
                 {
-                    RaycastHit2D hit = hitBuffer[0];
+                    if (Vector2.Dot(hitBuffer[i].normal, moveDirX) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                    {
+                        validHitIndex = i;
+                        break;
+                    }
+                }
+
+                if (validHitIndex >= 0)
+                {
+                    RaycastHit2D hit = hitBuffer[validHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position.x += xDir * actualDist;
 
-                    if (CanAttach())
+                    Vector2 snappedNormal = SnapToCardinal(hit.normal);
+
+                    if (CanAttachTo(snappedNormal))
                     {
                         HitWall = true;
-                        TargetSurfaceNormal = hit.normal;
-                        CurrentSurfaceNormal = hit.normal;
+                        TargetSurfaceNormal = snappedNormal;
+                        CurrentSurfaceNormal = snappedNormal;
                         Velocity = Vector2.zero;
                         IsGrounded = true;
                         StateMachine.ChangeState(GroundedState);
