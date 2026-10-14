@@ -16,7 +16,13 @@ public class PlatformerGroundedState : PlatformerSlimeState
     {
         justEntered = true;
         controller.IsGrounded = true;
-        controller.Velocity = Vector2.zero;
+
+        // Horizontale Geschwindigkeit aus dem Flug auf die Bodenfläche mitnehmen (kein harter Stop mehr!)
+        Vector2 normal = controller.CurrentSurfaceNormal;
+        Vector2 tangent = new Vector2(normal.y, -normal.x);
+        float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
+
+        controller.Velocity = new Vector2(preservedSpeed, 0f);
 
         currentTraverseSign = 0f;
         initialInputVector = Vector2.zero;
@@ -28,7 +34,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (justEntered)
         {
             justEntered = false;
-            return;
+            // FrameUpdate direkt weiterlaufen lassen, damit gepufferte Sprünge ohne Verzögerung im selben Frame greifen
         }
 
         if (!controller.IsGrounded)
@@ -41,11 +47,9 @@ public class PlatformerGroundedState : PlatformerSlimeState
         bool isCeiling = surfaceNormal.y < -0.5f;
         bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
 
-        // Prüfen, ob S gerade noch vom Wand-Abstieg gehalten wird (verhindert versehentlichen Detach an der Ecke)
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
         // 1. Dropdown an der Decke / Unterseite via Taste S
-        // Nur auslösen, wenn S nicht als aktive Kletter-Taste von der Wand mitgebracht wurde!
         if (isCeiling && controller.MoveInput.y < -0.1f && !isHoldingDownFromWall)
         {
             controller.TriggerDetach(surfaceNormal);
@@ -76,8 +80,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
             }
             else
             {
-                float currentMoveX = controller.Velocity.x;
-                controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
+                // Bei Boden-Absprung: Wenn Tastatur-Input anliegt, sofort volles Tempo in Laufrichtung mitgeben!
+                float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
+                    ? controller.MoveInput.x * data.moveSpeed 
+                    : controller.Velocity.x;
+
+                controller.Velocity = new Vector2(moveX, data.jumpVelocity);
             }
 
             stateMachine.ChangeState(controller.AirborneState);
