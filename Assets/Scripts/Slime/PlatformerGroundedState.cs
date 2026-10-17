@@ -9,6 +9,9 @@ public class PlatformerGroundedState : PlatformerSlimeState
     private Vector2 initialInputVector = Vector2.zero;
     private bool isTraversing = false;
 
+    // --- Ceiling Detach Hold-Timer ---
+    private float downHoldTimer = 0f;
+
     public PlatformerGroundedState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
         : base(controller, stateMachine, data) { }
 
@@ -17,7 +20,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
         justEntered = true;
         controller.IsGrounded = true;
 
-        // Horizontale Geschwindigkeit aus dem Flug auf die Bodenfläche mitnehmen (kein harter Stop mehr!)
         Vector2 normal = controller.CurrentSurfaceNormal;
         Vector2 tangent = new Vector2(normal.y, -normal.x);
         float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
@@ -27,6 +29,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
         currentTraverseSign = 0f;
         initialInputVector = Vector2.zero;
         isTraversing = false;
+        downHoldTimer = 0f;
     }
 
     public override void FrameUpdate()
@@ -34,7 +37,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (justEntered)
         {
             justEntered = false;
-            // FrameUpdate direkt weiterlaufen lassen, damit gepufferte Sprünge ohne Verzögerung im selben Frame greifen
         }
 
         if (!controller.IsGrounded)
@@ -49,16 +51,43 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 1. Dropdown an der Decke / Unterseite via Taste S
-        if (isCeiling && controller.MoveInput.y < -0.1f && !isHoldingDownFromWall)
+        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel
+        if (isCeiling && !isHoldingDownFromWall)
         {
-            controller.TriggerDetach(surfaceNormal);
+            Vector2 input = controller.MoveInput;
 
-            float airMoveX = controller.MoveInput.x * data.moveSpeed;
-            controller.Velocity = new Vector2(airMoveX, -3f);
+            // Muss fast rein nach unten sein (Y <= -0.80 und X maximal 0.25)
+            bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
-            stateMachine.ChangeState(controller.AirborneState);
-            return;
+            if (isStrictlyDown)
+            {
+                downHoldTimer += Time.deltaTime;
+
+                float requiredDuration = (data != null && data.ceilingDetachHoldDuration > 0f) 
+                    ? data.ceilingDetachHoldDuration 
+                    : 0.25f;
+
+                if (downHoldTimer >= requiredDuration)
+                {
+                    downHoldTimer = 0f;
+                    controller.TriggerDetach(surfaceNormal);
+
+                    float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                    controller.Velocity = new Vector2(airMoveX, -3f);
+
+                    stateMachine.ChangeState(controller.AirborneState);
+                    return;
+                }
+            }
+            else
+            {
+                // Jede Abweichung setzt den Timer sofort zurück
+                downHoldTimer = 0f;
+            }
+        }
+        else
+        {
+            downHoldTimer = 0f;
         }
 
         // 2. Sprung von der Fläche (Boden, Wand oder Decke)
@@ -80,7 +109,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             }
             else
             {
-                // Bei Boden-Absprung: Wenn Tastatur-Input anliegt, sofort volles Tempo in Laufrichtung mitgeben!
                 float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
                     ? controller.MoveInput.x * data.moveSpeed 
                     : controller.Velocity.x;

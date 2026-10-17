@@ -20,4 +20,8 @@ public class PlatformerPhysicsData : ScriptableObject
     public LayerMask groundLayer;
     public float skinWidth = 0.015f;
     public float alignRotationSpeed = 720f; // Grad pro Sekunde für sanftes Ausrichten
+
+    [Header("Ceiling Detach")]
+    [Tooltip("Dauer in Sekunden, die der Stick/Taste stur nach unten gehalten werden muss, um von der Decke zu fallen.")]
+    public float ceilingDetachHoldDuration = 0.25f;
 }

@@ -38,6 +38,9 @@ public class PlatformerSlimeController : MonoBehaviour
     [SerializeField] private float jumpBufferDuration = 0.12f;
     private float jumpBufferTimer;
 
+    [Header("Controller Settings")]
+    [SerializeField] private float stickDeadzone = 0.2f;
+
     public bool HasBufferedJump => jumpBufferTimer > 0f;
 
     public void ConsumeJumpBuffer()
@@ -66,7 +69,8 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void Start()
     {
-        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsSortMode.None);
+        // Ohne deprecated Parameter -> Warnung weg
+        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
         foreach (var tm in allTilemaps)
         {
             tm.RefreshAllTiles();
@@ -112,10 +116,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
-    /// <summary>
-    /// Erlaubt das sofortige Anheften an jede Fläche mit anderer Ausrichtung (z.B. Wand -> Decke),
-    /// sperrt aber während des Cooldowns die Fläche, von der gerade abgesprungen wurde.
-    /// </summary>
     public bool CanAttachTo(Vector2 candidateNormal)
     {
         if (detachCooldownTimer <= 0f) return true;
@@ -215,8 +215,11 @@ public class PlatformerSlimeController : MonoBehaviour
     private void ReadInput()
     {
         Vector2 input = Vector2.zero;
-        var keyboard = Keyboard.current;
+        bool jumpPressedThisFrame = false;
+        bool jumpIsHeld = false;
 
+        // --- 1. TASTATUR ---
+        var keyboard = Keyboard.current;
         if (keyboard != null)
         {
             if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
@@ -224,36 +227,68 @@ public class PlatformerSlimeController : MonoBehaviour
             if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
             if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
 
-            if (keyboard.spaceKey.wasPressedThisFrame)
-            {
-                jumpBufferTimer = jumpBufferDuration;
-            }
-
-            JumpHeld = keyboard.spaceKey.isPressed;
+            if (keyboard.spaceKey.wasPressedThisFrame) jumpPressedThisFrame = true;
+            if (keyboard.spaceKey.isPressed) jumpIsHeld = true;
         }
 
+        // --- 2. GAMEPAD / PS5 DUALSENSE ---
         var gamepad = Gamepad.current;
         if (gamepad != null)
         {
-            Vector2 stick = gamepad.leftStick.ReadValue();
-            if (stick.sqrMagnitude > 0.04f)
+            Vector2 stick = Vector2.zero;
+            Vector2 rawStick = gamepad.leftStick.ReadValue();
+
+            if (rawStick.magnitude >= stickDeadzone)
             {
-                input = stick;
+                Vector2 stickDir = rawStick.normalized;
+                float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
+
+                // Achsen-Snapping gegen Schräglauf-Rauschen
+                if (Mathf.Abs(stickDir.x) > 0.7f)
+                {
+                    stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
+                }
+                else if (Mathf.Abs(stickDir.y) > 0.7f)
+                {
+                    stick = new Vector2(0f, Mathf.Sign(stickDir.y) * stickMag);
+                }
+                else
+                {
+                    stick = stickDir * stickMag;
+                }
             }
 
-            if (gamepad.buttonSouth.wasPressedThisFrame)
+            Vector2 dpad = gamepad.dpad.ReadValue();
+
+            // Gamepad-Eingaben zur Tastatur addieren statt überschreiben
+            if (dpad.sqrMagnitude > 0.1f)
             {
-                jumpBufferTimer = jumpBufferDuration;
+                input += dpad;
+            }
+            else if (stick.sqrMagnitude > 0.01f)
+            {
+                input += stick;
             }
 
-            JumpHeld |= gamepad.buttonSouth.isPressed;
+            if (gamepad.buttonSouth.wasPressedThisFrame) jumpPressedThisFrame = true;
+            if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
         }
 
-        if (jumpBufferTimer > 0f)
+        // Maximale Eingabe begrenzen
+        input.x = Mathf.Clamp(input.x, -1f, 1f);
+        input.y = Mathf.Clamp(input.y, -1f, 1f);
+
+        // Sprung-Puffer aktualisieren
+        if (jumpPressedThisFrame)
+        {
+            jumpBufferTimer = jumpBufferDuration;
+        }
+        else if (jumpBufferTimer > 0f)
         {
             jumpBufferTimer -= Time.deltaTime;
         }
 
+        JumpHeld = jumpIsHeld;
         MoveInput = input;
     }
 
