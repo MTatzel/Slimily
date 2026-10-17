@@ -59,7 +59,7 @@ public class InventoryManager : MonoBehaviour
 
     void Update()
     {
-        if (gameManager == null || gameManager.currentState != GameState.Inventory) return;
+        if (gameManager == null || gameManager.currentState != GameState.MacroPlan) return;
         if (Keyboard.current == null) return;
 
         if (Keyboard.current.aKey.wasPressedThisFrame || Keyboard.current.leftArrowKey.wasPressedThisFrame)

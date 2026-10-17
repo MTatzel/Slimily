@@ -3,11 +3,11 @@ using UnityEngine.InputSystem;
 
 public enum GameState
 {
-    FreeRoam,    // Platformer-Modus (Mikro-Ebene)
-    MacroPlan,   // Bau- & Planungsphase auf dem Grid (Makro-Ebene)
-    Inventory,
-    Placement,
-    EnemyTurn
+    FreeRoam,    // Mikro-Ebene: Platformer-Steuerung aktiv
+    MapView,     // Makro-Ebene: Reine Karten-Übersicht (keine Bau-UI)
+    MacroPlan,   // Makro-Ebene: Bau- & Planungsphase (Hotbar aktiv)
+    Placement,   // Makro-Ebene: Form hängt am Cursor zur Platzierung
+    EnemyTurn    // Gegnerphase: Boss führt Aktionen aus
 }
 
 public class GameManager : MonoBehaviour
@@ -22,7 +22,7 @@ public class GameManager : MonoBehaviour
 
     [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
-    [SerializeField] private Camera mainCamera; // Platformer-Kamera
+    [SerializeField] private Camera mainCamera;
 
     [Header("UI")]
     public GameObject inventoryScreen;
@@ -31,6 +31,14 @@ public class GameManager : MonoBehaviour
     [Header("Spieler-Referenz (Micro)")]
     [SerializeField] private PlatformerSlimeController slimeController;
     [SerializeField] private Rigidbody2D slimeRigidbody;
+
+    [Header("Transition Settings")]
+    [Tooltip("Dauer in Sekunden, die Dreieck gehalten werden muss, um in den Baumodus zu wechseln.")]
+    [SerializeField] private float buildModeHoldDuration = 0.45f;
+    private float buildModeHoldTimer = 0f;
+
+    // Speichert die letzte Geschwindigkeit des Slimes vor dem Einfrieren
+    private Vector2 cachedSlimeVelocity;
 
     private void Awake()
     {
@@ -58,33 +66,29 @@ public class GameManager : MonoBehaviour
             Debug.LogError("[GameManager] Keine LevelConfiguration zugewiesen!");
         }
 
-        // Startet direkt im Makro-Planungsmodus (Grid aktiv, Slime pausiert)
-        SetViewMode(isMacro: true);
+        // Startet direkt im Makro-Planungsmodus
+        ChangeState(GameState.MacroPlan);
     }
 
     public void LoadLevel(LevelConfiguration config)
     {
         currentLevelConfig = config;
 
-        // 1. Makro-Grid aufbauen
         if (GridManager.Instance != null)
         {
             GridManager.Instance.Initialize(config);
         }
 
-        // 2. Mikro-Räume & Slime initialisieren
         if (MacroGridManager.Instance != null)
         {
             MacroGridManager.Instance.Initialize(config);
 
-            // --- HIER: Slime direkt an den Startraum setzen ---
             if (slimeController != null)
             {
                 MacroGridManager.Instance.PlaceSlimeInRoom(config.startCoordinate, slimeController.transform);
             }
         }
 
-        // 3. Makro-Kamera auf das Grid zentrieren
         PositionMacroCamera(config);
     }
 
@@ -105,74 +109,166 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    void Update()
+    private void Update()
     {
-        if (Keyboard.current == null) return;
+        HandleTransitionInputs();
+    }
 
-        // Mit TAB zwischen Makro- (Bauen) und Mikro-Ebene (FreeRoam) wechseln
-        if (Keyboard.current.tabKey.wasPressedThisFrame)
+   private void HandleTransitionInputs()
+    {
+        var gamepad = Gamepad.current;
+        var keyboard = Keyboard.current;
+
+        // 1. ZUG BEENDEN (R3 auf Gamepad oder Taste E)
+        bool endTurnTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
+                                (keyboard != null && keyboard.eKey.wasPressedThisFrame);
+
+        if (endTurnTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
         {
-            // Nicht umschalten, solange man gerade einen Block platziert
-            if (currentState == GameState.Placement) return;
+            EventManager eventMgr = FindAnyObjectByType<EventManager>();
+            if (eventMgr != null)
+            {
+                eventMgr.StartCoroutine("TurnSequenceRoutine");
+            }
+            return;
+        }
 
-            bool toMacro = (currentState == GameState.FreeRoam);
-            SetViewMode(toMacro);
+        // Touchpad-Erkennung: Falls DualSense/DualShock angeschlossen ist, touchpadButton abfragen, sonst selectButton (Share/Back)
+        bool touchpadPressed = false;
+        if (gamepad != null)
+        {
+            if (gamepad is UnityEngine.InputSystem.DualShock.DualShockGamepad dualShock)
+            {
+                touchpadPressed = dualShock.touchpadButton.wasPressedThisFrame;
+            }
+            else
+            {
+                touchpadPressed = gamepad.selectButton.wasPressedThisFrame;
+            }
+        }
+
+        // 2. MIKRO-EBENE (FreeRoam) -> MAKRO-EINGABEN
+        if (currentState == GameState.FreeRoam)
+        {
+            // Karte toggeln (Touchpad / Select oder Taste M)
+            bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
+
+            if (mapToggle)
+            {
+                ChangeState(GameState.MapView);
+                return;
+            }
+
+            // In den Baumodus meditieren: Dreieck / Taste B halten
+            bool isHoldingBuild = (gamepad != null && gamepad.buttonNorth.isPressed) ||
+                                  (keyboard != null && keyboard.bKey.isPressed);
+
+            if (isHoldingBuild)
+            {
+                buildModeHoldTimer += Time.deltaTime;
+                if (buildModeHoldTimer >= buildModeHoldDuration)
+                {
+                    buildModeHoldTimer = 0f;
+                    ChangeState(GameState.MacroPlan);
+                }
+            }
+            else
+            {
+                buildModeHoldTimer = 0f;
+            }
+        }
+        // 3. MAKRO-EBENE -> ZURÜCK ZU MIKRO
+        else if (currentState == GameState.MapView || currentState == GameState.MacroPlan)
+        {
+            // Abbrechen / Zurück: Kreis / Dreieck-Tap / Taste Escape
+            bool exitMacro = (gamepad != null && (gamepad.buttonEast.wasPressedThisFrame || gamepad.buttonNorth.wasPressedThisFrame)) ||
+                             (keyboard != null && keyboard.escapeKey.wasPressedThisFrame);
+
+            bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
+
+            if (exitMacro || (currentState == GameState.MapView && mapToggle))
+            {
+                ChangeState(GameState.FreeRoam);
+            }
         }
     }
 
-    /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
- /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
-    /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
-    public void SetViewMode(bool isMacro)
+    public void ChangeState(GameState newState)
+    {
+        if (currentState == newState) return;
+
+        ExitState(currentState);
+        currentState = newState;
+        EnterState(newState);
+    }
+
+    private void EnterState(GameState state)
     {
         FindReferencesIfNeeded();
 
-        if (isMacro)
+        switch (state)
         {
-            currentState = GameState.Inventory;
+            case GameState.FreeRoam:
+                SetCameraActive(macro: false, micro: true);
+                SetUIActive(inventory: false);
+                SetSlimeActive(true);
+                break;
 
-            // Kameras umstellen
-            if (macroCamera != null) macroCamera.gameObject.SetActive(true);
-            if (mainCamera != null) mainCamera.gameObject.SetActive(false);
+            case GameState.MapView:
+                SetCameraActive(macro: true, micro: false);
+                SetUIActive(inventory: false); // Keine Hotbar im reinen Kartenmodus
+                SetSlimeActive(false);
+                break;
 
-            // Hotbar/Inventar für Makro-Ebene einblenden
-            if (inventoryScreen != null) inventoryScreen.SetActive(true);
-            Canvas.ForceUpdateCanvases();
-            if (inventoryManager != null) inventoryManager.ResetSelection();
+            case GameState.MacroPlan:
+                SetCameraActive(macro: true, micro: false);
+                SetUIActive(inventory: true);  // Hotbar aktivieren
+                SetSlimeActive(false);
+                if (inventoryManager != null) inventoryManager.ResetSelection();
+                break;
 
-            // Slime-Steuerung & Physik deaktivieren
-            SetSlimeInputActive(false);
-        }
-        else
-        {
-            // Falls der Spieler mitten im Block-Platzieren TAB drückt: sauber abbrechen
-            PlacementManager placementMgr = FindFirstObjectByType<PlacementManager>();
-            if (placementMgr != null && currentState == GameState.Placement)
-            {
-                placementMgr.CancelSelection();
-            }
+            case GameState.Placement:
+                SetCameraActive(macro: true, micro: false);
+                SetUIActive(inventory: true);
+                SetSlimeActive(false);
+                break;
 
-            currentState = GameState.FreeRoam;
-
-            // Kameras umstellen
-            if (macroCamera != null) macroCamera.gameObject.SetActive(false);
-            if (mainCamera != null) mainCamera.gameObject.SetActive(true);
-
-            // Hotbar/Inventar für Mikro-Ebene komplett ausblenden
-            if (inventoryScreen != null) inventoryScreen.SetActive(false);
-
-            // Slime-Steuerung & Physik aktivieren
-            SetSlimeInputActive(true);
+            case GameState.EnemyTurn:
+                SetCameraActive(macro: true, micro: false); // Zeigt Boss-Aktionen auf dem Grid
+                SetUIActive(inventory: false);
+                SetSlimeActive(false);
+                break;
         }
     }
 
-    private void SetSlimeInputActive(bool active)
+    private void ExitState(GameState oldState)
+    {
+        if (oldState == GameState.Placement)
+        {
+            PlacementManager placementMgr = FindAnyObjectByType<PlacementManager>();
+            if (placementMgr != null)
+            {
+                placementMgr.CancelSelection();
+            }
+        }
+    }
+
+    private void SetCameraActive(bool macro, bool micro)
+    {
+        if (macroCamera != null) macroCamera.gameObject.SetActive(macro);
+        if (mainCamera != null) mainCamera.gameObject.SetActive(micro);
+    }
+
+    private void SetUIActive(bool inventory)
+    {
+        if (inventoryScreen != null)
+        {
+            inventoryScreen.SetActive(inventory);
+            if (inventory) Canvas.ForceUpdateCanvases();
+        }
+    }
+
+    private void SetSlimeActive(bool active)
     {
         if (slimeController != null)
         {
@@ -183,12 +279,14 @@ public class GameManager : MonoBehaviour
         {
             if (!active)
             {
+                cachedSlimeVelocity = slimeRigidbody.linearVelocity;
                 slimeRigidbody.linearVelocity = Vector2.zero;
                 slimeRigidbody.simulated = false;
             }
             else
             {
                 slimeRigidbody.simulated = true;
+                slimeRigidbody.linearVelocity = cachedSlimeVelocity;
             }
         }
     }
@@ -216,10 +314,5 @@ public class GameManager : MonoBehaviour
         {
             slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
         }
-    }
-
-    public void ChangeState(GameState newState)
-    {
-        currentState = newState;
     }
 }

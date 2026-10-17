@@ -67,7 +67,7 @@ public class PlacementManager : MonoBehaviour
         if (gameManager != null)
         {
             // Zurück in die Slot-Auswahl der Makro-Ebene:
-            gameManager.ChangeState(GameState.Inventory);
+            gameManager.ChangeState(GameState.MacroPlan);
         }
     }
 

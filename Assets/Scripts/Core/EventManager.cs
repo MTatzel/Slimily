@@ -15,7 +15,7 @@ public class EventManager : MonoBehaviour
     {
         // 1. Niemals im Platformer (FreeRoam) auf Space/Enter für Zug-Ende reagieren!
         // Der Zug soll nur auf der Makro-Ebene (Inventory) beendet werden können.
-        if (gameManager != null && gameManager.currentState != GameState.Inventory) return;
+        if (gameManager != null && gameManager.currentState != GameState.MacroPlan) return;
         if (Keyboard.current == null) return;
 
         // Vorerst: Space komplett entfernen, damit Sprünge sicher frei bleiben.
@@ -57,7 +57,7 @@ public class EventManager : MonoBehaviour
         // 4. Spieler wieder freigeben (zurück auf Makro-Ebene)
         if (gameManager != null)
         {
-            gameManager.ChangeState(GameState.Inventory);
+            gameManager.ChangeState(GameState.MacroPlan);
         }
 
         Debug.Log("--- GEGNER-PHASE BEENDET | SPIELER IST DRAN ---");

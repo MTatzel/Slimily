@@ -70,7 +70,7 @@ public class PlatformerSlimeController : MonoBehaviour
     private void Start()
     {
         // Ohne deprecated Parameter -> Warnung weg
-        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude);
         foreach (var tm in allTilemaps)
         {
             tm.RefreshAllTiles();

@@ -71,7 +71,6 @@ Slime/
   PlatformerStateMachine.cs
 .repomixignore
 PROJEKT_KONTEXT.md
-PROJEKT_KONTEXT.md.txt
 repomix.config.json
 </directory_structure>
 
@@ -2226,6 +2225,14 @@ public class PlatformerGroundedState : PlatformerSlimeState
 {
     private bool justEntered;
 
+    // --- Sticky Momentum & Intent-Buffer ---
+    private float currentTraverseSign = 0f;
+    private Vector2 initialInputVector = Vector2.zero;
+    private bool isTraversing = false;
+
+    // --- Ceiling Detach Hold-Timer ---
+    private float downHoldTimer = 0f;
+
     public PlatformerGroundedState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
         : base(controller, stateMachine, data) { }
 
@@ -2233,7 +2240,17 @@ public class PlatformerGroundedState : PlatformerSlimeState
     {
         justEntered = true;
         controller.IsGrounded = true;
-        controller.Velocity = Vector2.zero;
+
+        Vector2 normal = controller.CurrentSurfaceNormal;
+        Vector2 tangent = new Vector2(normal.y, -normal.x);
+        float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
+
+        controller.Velocity = new Vector2(preservedSpeed, 0f);
+
+        currentTraverseSign = 0f;
+        initialInputVector = Vector2.zero;
+        isTraversing = false;
+        downHoldTimer = 0f;
     }
 
     public override void FrameUpdate()
@@ -2241,7 +2258,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
         if (justEntered)
         {
             justEntered = false;
-            return;
         }
 
         if (!controller.IsGrounded)
@@ -2254,42 +2270,71 @@ public class PlatformerGroundedState : PlatformerSlimeState
         bool isCeiling = surfaceNormal.y < -0.5f;
         bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
 
-        // 1. Dropdown an der Decke via Taste S
-        if (isCeiling && controller.MoveInput.y < -0.1f)
+        bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
+
+        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel
+        if (isCeiling && !isHoldingDownFromWall)
         {
-            controller.TriggerDetach();
+            Vector2 input = controller.MoveInput;
 
-            // Welt-Richtung direkt aus dem Tastatur-Input ableiten,
-            // um Vorzeichen-Konflikte der Decken-Tangente zu vermeiden:
-            float airMoveX = controller.MoveInput.x * data.moveSpeed;
-            controller.Velocity = new Vector2(airMoveX, -2f);
+            // Muss fast rein nach unten sein (Y <= -0.80 und X maximal 0.25)
+            bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
-            stateMachine.ChangeState(controller.AirborneState);
-            return;
+            if (isStrictlyDown)
+            {
+                downHoldTimer += Time.deltaTime;
+
+                float requiredDuration = (data != null && data.ceilingDetachHoldDuration > 0f) 
+                    ? data.ceilingDetachHoldDuration 
+                    : 0.25f;
+
+                if (downHoldTimer >= requiredDuration)
+                {
+                    downHoldTimer = 0f;
+                    controller.TriggerDetach(surfaceNormal);
+
+                    float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                    controller.Velocity = new Vector2(airMoveX, -3f);
+
+                    stateMachine.ChangeState(controller.AirborneState);
+                    return;
+                }
+            }
+            else
+            {
+                // Jede Abweichung setzt den Timer sofort zurück
+                downHoldTimer = 0f;
+            }
+        }
+        else
+        {
+            downHoldTimer = 0f;
         }
 
-        // 2. Sprung von der Fläche (entweder frisch gedrückt oder gepuffert)
+        // 2. Sprung von der Fläche (Boden, Wand oder Decke)
         if (controller.HasBufferedJump)
         {
             controller.ConsumeJumpBuffer();
-            controller.TriggerDetach();
+            controller.TriggerDetach(surfaceNormal);
 
             if (isCeiling)
             {
-                // Welt-X aus dem Input ableiten und kontrollierten Abstoßimpuls nach unten setzen:
                 float airMoveX = controller.MoveInput.x * data.moveSpeed;
-                float verticalDrop = -data.jumpVelocity * 0.5f;
+                float verticalDrop = -data.jumpVelocity * 0.6f;
                 controller.Velocity = new Vector2(airMoveX, verticalDrop);
             }
             else if (isWall)
             {
-                Vector2 jumpDir = (surfaceNormal + Vector2.up * 1.2f).normalized;
+                Vector2 jumpDir = (surfaceNormal * 1.0f + Vector2.up * 1.1f).normalized;
                 controller.Velocity = jumpDir * data.jumpVelocity;
             }
             else
             {
-                float currentMoveX = controller.Velocity.x;
-                controller.Velocity = new Vector2(currentMoveX, data.jumpVelocity);
+                float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
+                    ? controller.MoveInput.x * data.moveSpeed 
+                    : controller.Velocity.x;
+
+                controller.Velocity = new Vector2(moveX, data.jumpVelocity);
             }
 
             stateMachine.ChangeState(controller.AirborneState);
@@ -2299,27 +2344,69 @@ public class PlatformerGroundedState : PlatformerSlimeState
     public override void PhysicsUpdate()
     {
         Vector2 normal = controller.CurrentSurfaceNormal;
-        bool isWall = Mathf.Abs(normal.x) > 0.5f;
-        bool isCeiling = normal.y < -0.5f;
+        Vector2 tangent = new Vector2(normal.y, -normal.x);
+        Vector2 input = controller.MoveInput;
+        float inputSqrMag = input.sqrMagnitude;
 
-        float activeInput = 0f;
+        float targetSpeed = 0f;
 
-        if (isWall)
+        if (inputSqrMag < 0.04f)
         {
-            activeInput = (normal.x < 0f) ? controller.MoveInput.y : -controller.MoveInput.y;
-        }
-        else if (isCeiling)
-        {
-            activeInput = -controller.MoveInput.x;
+            isTraversing = false;
+            currentTraverseSign = 0f;
+            initialInputVector = Vector2.zero;
         }
         else
         {
-            activeInput = controller.MoveInput.x;
+            Vector2 normInput = input.normalized;
+
+            if (!isTraversing)
+            {
+                float proj = Vector2.Dot(input, tangent);
+
+                if (Mathf.Abs(proj) > 0.15f)
+                {
+                    isTraversing = true;
+                    currentTraverseSign = Mathf.Sign(proj);
+                    initialInputVector = normInput;
+                }
+            }
+            else
+            {
+                float reversalCheck = Vector2.Dot(normInput, initialInputVector);
+
+                if (reversalCheck < -0.35f)
+                {
+                    isTraversing = false;
+                    currentTraverseSign = 0f;
+                    initialInputVector = Vector2.zero;
+
+                    float proj = Vector2.Dot(input, tangent);
+                    if (Mathf.Abs(proj) > 0.15f)
+                    {
+                        isTraversing = true;
+                        currentTraverseSign = Mathf.Sign(proj);
+                        initialInputVector = normInput;
+                    }
+                }
+                else
+                {
+                    float currentProj = Vector2.Dot(input, tangent);
+
+                    if (currentProj * currentTraverseSign > 0.35f)
+                    {
+                        initialInputVector = normInput;
+                    }
+                }
+            }
+
+            if (isTraversing)
+            {
+                targetSpeed = currentTraverseSign * data.moveSpeed;
+            }
         }
 
-        float targetSpeed = activeInput * data.moveSpeed;
         Vector2 vel = controller.Velocity;
-
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
         vel.x = Mathf.MoveTowards(vel.x, targetSpeed, accel * Time.fixedDeltaTime);
         vel.y = 0f;
@@ -2352,12 +2439,17 @@ public class PlatformerPhysicsData : ScriptableObject
     public LayerMask groundLayer;
     public float skinWidth = 0.015f;
     public float alignRotationSpeed = 720f; // Grad pro Sekunde für sanftes Ausrichten
+
+    [Header("Ceiling Detach")]
+    [Tooltip("Dauer in Sekunden, die der Stick/Taste stur nach unten gehalten werden muss, um von der Decke zu fallen.")]
+    public float ceilingDetachHoldDuration = 0.25f;
 }
 </file>
 
 <file path="Slime/PlatformerSlimeController.cs">
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Tilemaps;
 
 [RequireComponent(typeof(Rigidbody2D), typeof(BoxCollider2D))]
 public class PlatformerSlimeController : MonoBehaviour
@@ -2367,7 +2459,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
-    private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[4];
+    private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
 
     // --- State Machine & Zustände ---
@@ -2388,12 +2480,15 @@ public class PlatformerSlimeController : MonoBehaviour
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
 
-    // Cooldown, um nach einem Absprung nicht sofort wieder eingesaugt zu werden
     private float detachCooldownTimer;
+    private Vector2 lastDetachedNormal = Vector2.zero;
 
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
     private float jumpBufferTimer;
+
+    [Header("Controller Settings")]
+    [SerializeField] private float stickDeadzone = 0.2f;
 
     public bool HasBufferedJump => jumpBufferTimer > 0f;
 
@@ -2423,6 +2518,13 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void Start()
     {
+        // Ohne deprecated Parameter -> Warnung weg
+        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        foreach (var tm in allTilemaps)
+        {
+            tm.RefreshAllTiles();
+        }
+
         StateMachine.Initialize(AirborneState);
     }
 
@@ -2444,44 +2546,200 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
     }
 
-    public void TriggerDetach(float duration = 0.12f)
+    public void TriggerDetach(float duration = 0.15f)
+    {
+        TriggerDetach(CurrentSurfaceNormal, duration);
+    }
+
+    public void TriggerDetach(Vector2 fromSurfaceNormal, float duration = 0.15f)
     {
         detachCooldownTimer = duration;
+        lastDetachedNormal = SnapToCardinal(fromSurfaceNormal);
+
         IsGrounded = false;
         TargetSurfaceNormal = Vector2.up;
+        CurrentSurfaceNormal = Vector2.up;
+
+        rb.position += lastDetachedNormal * (data.skinWidth * 3f + 0.03f);
     }
 
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
-    private void ReadInput()
-{
-    Vector2 input = Vector2.zero;
-    var keyboard = Keyboard.current;
-
-    if (keyboard != null)
+    public bool CanAttachTo(Vector2 candidateNormal)
     {
-        if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
-        if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
-        if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
-        if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
+        if (detachCooldownTimer <= 0f) return true;
 
-        // Wenn Taste in diesem Frame gedrückt wurde: Puffer aufladen
-        if (keyboard.spaceKey.wasPressedThisFrame)
+        Vector2 snappedCandidate = SnapToCardinal(candidateNormal);
+        return Vector2.Dot(snappedCandidate, lastDetachedNormal) < 0.5f;
+    }
+
+    public float GetColliderExtent(Vector2 direction)
+    {
+        Vector2 halfSize = boxCollider.size * 0.5f;
+        return Mathf.Abs(direction.x) * halfSize.x + Mathf.Abs(direction.y) * halfSize.y;
+    }
+
+    private Vector2 SnapToCardinal(Vector2 rawNormal)
+    {
+        if (Mathf.Abs(rawNormal.x) > Mathf.Abs(rawNormal.y))
+        {
+            return new Vector2(Mathf.Sign(rawNormal.x), 0f);
+        }
+        return new Vector2(0f, Mathf.Sign(rawNormal.y));
+    }
+
+    private bool FindFrontalWallHit(
+        Vector2 currentCenter,
+        Vector2 currentNormal,
+        Vector2 moveDir,
+        float extentNormal,
+        float extentTangent,
+        float castDist,
+        out float distanceToWall,
+        out Vector2 wallNormal)
+    {
+        distanceToWall = float.MaxValue;
+        wallNormal = Vector2.zero;
+        bool found = false;
+
+        float rayLength = extentTangent + castDist;
+        Vector2 rayOriginBase = currentCenter - currentNormal * (extentNormal - data.skinWidth * 2f);
+        Vector2 rayOriginMid = currentCenter;
+
+        RaycastHit2D hitBase = Physics2D.Raycast(rayOriginBase, moveDir, rayLength, data.groundLayer);
+        if (hitBase.collider != null && hitBase.distance > 0.0005f && Vector2.Dot(hitBase.normal, moveDir) < -0.35f)
+        {
+            float d = Mathf.Max(0f, hitBase.distance - extentTangent);
+            if (d < distanceToWall)
+            {
+                distanceToWall = d;
+                wallNormal = SnapToCardinal(hitBase.normal);
+                found = true;
+            }
+        }
+
+        RaycastHit2D hitMid = Physics2D.Raycast(rayOriginMid, moveDir, rayLength, data.groundLayer);
+        if (hitMid.collider != null && hitMid.distance > 0.0005f && Vector2.Dot(hitMid.normal, moveDir) < -0.35f)
+        {
+            float d = Mathf.Max(0f, hitMid.distance - extentTangent);
+            if (d < distanceToWall)
+            {
+                distanceToWall = d;
+                wallNormal = SnapToCardinal(hitMid.normal);
+                found = true;
+            }
+        }
+
+        float normalClearance = 0.05f;
+        Vector2 liftedOrigin = currentCenter + currentNormal * (normalClearance * 0.5f);
+        Vector2 shrunkBoxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f))
+            - new Vector2(Mathf.Abs(currentNormal.x), Mathf.Abs(currentNormal.y)) * normalClearance;
+
+        int hits = Physics2D.BoxCast(
+            liftedOrigin,
+            shrunkBoxSize,
+            0f,
+            moveDir,
+            contactFilter,
+            hitBuffer,
+            castDist
+        );
+
+        for (int i = 0; i < hits; i++)
+        {
+            if (hitBuffer[i].distance > 0.0005f && Vector2.Dot(hitBuffer[i].normal, moveDir) < -0.35f)
+            {
+                if (hitBuffer[i].distance < distanceToWall)
+                {
+                    distanceToWall = hitBuffer[i].distance;
+                    wallNormal = SnapToCardinal(hitBuffer[i].normal);
+                    found = true;
+                }
+            }
+        }
+
+        return found;
+    }
+
+    private void ReadInput()
+    {
+        Vector2 input = Vector2.zero;
+        bool jumpPressedThisFrame = false;
+        bool jumpIsHeld = false;
+
+        // --- 1. TASTATUR ---
+        var keyboard = Keyboard.current;
+        if (keyboard != null)
+        {
+            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
+            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
+            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
+            if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
+
+            if (keyboard.spaceKey.wasPressedThisFrame) jumpPressedThisFrame = true;
+            if (keyboard.spaceKey.isPressed) jumpIsHeld = true;
+        }
+
+        // --- 2. GAMEPAD / PS5 DUALSENSE ---
+        var gamepad = Gamepad.current;
+        if (gamepad != null)
+        {
+            Vector2 stick = Vector2.zero;
+            Vector2 rawStick = gamepad.leftStick.ReadValue();
+
+            if (rawStick.magnitude >= stickDeadzone)
+            {
+                Vector2 stickDir = rawStick.normalized;
+                float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
+
+                // Achsen-Snapping gegen Schräglauf-Rauschen
+                if (Mathf.Abs(stickDir.x) > 0.7f)
+                {
+                    stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
+                }
+                else if (Mathf.Abs(stickDir.y) > 0.7f)
+                {
+                    stick = new Vector2(0f, Mathf.Sign(stickDir.y) * stickMag);
+                }
+                else
+                {
+                    stick = stickDir * stickMag;
+                }
+            }
+
+            Vector2 dpad = gamepad.dpad.ReadValue();
+
+            // Gamepad-Eingaben zur Tastatur addieren statt überschreiben
+            if (dpad.sqrMagnitude > 0.1f)
+            {
+                input += dpad;
+            }
+            else if (stick.sqrMagnitude > 0.01f)
+            {
+                input += stick;
+            }
+
+            if (gamepad.buttonSouth.wasPressedThisFrame) jumpPressedThisFrame = true;
+            if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
+        }
+
+        // Maximale Eingabe begrenzen
+        input.x = Mathf.Clamp(input.x, -1f, 1f);
+        input.y = Mathf.Clamp(input.y, -1f, 1f);
+
+        // Sprung-Puffer aktualisieren
+        if (jumpPressedThisFrame)
         {
             jumpBufferTimer = jumpBufferDuration;
         }
+        else if (jumpBufferTimer > 0f)
+        {
+            jumpBufferTimer -= Time.deltaTime;
+        }
 
-        JumpHeld = keyboard.spaceKey.isPressed;
+        JumpHeld = jumpIsHeld;
+        MoveInput = input;
     }
-
-    // Puffer herunterzählen
-    if (jumpBufferTimer > 0f)
-    {
-        jumpBufferTimer -= Time.deltaTime;
-    }
-
-    MoveInput = input;
-}
 
     private void UpdateSurfaceRotation()
     {
@@ -2490,14 +2748,15 @@ public class PlatformerSlimeController : MonoBehaviour
         if (visualTransform != null)
         {
             float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
-            visualTransform.rotation = Quaternion.Euler(0f, 0f, targetAngle);
+            Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
+
+            float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 720f;
+            visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
 
             float halfColHeight = boxCollider.size.y * 0.5f;
-            Vector2 visualOffset = -TargetSurfaceNormal * (halfColHeight - 0.26f);
-            visualTransform.localPosition = (Vector2)boxCollider.offset + visualOffset;
+            Vector2 targetOffset = (Vector2)boxCollider.offset - TargetSurfaceNormal * (halfColHeight - 0.26f);
+            visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 15f * Time.deltaTime);
         }
-
-        CurrentSurfaceNormal = TargetSurfaceNormal;
     }
 
     private void MoveAndResolveCollisions(Vector2 deltaMovement)
@@ -2508,58 +2767,163 @@ public class PlatformerSlimeController : MonoBehaviour
 
         Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
         Vector2 position = rb.position;
-        Vector2 castOrigin = position + boxCollider.offset;
-
-        Vector2 surfaceNormal = CurrentSurfaceNormal;
-        Vector2 surfaceTangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
 
         bool isGroundedMode = StateMachine.CurrentState == GroundedState;
 
         if (isGroundedMode)
         {
-            // 1. BEWEGUNG ENTLANG DER FLÄCHE
-            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+            float moveAmount = deltaMovement.x;
+            float remainingMove = Mathf.Abs(moveAmount);
+            float moveSign = Mathf.Sign(moveAmount);
+
+            int maxIterations = 3;
+            while (remainingMove > 0.0001f && maxIterations > 0)
             {
-                float moveDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
-                Vector2 moveDir = surfaceTangent * Mathf.Sign(deltaMovement.x);
+                maxIterations--;
 
-                int hits = Physics2D.BoxCast(
-                    castOrigin,
-                    boxSize,
-                    0f,
+                Vector2 currentNormal = SnapToCardinal(CurrentSurfaceNormal);
+                Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
+                Vector2 moveDir = currentTangent * moveSign;
+
+                Vector2 currentCenter = position + boxCollider.offset;
+                float extentNormal = GetColliderExtent(-currentNormal);
+                float extentTangent = GetColliderExtent(moveDir);
+
+                // 1. INNENECKEN- & WAND-CHECK
+                float lookAheadDist = remainingMove + extentTangent + data.skinWidth * 2f;
+
+                if (FindFrontalWallHit(
+                    currentCenter,
+                    currentNormal,
                     moveDir,
-                    contactFilter,
-                    hitBuffer,
-                    moveDist
-                );
-
-                if (hits > 0)
+                    extentNormal,
+                    extentTangent,
+                    lookAheadDist,
+                    out float hitDist,
+                    out Vector2 hitWallNormal))
                 {
-                    RaycastHit2D hit = hitBuffer[0];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position += moveDir * actualDist;
-                    HitWall = true;
+                    float actualDistToWall = Mathf.Max(0f, hitDist - data.skinWidth);
 
-                    TargetSurfaceNormal = hit.normal;
-                    CurrentSurfaceNormal = hit.normal;
-                    Velocity = Vector2.zero;
+                    if (actualDistToWall <= remainingMove + 0.005f)
+                    {
+                        position += moveDir * actualDistToWall;
+                        remainingMove = Mathf.Max(0f, remainingMove - actualDistToWall);
+
+                        bool isInnerCorner = Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f;
+
+                        if (isInnerCorner)
+                        {
+                            TargetSurfaceNormal = hitWallNormal;
+                            CurrentSurfaceNormal = hitWallNormal;
+                            HitWall = true;
+                        }
+                        else
+                        {
+                            HitWall = true;
+                            Velocity = Vector2.zero;
+                            remainingMove = 0f;
+                        }
+                    }
+                    else
+                    {
+                        position += moveDir * remainingMove;
+                        remainingMove = 0f;
+                    }
+
+                    continue;
+                }
+
+                // 2. AUSSENECKEN-CHECK
+                float stepDist = remainingMove;
+                Vector2 tentativePos = position + moveDir * stepDist;
+                Vector2 tentativeCenter = tentativePos + boxCollider.offset;
+
+                Vector2 leadingEdge = tentativeCenter + moveDir * extentTangent;
+                float floorCheckDist = extentNormal + Mathf.Max(0.25f, data.skinWidth * 8f);
+
+                RaycastHit2D floorCheck = Physics2D.Raycast(leadingEdge, -currentNormal, floorCheckDist, data.groundLayer);
+
+                if (floorCheck.collider != null && Vector2.Dot(SnapToCardinal(floorCheck.normal), currentNormal) > 0.6f)
+                {
+                    position = tentativePos;
+                    remainingMove = 0f;
                 }
                 else
                 {
-                    position += surfaceTangent * deltaMovement.x;
+                    float probeDepth = Mathf.Min(0.2f, extentNormal * 0.5f);
+                    Vector2 probeOrigin = leadingEdge - currentNormal * (extentNormal + probeDepth);
+                    float probeDist = extentTangent + stepDist + 0.6f;
+
+                    RaycastHit2D wallHit = Physics2D.Raycast(probeOrigin, -moveDir, probeDist, data.groundLayer);
+
+                    if (wallHit.collider != null && Vector2.Dot(SnapToCardinal(wallHit.normal), moveDir) > 0.5f)
+                    {
+                        Vector2 newNormal = SnapToCardinal(wallHit.normal);
+
+                        RaycastHit2D safeFloorHit = Physics2D.Raycast(currentCenter - moveDir * (extentTangent * 0.5f), -currentNormal, floorCheckDist, data.groundLayer);
+
+                        float cornerAlongNormal;
+                        if (safeFloorHit.collider != null)
+                        {
+                            cornerAlongNormal = Vector2.Dot(safeFloorHit.point, currentNormal);
+                        }
+                        else
+                        {
+                            cornerAlongNormal = Vector2.Dot(currentCenter - currentNormal * extentNormal, currentNormal);
+                        }
+
+                        float cornerAlongWall = Vector2.Dot(wallHit.point, newNormal);
+                        Vector2 cornerPoint = currentNormal * cornerAlongNormal + newNormal * cornerAlongWall;
+
+                        float distToCorner = Vector2.Dot(cornerPoint - currentCenter, moveDir);
+
+                        if (distToCorner > stepDist)
+                        {
+                            position += moveDir * stepDist;
+                            remainingMove = 0f;
+                        }
+                        else
+                        {
+                            float distOnOldSurface = Mathf.Max(0f, distToCorner);
+                            float pastCornerDist = stepDist - distOnOldSurface;
+
+                            Vector2 newTangent = new Vector2(newNormal.y, -newNormal.x);
+                            Vector2 newMoveDir = newTangent * moveSign;
+
+                            float newExtentNormal = GetColliderExtent(-newNormal);
+                            float newExtentTangent = GetColliderExtent(newMoveDir);
+
+                            Vector2 targetCenter = cornerPoint 
+                                + newNormal * (newExtentNormal + data.skinWidth) 
+                                + newMoveDir * (newExtentTangent + pastCornerDist);
+
+                            position = targetCenter - boxCollider.offset;
+
+                            TargetSurfaceNormal = newNormal;
+                            CurrentSurfaceNormal = newNormal;
+                            IsGrounded = true;
+                            remainingMove = 0f;
+                        }
+                    }
+                    else
+                    {
+                        position += moveDir * stepDist;
+                        remainingMove = 0f;
+                    }
                 }
             }
 
-            // 2. HAFTUNG ZUR FLÄCHE
-            castOrigin = position + boxCollider.offset;
-            float snapDist = data.skinWidth * 3f;
-            Vector2 surfaceSnapDir = -surfaceNormal;
+            // 3. HAFTUNG ZUR FLÄCHE (Surface Snap)
+            Vector2 finalNormal = SnapToCardinal(CurrentSurfaceNormal);
+            Vector2 snapDir = -finalNormal;
+            Vector2 snapOrigin = position + boxCollider.offset;
+            float snapDist = Mathf.Max(0.18f, data.skinWidth * 8f);
 
             int groundHits = Physics2D.BoxCast(
-                castOrigin,
+                snapOrigin,
                 boxSize,
                 0f,
-                surfaceSnapDir,
+                snapDir,
                 contactFilter,
                 hitBuffer,
                 snapDist
@@ -2567,51 +2931,101 @@ public class PlatformerSlimeController : MonoBehaviour
 
             if (groundHits > 0)
             {
-                RaycastHit2D hit = hitBuffer[0];
-                float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                position += surfaceSnapDir * actualDist;
-                IsGrounded = true;
-                TargetSurfaceNormal = hit.normal;
+                int bestIndex = -1;
+                for (int i = 0; i < groundHits; i++)
+                {
+                    if (hitBuffer[i].distance > 0.0001f && Vector2.Dot(SnapToCardinal(hitBuffer[i].normal), finalNormal) > 0.7f)
+                    {
+                        bestIndex = i;
+                        break;
+                    }
+                }
+
+                if (bestIndex >= 0)
+                {
+                    RaycastHit2D bestGroundHit = hitBuffer[bestIndex];
+                    float actualSnapDist = Mathf.Max(0f, bestGroundHit.distance - data.skinWidth);
+                    position += snapDir * actualSnapDist;
+
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
+                else
+                {
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
             }
             else
             {
-                IsGrounded = false;
+                RaycastHit2D centerGroundHit = Physics2D.Raycast(snapOrigin, snapDir, GetColliderExtent(snapDir) + snapDist, data.groundLayer);
+                if (centerGroundHit.collider != null && Vector2.Dot(SnapToCardinal(centerGroundHit.normal), finalNormal) > 0.7f)
+                {
+                    float dist = Mathf.Max(0f, centerGroundHit.distance - GetColliderExtent(snapDir) - data.skinWidth);
+                    position += snapDir * dist;
+                    IsGrounded = true;
+                    TargetSurfaceNormal = finalNormal;
+                    CurrentSurfaceNormal = finalNormal;
+                }
+                else
+                {
+                    IsGrounded = false;
+                }
             }
         }
         else
         {
-            // --- FLUG-MODUS ---
+            // --- FLUG-MODUS (Airborne) ---
 
             // Y-Achse
+            Vector2 castOriginY = position + boxCollider.offset;
             if (Mathf.Abs(deltaMovement.y) > 0.0001f)
             {
                 float yDist = Mathf.Abs(deltaMovement.y) + data.skinWidth;
                 float yDir = Mathf.Sign(deltaMovement.y);
+                Vector2 moveDirY = Vector2.up * yDir;
 
                 int yHits = Physics2D.BoxCast(
-                    castOrigin,
+                    castOriginY,
                     boxSize,
                     0f,
-                    Vector2.up * yDir,
+                    moveDirY,
                     contactFilter,
                     hitBuffer,
                     yDist
                 );
 
-                if (yHits > 0)
+                int validHitIndex = -1;
+                for (int i = 0; i < yHits; i++)
                 {
-                    RaycastHit2D hit = hitBuffer[0];
+                    if (Vector2.Dot(hitBuffer[i].normal, moveDirY) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                    {
+                        validHitIndex = i;
+                        break;
+                    }
+                }
+
+                if (validHitIndex >= 0)
+                {
+                    RaycastHit2D hit = hitBuffer[validHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position.y += yDir * actualDist;
 
-                    // Anheften nur erlauben, wenn der Detach-Cooldown abgelaufen ist
-                    if (CanAttach())
+                    Vector2 snappedNormal = SnapToCardinal(hit.normal);
+
+                    if (CanAttachTo(snappedNormal))
                     {
-                        TargetSurfaceNormal = hit.normal;
-                        CurrentSurfaceNormal = hit.normal;
+                        TargetSurfaceNormal = snappedNormal;
+                        CurrentSurfaceNormal = snappedNormal;
                         Velocity = Vector2.zero;
                         IsGrounded = true;
                         StateMachine.ChangeState(GroundedState);
+                    }
+                    else
+                    {
+                        Velocity = new Vector2(Velocity.x, 0f);
                     }
                 }
                 else
@@ -2621,33 +3035,46 @@ public class PlatformerSlimeController : MonoBehaviour
             }
 
             // X-Achse
-            castOrigin = position + boxCollider.offset;
+            Vector2 castOriginX = position + boxCollider.offset;
             if (Mathf.Abs(deltaMovement.x) > 0.0001f)
             {
                 float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
                 float xDir = Mathf.Sign(deltaMovement.x);
+                Vector2 moveDirX = Vector2.right * xDir;
 
                 int xHits = Physics2D.BoxCast(
-                    castOrigin,
+                    castOriginX,
                     boxSize,
                     0f,
-                    Vector2.right * xDir,
+                    moveDirX,
                     contactFilter,
                     hitBuffer,
                     xDist
                 );
 
-                if (xHits > 0)
+                int validHitIndex = -1;
+                for (int i = 0; i < xHits; i++)
                 {
-                    RaycastHit2D hit = hitBuffer[0];
+                    if (Vector2.Dot(hitBuffer[i].normal, moveDirX) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                    {
+                        validHitIndex = i;
+                        break;
+                    }
+                }
+
+                if (validHitIndex >= 0)
+                {
+                    RaycastHit2D hit = hitBuffer[validHitIndex];
                     float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
                     position.x += xDir * actualDist;
 
-                    if (CanAttach())
+                    Vector2 snappedNormal = SnapToCardinal(hit.normal);
+
+                    if (CanAttachTo(snappedNormal))
                     {
                         HitWall = true;
-                        TargetSurfaceNormal = hit.normal;
-                        CurrentSurfaceNormal = hit.normal;
+                        TargetSurfaceNormal = snappedNormal;
+                        CurrentSurfaceNormal = snappedNormal;
                         Velocity = Vector2.zero;
                         IsGrounded = true;
                         StateMachine.ChangeState(GroundedState);
@@ -2767,11 +3194,109 @@ public class PlatformerStateMachine
 </file>
 
 <file path="PROJEKT_KONTEXT.md">
-Projekt-Kontext: Slimily1. High-Level Spielkonzept & GenreGenre: Hybrid aus rundenbasiertem Makro-Dungeon-Builder (Grid/Inventar) und kinetischem 2D-Mikro-Platformer.Kern-Gameplay-Loop:Makro-Ebene: Aus dem Inventar Tetris-/Polyomino-förmige Raum-Shapes auf einem Raster platzieren, Pfade erschaffen und Rundenzüge verwalten, während ein Boss gegnerische Züge ausführt.Mikro-Ebene: In Echtzeit mit dem Slime-Charakter durch die platzierten Räume navigieren, Hindernisse überwinden und Türen/Ausgänge erreichen.2. Architektur & System-AufteilungMakro-Ebene (Grid / Planung / Runden)GameManager: Zentraler State-Machine-Verwalter (GameState: u. a. Inventory, Placement, FreeRoam, EnemyTurn).GridManager & GridCell: Verwaltet das globale Daten-Raster, Zellzustände (Empty, Occupied, Blocked, Built) und Baufähigkeitsregeln.PlacementManager: Handhabt das Auswählen, Rotieren (Rechtsklick), Vorschau-Rendern und finale Platzieren von ShapeData-Strukturen auf dem Grid inklusive Rundenlimit pro Zug.InventoryManager: Verwaltet verfügbare Shapes im Deck/Inventar und sorgt für Nachschub.MacroGridManager: Koppelt logische Grid-Koordinaten mit physischen Platformer-Raum-Instanzen (RegisterRoom, UpdateActiveRooms).EventManager: Steuert die Rundenabfolge (Spielerzug abschließen, Gegner-/Bosszug initiieren, Reset der Platzierungslimits).BossController: Führt in der Gegnerphase autonome Raster-Aktionen und Bewegungen in Richtung des Makro-Slime-Markers durch.Mikro-Ebene (Platformer / Bewegung)PlatformerSlimeController: Zentrale Steuerungseinheit des spielbaren Slimes im 2D-Platformer.Verwendet ein modulares State-Machine-Pattern (PlatformerStateMachine, PlatformerSlimeState).Setzt auf deterministische, kinematisierte Logik mit Kontaktpunkt- und Raycast-Abfragen (Col.GetContacts, Physics-Raycasts), um Unberechenbarkeiten der reinen Unity-Rigidbody-Standardphysik zu umgehen.Ermittelt dynamisch die Oberflächennormale (SurfaceNormal) und die korrespondierende Bewegungstangente (SurfaceTangent) zur Ausrichtung des Slimes im Raum.States:PlatformerGroundedState: Bewegung entlang der Wandoberfläche via Tangente, Andruckhaftung an der Fläche und Ausrichtung der Rotation (AlignToNormal).PlatformerAirborneState: Standard-Luftphase mit Schwerkrafteinfluss, sanfter Rückdrehung zur Welt-Vertikalen und Flächenerkennung zur Landung.PlatformerPhysicsData: ScriptableObject zur Kapselung aller physischen Tuning-Parameter (Geschwindigkeiten, Sprungkräfte, Check-Distanzen, Layer-Masks).Brücke / Transition (Makro $\leftrightarrow$ Mikro)Umschaltung zwischen Makro-Ansicht (Karten-Übersicht) und Mikro-Ansicht (Slime-Platformer) über dedizierte Kameras (MacroCamera vs. Raum-/Slime-Kamera).Input-Filterung je nach aktuellem GameState (keine Doppelbelegung von Platformer-Sprung und Makro-Rundenabschluss).Physische Position des Slimes im Platformer aktualisiert synchron die logische Position auf dem Makro-Raster (MacroSlimeMarker).3. Bereits gelöste / Etablierte MechanikenState-Handling: Robuste Zustandstrennung zwischen Rundenbau, Platzierung und Platformer-Bewegung.Input-Entkopplung: Klare Trennung der Steuerung (z. B. Leertaste für Platformer-Sprung, dedizierte Tasten für Makro-Aktionen).Makro-Raum-Generierung: Validierte Platzierung von Shapes an angrenzende Räume inklusive Registrierung im MacroGridManager.Kamera- & Raum-Initialisierung: Zuverlässiger Fokus- und Übergangswechsel beim Betreten der Platformer-Ebene.4. Offene Baustellen & Nächste SchritteVerfeinerung der Slime-Physik (Kinematic Movement):Robustes, zitterfreies 360°-Anhaften an senkrechten Wänden und Decken ohne Abrutschen.Sauberes Überwinden von 90°-Innen- und Außenkanten beim Laufen entlang von Flächen.Wand- und Deckensprünge relativ zur aktuellen Flächennormale (SurfaceNormal).Feinabstimmung der PlatformerPhysicsData-Werte für ein direktes, responsives Spielgefühl.
-</file>
+# Projekt-Kontext: Slimily
 
-<file path="PROJEKT_KONTEXT.md.txt">
+## 1. High-Level Spielkonzept & Genre
+- **Genre:** Hybrid aus rundenbasiertem Makro-Dungeon-Builder (Grid/Deck) und kinetischem 2D-Mikro-Platformer ohne Kampfsystem (reines Geschicklichkeits-, Timing- und Movement-Gameplay).
+- **Kern-Gameplay-Loop:**
+  * **Makro-Ebene:** Aus dem Inventar Polyomino-/Tetris-förmige Raum-Shapes auf einem Raster platzieren, Pfade erschaffen und Rundenzüge verwalten, während ein Boss gegnerische Züge auf dem Grid ausführt.
+  * **Mikro-Ebene:** In Echtzeit mit dem Slime-Charakter durch die platzierten Räume navigieren, Hindernisse überwinden und Türen/Ausgänge (z. B. Nordtür) erreichen.
 
+---
+
+## 2. Architektur & System-Aufteilung
+
+### Makro-Ebene (Grid / Planung / Runden)
+- **GameManager:** Zentraler State-Machine-Verwalter (`GameState`: u. a. `Placement`, `FreeRoam`, `EnemyTurn` und neu geplant: `MapView`).
+- **GridManager & GridCell:** Verwaltet das globale Daten-Raster, Zellzustände (`Empty`, `Occupied`, `Blocked`, `Built`) und Baufähigkeitsregeln.
+- **PlacementManager:** Handhabt das Auswählen, Rotieren, Vorschau-Rendern und finale Platzieren von `ShapeData`-Strukturen auf dem Grid inklusive Rundenlimit pro Zug.
+- **InventoryManager:** Verwaltet verfügbare Shapes im Deck/Inventar und sorgt für Nachschub.
+- **MacroGridManager:** Koppelt logische Grid-Koordinaten mit physischen Platformer-Raum-Instanzen (`RegisterRoom`, `UpdateActiveRooms`).
+- **EventManager:** Steuert die Rundenabfolge (Spielerzug abschließen, Gegner-/Bosszug initiieren, Reset der Platzierungslimits).
+- **BossController:** Führt in der Gegnerphase autonome Raster-Aktionen und Bewegungen in Richtung des Makro-Slime-Markers durch.
+
+### Mikro-Ebene (Platformer / Bewegung & Input)
+- **PlatformerSlimeController:** Zentrale Steuerungseinheit des spielbaren Slimes im 2D-Platformer.
+  * Arbeitet mit modularem State-Machine-Pattern (`PlatformerStateMachine`, `PlatformerSlimeState`).
+  * Deterministische, vollständig kinematisierte Auflösung via `BoxCast` und `Raycast` (Unity-Rigidbody auf `Kinematic` / `FreezeRotation`).
+  * Dynamische Berechnung von Oberflächennormalen und zyklischen Bewegungstangenten (`Vector2(normal.y, -normal.x)`) für unterbrechungsfreie 360°-Navigation im/gegen den Uhrzeigersinn.
+  * **Kardinales Normalen-Snapping (`SnapToCardinal`):** Rundet gemessene Treffernormalen hart auf Himmelsrichtungen ab, um Sprite-Unregelmäßigkeiten und Kanten-Dellen von Tilemaps auszugleichen.
+  * **Lookahead- & Prioritätsprüfung:** Frontale Wände/Decken (Innenecken) besitzen strikte Priorität vor Außenecken, um Fehlausrichtungen bei engen Eckenfolgen (z. B. U-Shapes) auszuschließen.
+  * **Zentralisierter Hybrid-Input (Unity New Input System):**
+    * Parallele Unterstützung von Tastatur und Gamepad (PS5 DualSense / `Gamepad.current`).
+    * **Radial Deadzone & Achsen-Snapping:** Filtert Schräglauf-Rauschen am Analogstick heraus, um versehentliche Richtungsabbrüche an Ecken zu verhindern; D-Pad und Stick arbeiten additiv/priorisierend.
+- **States:**
+  * **PlatformerGroundedState:** Kontinuierliche Bewegung entlang von Boden, Wänden und Decke. Enthält **Sticky Momentum**, **Corner-Wrapping** um $90^\circ$-Innen- und $270^\circ$-Außenwinkel.
+  * **PlatformerAirborneState:** Ballistische Flugphase mit Schwerkrafteinfluss, Carry-Over-Speed bei Landung/Absprung und selektivem Flächen-Snapping.
+- **PlatformerPhysicsData:** ScriptableObject zur Kapselung physischer Tuning-Parameter (Geschwindigkeiten, Sprungkräfte, Check-Distanzen, Skin-Breite, Hold-Timer).
+
+### Brücke / Transition (Makro $\leftrightarrow$ Mikro)
+- **Kamera-Wechsel:** Dynamische Umschaltung zwischen Makro-Ansicht (Karten-Übersicht) und Mikro-Ansicht (Slime-Platformer) über dedizierte Kameras (MacroCamera vs. Raum-/Slime-Kamera).
+- **Zwei Makro-Modi auf selbem Grid:**
+  1. **Schnelle Kartenansicht (`MapView`):** Reine Orientierungsübersicht (Position Slime, Boss, offene Türen) ohne Bau-Interaktion, dezent abgedunkelt.
+  2. **Baumodus (`Placement`):** Vollständiger Editor mit Handkarten, Shape-Rotation und Platzierung.
+- **Positions-Synchronisation:** Physische Slime-Position aktualisiert synchron den logischen Marker auf dem Makro-Raster (`MacroSlimeMarker`).
+
+---
+
+## 3. Bereits gelöste / Etablierte Mechaniken
+
+- **Robuste 360°-Oberflächen-Physik:** Zitterfreies Klettern an Wänden und Decken ohne Abrutschen.
+- **Nahtlose Ecken-Navigation:** Automatisches Umlaufen von $90^\circ$-Innen- und $270^\circ$-Außenkanten mit mathematischer Scheitelpunkt-Berechnung.
+- **Sticky-Momentum-System:** Komplettes Umrunden geschlossener Geometrien mit einer einzigen gehaltenen Richtungseingabe.
+- **PS5 Controller-Support:**
+  * Vollständig eingebunden über Unitys New Input System.
+  * Stick-Deadzone ($0.2f$) und D-Pad-Präzision.
+- **Abgesichertes Decken-Lösen (Hold-Timer & Strict Angle):**
+  * Verhindert versehentliches Abreißen bei Seitwärtsbewegungen.
+  * Erfordert bewusstes Halten des Sticks strikt nach unten ($Y \le -0.8f$, $\vert{}X\vert{} \le 0.25f$) über eine im ScriptableObject konfigurierbare Zeit (`ceilingDetachHoldDuration`, ca. $0.25\text{ s}$).
+- **Flächen-relatives Springen & Lösen:**
+  * Regulärer Sprung am Boden, Wandabsprung schräg nach außen/oben, Deckenabstoß nach unten.
+  * **Richtungsabhängige Absprung-Sperre (`CanAttachTo`):** Verhindert Re-Sticking an der Absprungfläche, erlaubt aber sofortiges Anhaften an Decken oder Nachbarwänden.
+- **Responsives Jump-Buffering:** Pufferzeitfenster für Absprünge kurz vor Bodenkontakt.
+- **Saubere Projekt-Basis:** `.gitignore` für Unity bereinigt und Caches ausgeschlossen.
+
+---
+
+## 4. Geplantes Controller-Tastenlayout (PS5 DualSense)
+
+### Mikro-Ebene (Slime Platformer)
+- **Linker Stick / D-Pad:** $360^\circ$-Movement entlang aller Flächen.
+- **Linker Stick strikt nach unten (Hold-Timer):** Decken-Dropdown / Fallenlassen.
+- **$\times$ (Cross):** Sprung / Wandabsprung / Deckenabstoß (später: Halten in der Luft = Schweben / Glide).
+- **R2 oder $\square$ (geplant):** Dash (kurzer Tap) / Sprint (Halten) nach Silksong-Prinzip.
+- **Touchpad:** Schnelle Kartenansicht toggeln / halten (`MapView`).
+- **$\triangle$ (Halten / Meditieren):** Wechsel in den Makro-Baumodus (`Placement`).
+- **R3 (Stick-Klick):** Spielerzug direkt aus dem Platformer beenden (schaltet Kamera hoch auf Makro, friert Slime ein, lässt Boss ziehen).
+
+### Makro-Ebene (Grid-Baumodus & Map)
+- **Linker Stick / D-Pad:** Virtueller Raster-Cursor von Zelle zu Zelle.
+- **L1 / R1:** Aktives Raum-Shape im Uhrzeigersinn / gegen den Uhrzeigersinn rotieren.
+- **$\times$ (Cross):** Shape auf Raster platzieren.
+- **L2 / R2 (oder D-Pad):** Durch Handkarten/Deck blättern.
+- **$\triangle$ oder R3:** Spielerzug beenden $\rightarrow$ Gegnerphase/Bosszug starten.
+- **$\bigcirc$ (Kreis) oder $\triangle$ (Tap):** Zurück zum Slime (Mikro-Ebene).
+
+---
+
+## 5. Offene Baustellen & Nächste Schritte
+
+1. **Perspektiven- & Zustandswechsel (Fokus als Nächstes):**
+   * Saubere State-Trennung im `GameManager` (`MapView` vs. `Placement` vs. `FreeRoam`).
+   * Implementierung des „Meditieren“-Hold-Timers auf $\triangle$ zum Betreten des Baumodus.
+   * Einbindung des Touchpads für die reine Orientierungs-Karte (ohne Bau-Interaktion).
+   * R3-Kopplung für schnelles „Zug beenden“ mit automatischer Kamerafahrt zum Boss.
+2. **Controller-Navigation auf dem Makro-Grid:**
+   * Entkopplung des PlacementManagers von der PC-Maus hin zum zellbasierten Gamepad-Cursor.
+   * Rotation über Schultertasten (L1/R1).
+3. **Terrain-Spezifikationen & Kletterrouten:**
+   * Non-Stick- / Slippery-Surfaces (Eis/Metall), an denen der Slime nicht haften kann.
+4. **Gefahren- & Respawn-System:**
+   * Hazards (Stacheln, Säure) mit unmittelbarem Reset an den Raum-Spawn.
+5. **Erweiterte Mobilität:**
+   * Dash / Sprint auf R2, Schweben/Aufblähen auf $\times$.
+6. **Visuelles Feedback & UI-Polish:**
+   * 9-Sliced Panels, dezente Farben und universelles Grid-Feedback (Hologramm-/Blueprint-Look).
 </file>
 
 <file path="repomix.config.json">
