@@ -42,7 +42,7 @@ public class GameManager : MonoBehaviour
 
     [Header("Transition Settings")]
     [Tooltip("Dauer in Sekunden, die Dreieck gehalten werden muss, um in den Baumodus zu wechseln.")]
-    [SerializeField] private float buildModeHoldDuration = 0.45f;
+    [SerializeField] private float buildModeHoldDuration = 0.85f;
     [Tooltip("Dauer des Kamera-Zooms zwischen Slime und Übersicht in Sekunden.")]
     [SerializeField] private float cameraTransitionDuration = 0.35f;
 
@@ -50,7 +50,7 @@ public class GameManager : MonoBehaviour
     private Vector2 cachedSlimeVelocity;
     private Coroutine activeCameraTransition;
 
-    // Zielwerte der Makro-Kamera für die Übersicht
+    // Lokale Zielwerte der Makro-Kamera für die Übersicht
     private Vector3 macroOverviewPosition;
     private float macroOverviewSize;
 
@@ -58,7 +58,10 @@ public class GameManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
+        if (Instance == null)
+        {
+            Instance = this;
+        }
         else
         {
             Destroy(gameObject);
@@ -88,14 +91,18 @@ public class GameManager : MonoBehaviour
         currentLevelConfig = config;
 
         if (GridManager.Instance != null)
+        {
             GridManager.Instance.Initialize(config);
+        }
 
         if (MacroGridManager.Instance != null)
         {
             MacroGridManager.Instance.Initialize(config);
 
             if (slimeController != null)
+            {
                 MacroGridManager.Instance.PlaceSlimeInRoom(config.startCoordinate, slimeController.transform);
+            }
         }
 
         CalculateMacroOverviewParameters(config);
@@ -104,12 +111,14 @@ public class GameManager : MonoBehaviour
     private void CalculateMacroOverviewParameters(LevelConfiguration config)
     {
         if (macroCamera == null)
+        {
             macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
+        }
 
         float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
         float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
 
-        // Rein lokale Koordinaten relativ zum Macro_Grid Parent
+        // Lokale Koordinaten relativ zum Macro_Grid-Parent
         macroOverviewPosition = new Vector3(centerX, centerY, -10f);
         macroOverviewSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
 
@@ -127,7 +136,6 @@ public class GameManager : MonoBehaviour
 
     private void HandleTransitionInputs()
     {
-        // Während einer laufenden Kamera-Animation keine neuen Umschaltungen annehmen
         if (activeCameraTransition != null) return;
 
         var gamepad = Gamepad.current;
@@ -147,38 +155,65 @@ public class GameManager : MonoBehaviour
             return;
         }
 
+        // Touchpad-Erkennung (DualSense) oder Fallback auf Select
         bool touchpadPressed = false;
         if (gamepad != null)
         {
             if (gamepad is UnityEngine.InputSystem.DualShock.DualShockGamepad dualShock)
+            {
                 touchpadPressed = dualShock.touchpadButton.wasPressedThisFrame;
+            }
             else
+            {
                 touchpadPressed = gamepad.selectButton.wasPressedThisFrame;
+            }
         }
 
         // 2. MIKRO-EBENE (FreeRoam) -> MAKRO
         if (currentState == GameState.FreeRoam)
         {
-            // Karte toggeln (Touchpad / M)
+            bool isGrounded = slimeController != null && slimeController.IsGrounded;
+            bool isStandingStill = slimeController != null && slimeController.Velocity.sqrMagnitude < 0.1f;
+
+            // Karte toggeln (Touchpad / M) – NUR WENN AUF EINER FLÄCHE
             bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
             if (mapToggle)
             {
-                UpdateHoldUI(0f);
-                ChangeState(GameState.MapView);
-                return;
+                if (isGrounded)
+                {
+                    InterruptMeditation();
+                    ChangeState(GameState.MapView);
+                    return;
+                }
+                else
+                {
+                    Debug.Log("[GameManager] Karte kann im Flug nicht geöffnet werden!");
+                }
             }
 
             // In den Baumodus meditieren: Dreieck / Taste B halten
             bool isHoldingBuild = (gamepad != null && gamepad.buttonNorth.isPressed) ||
                                   (keyboard != null && keyboard.bKey.isPressed);
 
-            if (isHoldingBuild)
+            bool canMeditate = isGrounded && isStandingStill;
+
+            if (isHoldingBuild && canMeditate)
             {
+                if (slimeController != null)
+                {
+                    slimeController.IsMeditating = true;
+                }
+
                 buildModeHoldTimer += Time.deltaTime;
                 UpdateHoldUI(BuildHoldProgress);
 
                 if (buildModeHoldTimer >= buildModeHoldDuration)
                 {
+                    if (slimeController != null)
+                    {
+                        slimeController.IsMeditating = false;
+                    }
+
                     buildModeHoldTimer = 0f;
                     UpdateHoldUI(0f);
                     ChangeState(GameState.MacroPlan);
@@ -186,10 +221,10 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                if (buildModeHoldTimer > 0f)
+                // Bei Loslassen oder Bewegung/Sprung sofort abbrechen
+                if (buildModeHoldTimer > 0f || (slimeController != null && slimeController.IsMeditating))
                 {
-                    buildModeHoldTimer = 0f;
-                    UpdateHoldUI(0f);
+                    InterruptMeditation();
                 }
             }
         }
@@ -205,6 +240,17 @@ public class GameManager : MonoBehaviour
             {
                 ChangeState(GameState.FreeRoam);
             }
+        }
+    }
+
+    public void InterruptMeditation()
+    {
+        buildModeHoldTimer = 0f;
+        UpdateHoldUI(0f);
+
+        if (slimeController != null)
+        {
+            slimeController.IsMeditating = false;
         }
     }
 
@@ -225,30 +271,50 @@ public class GameManager : MonoBehaviour
     {
         if (currentState == newState) return;
 
-        ExitState(currentState);
         GameState previous = currentState;
-        currentState = newState;
+        currentState = newState; // Erst den State setzen...
+
+        ExitState(previous);     // ...dann Exit des alten States ausführen
         EnterState(newState, previous);
     }
 
     private void EnterState(GameState state, GameState fromState)
     {
         FindReferencesIfNeeded();
+        InterruptMeditation();
 
         bool isGoingToMacro = (state == GameState.MacroPlan || state == GameState.MapView || state == GameState.EnemyTurn);
         bool comingFromMicro = (fromState == GameState.FreeRoam);
 
         if (state == GameState.FreeRoam)
         {
-            // Weicher Zoom zurück zum Slime
             SetUIActive(inventory: false);
+            if (slimeController != null) slimeController.IsViewingMap = false;
+
             if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
             activeCameraTransition = StartCoroutine(TransitionToMicroRoutine());
         }
         else if (isGoingToMacro && comingFromMicro)
         {
-            // Slime sofort stoppen und weich ins Makro herauszoomen
-            SetSlimeActive(false);
+            if (state == GameState.MapView)
+            {
+                // Karte: Slime bleibt physikalisch in der Welt, aber Steuerung gesperrt
+                if (slimeController != null)
+                {
+                    slimeController.enabled = true;
+                    slimeController.IsViewingMap = true;
+                }
+                if (slimeRigidbody != null)
+                {
+                    slimeRigidbody.simulated = true;
+                }
+            }
+            else
+            {
+                // Baumodus (MacroPlan): Slime komplett einfrieren
+                SetSlimeActive(false);
+            }
+
             bool showInventory = (state == GameState.MacroPlan || state == GameState.Placement);
 
             if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
@@ -256,28 +322,56 @@ public class GameManager : MonoBehaviour
         }
         else
         {
-            // Direkter Wechsel zwischen zwei Makro-Zuständen (z.B. MapView <-> MacroPlan)
+            // Direkter Wechsel zwischen zwei Makro-Zuständen (z. B. MapView <-> MacroPlan)
             SetCameraActive(macro: true, micro: false);
-            SetSlimeActive(false);
+
+            if (state == GameState.MapView)
+            {
+                if (slimeController != null)
+                {
+                    slimeController.enabled = true;
+                    slimeController.IsViewingMap = true;
+                }
+                if (slimeRigidbody != null)
+                {
+                    slimeRigidbody.simulated = true;
+                }
+            }
+            else
+            {
+                SetSlimeActive(false);
+            }
+
             SetUIActive(inventory: (state == GameState.MacroPlan || state == GameState.Placement));
 
             if (state == GameState.MacroPlan && inventoryManager != null)
+            {
                 inventoryManager.ResetSelection();
+            }
         }
     }
 
     private void ExitState(GameState oldState)
     {
-        if (oldState == GameState.Placement)
+        if (oldState == GameState.MapView)
+        {
+            if (slimeController != null)
+            {
+                slimeController.IsViewingMap = false;
+            }
+        }
+        else if (oldState == GameState.Placement)
         {
             PlacementManager placementMgr = FindAnyObjectByType<PlacementManager>();
-            if (placementMgr != null) placementMgr.CancelSelection();
+            if (placementMgr != null)
+            {
+                placementMgr.ClearSelection(); // Ruft nur noch ClearSelection auf!
+            }
         }
     }
 
     private IEnumerator TransitionToMacroRoutine(bool showInventory)
     {
-        // 1. Lokale Position des Slime-Markers relativ zum Grid als Startpunkt
         Vector3 startLocalPos = macroOverviewPosition;
         if (MacroSlimeMarker.Instance != null)
         {
@@ -296,7 +390,6 @@ public class GameManager : MonoBehaviour
         SetCameraActive(macro: true, micro: false);
         SetUIActive(inventory: false);
 
-        // 2. Weich auf das Gesamtraster herauszoomen
         float elapsed = 0f;
         while (elapsed < cameraTransitionDuration)
         {
@@ -339,7 +432,6 @@ public class GameManager : MonoBehaviour
         Vector3 startLocalPos = (macroCamera != null) ? macroCamera.transform.localPosition : macroOverviewPosition;
         float startSize = (macroCamera != null) ? macroCamera.orthographicSize : macroOverviewSize;
 
-        // 1. Hineinzoomen auf den Slime-Marker
         float elapsed = 0f;
         while (elapsed < cameraTransitionDuration)
         {
@@ -354,7 +446,6 @@ public class GameManager : MonoBehaviour
             yield return null;
         }
 
-        // 2. An die Micro-Kamera übergeben & Slime aktivieren
         SetCameraActive(macro: false, micro: true);
         SetSlimeActive(true);
 
@@ -402,7 +493,9 @@ public class GameManager : MonoBehaviour
     private void FindReferencesIfNeeded()
     {
         if (macroCamera == null)
+        {
             macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
+        }
 
         if (mainCamera == null)
         {
@@ -412,9 +505,13 @@ public class GameManager : MonoBehaviour
         }
 
         if (slimeController == null)
+        {
             slimeController = FindAnyObjectByType<PlatformerSlimeController>();
+        }
 
         if (slimeRigidbody == null && slimeController != null)
+        {
             slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
+        }
     }
 }

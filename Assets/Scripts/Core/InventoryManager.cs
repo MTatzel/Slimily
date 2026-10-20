@@ -20,7 +20,11 @@ public class InventoryManager : MonoBehaviour
     private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
     private int currentSelectedIndex = 0;
 
-   void Awake()
+    // Timer gegen zu schnelles Durchrutschen der Slots mit dem Stick
+    [SerializeField] private float navRepeatDelay = 0.18f;
+    private float navRepeatTimer = 0f;
+
+    void Awake()
     {
         InitializeSlotPreviews();
 
@@ -32,8 +36,15 @@ public class InventoryManager : MonoBehaviour
 
     void Start()
     {
+        FindReferencesIfNeeded();
         RefreshAllPreviews();
         UpdateCursorPosition();
+    }
+
+    private void FindReferencesIfNeeded()
+    {
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
     }
 
     public void InitializeSlotPreviews()
@@ -50,7 +61,6 @@ public class InventoryManager : MonoBehaviour
                 preview = uiSlotTransforms[i].gameObject.AddComponent<ShapePreviewUI>();
             }
 
-            // Garantiert immer zuweisen, auch wenn die Komponente schon im Editor existierte:
             preview.uiBlockPrefab = uiBlockPrefab;
             preview.container = uiSlotTransforms[i];
             slotPreviews[i] = preview;
@@ -60,27 +70,60 @@ public class InventoryManager : MonoBehaviour
     void Update()
     {
         if (gameManager == null || gameManager.currentState != GameState.MacroPlan) return;
-        if (Keyboard.current == null) return;
 
-        if (Keyboard.current.aKey.wasPressedThisFrame || Keyboard.current.leftArrowKey.wasPressedThisFrame)
+        var gamepad = Gamepad.current;
+        var keyboard = Keyboard.current;
+
+        // 1. DURCH DIE SLOTS BLÄTTERN (D-Pad / Stick oder A/D / Pfeiltasten)
+        int moveDir = 0;
+
+        if (gamepad != null)
         {
-            if (currentSelectedIndex > 0)
-            {
-                currentSelectedIndex--;
-                UpdateSelection();
-            }
+            Vector2 dpad = gamepad.dpad.ReadValue();
+            Vector2 stick = gamepad.leftStick.ReadValue();
+
+            if (dpad.x < -0.5f || stick.x < -0.55f) moveDir = -1;
+            else if (dpad.x > 0.5f || stick.x > 0.55f) moveDir = 1;
         }
 
-        if (Keyboard.current.dKey.wasPressedThisFrame || Keyboard.current.rightArrowKey.wasPressedThisFrame)
+        if (keyboard != null && moveDir == 0)
         {
-            if (currentSelectedIndex < hotbarSlots.Length - 1)
-            {
-                currentSelectedIndex++;
-                UpdateSelection();
-            }
+            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) moveDir = -1;
+            else if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) moveDir = 1;
         }
 
-        if (Keyboard.current.enterKey.wasPressedThisFrame || Keyboard.current.numpadEnterKey.wasPressedThisFrame)
+        if (moveDir != 0)
+        {
+            if (navRepeatTimer <= 0f)
+            {
+                if (moveDir < 0 && currentSelectedIndex > 0)
+                {
+                    currentSelectedIndex--;
+                    UpdateSelection();
+                }
+                else if (moveDir > 0 && currentSelectedIndex < hotbarSlots.Length - 1)
+                {
+                    currentSelectedIndex++;
+                    UpdateSelection();
+                }
+
+                navRepeatTimer = navRepeatDelay;
+            }
+            else
+            {
+                navRepeatTimer -= Time.deltaTime;
+            }
+        }
+        else
+        {
+            navRepeatTimer = 0f;
+        }
+
+        // 2. FORM AUSWÄHLEN (X auf Controller, Enter oder Leertaste)
+        bool selectPressed = (gamepad != null && gamepad.buttonSouth.wasPressedThisFrame) ||
+                             (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame));
+
+        if (selectPressed)
         {
             TrySelectCurrentSlot();
         }
@@ -120,7 +163,7 @@ public class InventoryManager : MonoBehaviour
         UpdateCenterPreview();
     }
 
-   void UpdateCenterPreview()
+    void UpdateCenterPreview()
     {
         if (centerPreview == null || !centerPreview.gameObject.activeInHierarchy) return;
 
@@ -136,6 +179,11 @@ public class InventoryManager : MonoBehaviour
 
     void TrySelectCurrentSlot()
     {
+        if (placementManager == null)
+        {
+            placementManager = FindAnyObjectByType<PlacementManager>();
+        }
+
         if (placementManager != null && !placementManager.CanPlaceMoreThisTurn())
         {
             Debug.Log("Maximale Platzierungen für diesen Zug erreicht!");
@@ -144,9 +192,6 @@ public class InventoryManager : MonoBehaviour
 
         if (hotbarSlots[currentSelectedIndex] != null)
         {
-            // ALTE ZEILE (entfernen oder auskommentieren!):
-            // gameManager.inventoryScreen.SetActive(false);
-
             placementManager.SelectShape(hotbarSlots[currentSelectedIndex], currentSelectedIndex);
         }
         else

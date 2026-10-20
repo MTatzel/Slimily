@@ -30,6 +30,8 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+    // --- Meditations- & Interaktionsstatus ---
+    public bool IsViewingMap { get; set; }
 
     private float detachCooldownTimer;
     private Vector2 lastDetachedNormal = Vector2.zero;
@@ -42,6 +44,9 @@ public class PlatformerSlimeController : MonoBehaviour
     [SerializeField] private float stickDeadzone = 0.2f;
 
     public bool HasBufferedJump => jumpBufferTimer > 0f;
+
+    // --- Meditations- & Interaktionsstatus ---
+    public bool IsMeditating { get; set; }
 
     public void ConsumeJumpBuffer()
     {
@@ -214,6 +219,15 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void ReadInput()
     {
+        // Wenn meditiert wird oder die Karte offen ist: Keine Bewegungs-/Sprungeingaben
+        if (IsMeditating || IsViewingMap)
+        {
+            MoveInput = Vector2.zero;
+            jumpBufferTimer = 0f;
+            JumpHeld = false;
+            return;
+        }
+
         Vector2 input = Vector2.zero;
         bool jumpPressedThisFrame = false;
         bool jumpIsHeld = false;
@@ -653,5 +667,24 @@ public class PlatformerSlimeController : MonoBehaviour
         Gizmos.color = IsGrounded ? Color.green : Color.cyan;
         Vector2 center = (Vector2)transform.position + col.offset;
         Gizmos.DrawWireCube(center, col.size);
+    }
+
+/// <summary>
+    /// Schnittstelle für Fallen/Gegner: Bricht Meditation oder Karte sofort ab.
+    /// </summary>
+    public void TakeDamage()
+    {
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.InterruptMeditation();
+
+            // Falls die Karte offen ist: Sofort schließen und zurück zum Slime
+            if (GameManager.Instance.currentState == GameState.MapView)
+            {
+                GameManager.Instance.ChangeState(GameState.FreeRoam);
+            }
+        }
+
+        // Hier folgen später Lebenspunkte-Abzug oder Respawn
     }
 }
