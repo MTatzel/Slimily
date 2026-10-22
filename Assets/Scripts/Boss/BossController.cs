@@ -1,122 +1,134 @@
-using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
+using UnityEngine;
 
 public class BossController : BossBase
 {
-    public GridManager gridManager;
-    public GameManager gameManager;
-    public MacroSlimeMarker slime;
+    [Header("Bewegung & Raster")]
+    [SerializeField] private Vector2Int currentGridPosition;
+    [SerializeField] private float moveStepDuration = 0.3f;
 
-    // Linke untere Ecke des 2x2-Bosses auf dem Grid
-    public int originX = 35;
-    public int originY = 35;
+    [Header("Angriffs-Einstellungen")]
+    [SerializeField] private BossHazardType attackType = BossHazardType.DestroyRoom;
+    [SerializeField] private int telegraphTurns = 1;
 
-    private List<Vector2Int> occupiedOffsets = new List<Vector2Int>
+    private bool isInitialized = false;
+
+    private void Start()
     {
-        new Vector2Int(0, 0),
-        new Vector2Int(1, 0),
-        new Vector2Int(0, 1),
-        new Vector2Int(1, 1)
-    };
-
-    void Start()
-    {
-        UpdateWorldPosition();
-        OccupyGridCells(true);
+        InitializePositionIfNeeded();
     }
 
-    // Setzt die 4 Kacheln auf besetzt/unbesetzt
-    public void OccupyGridCells(bool occupy)
+    /// <summary>
+    /// Liest die Startposition aus der aktuellen Transform-Position aus
+    /// </summary>
+    public void InitializePositionIfNeeded()
     {
-        if (gridManager == null || gridManager.grid == null) return;
+        if (isInitialized) return;
 
-        foreach (var offset in occupiedOffsets)
+        float offset = 1.1f;
+        if (GridManager.Instance != null && GridManager.Instance.offset > 0.01f)
         {
-            int checkX = originX + offset.x;
-            int checkY = originY + offset.y;
-
-            if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
-            {
-                GridCell cell = gridManager.grid[checkX, checkY];
-
-                if (occupy)
-                {
-                    cell.SetBlocked();   // Setzt Zustand auf Blocked & färbt Dunkelblau
-                }
-                else
-                {
-                    cell.DestroyBlock(); // Setzt Zustand zurück auf Empty & färbt Weiß
-                }
-            }
+            offset = GridManager.Instance.offset;
         }
+
+        int startX = Mathf.RoundToInt(transform.localPosition.x / offset);
+        int startY = Mathf.RoundToInt(transform.localPosition.y / offset);
+        currentGridPosition = new Vector2Int(startX, startY);
+
+        isInitialized = true;
     }
 
-    // Zentriert das 2x2 Sprite exakt über den 4 Feldern
-    public void UpdateWorldPosition()
-    {
-        if (gridManager == null) return;
-
-        // + 0.5f sorgt dafür, dass das Sprite genau im Zentrum der 4 Felder liegt
-        float worldX = (originX + 0.5f) * gridManager.offset;
-        float worldY = (originY + 0.5f) * gridManager.offset;
-
-        transform.position = new Vector3(worldX, worldY, -2f); // -2f, damit er vor Slime und Grid rendert
-    }
-
-    // Hier läuft die Rundenlogik des Bosses ab
-    public IEnumerator ExecuteBossTurn()
-    {
-        Debug.Log("Boss beginnt seinen Zug...");
-
-        // Kurze Pause für das Spielgefühl (0.5s warten)
-        yield return new WaitForSeconds(0.5f);
-
-        // BEISPIEL-AKTION: 1 Feld in Richtung Slime rücken (falls möglich)
-        MoveTowardsSlime();
-
-        yield return new WaitForSeconds(0.3f);
-        Debug.Log("Boss hat seinen Zug beendet.");
-    }
-
-    void MoveTowardsSlime()
-    {
-        if (slime == null) return;
-
-        int stepX = 0;
-        int stepY = 0;
-
-        if (slime.currentX < originX) stepX = -1;
-        else if (slime.currentX > originX) stepX = 1;
-
-        if (slime.currentY < originY) stepY = -1;
-        else if (slime.currentY > originY) stepY = 1;
-
-        // Nur eine Achse pro Zug bewegen (z. B. primär X, sonst Y)
-        if (stepX != 0) stepY = 0;
-
-        int targetX = originX + stepX;
-        int targetY = originY + stepY;
-
-        // Prüfen, ob die 4 Zielfelder innerhalb des Grids liegen
-        if (targetX >= 0 && targetX + 1 < gridManager.width &&
-            targetY >= 0 && targetY + 1 < gridManager.height)
-        {
-            // Alte Felder freigeben
-            OccupyGridCells(false);
-
-            originX = targetX;
-            originY = targetY;
-
-            // Neue Felder blockieren & Sprite bewegen
-            OccupyGridCells(true);
-            UpdateWorldPosition();
-            Debug.Log($"Boss bewegt sich auf Position: {originX}, {originY}");
-        }
-    }
     public override IEnumerator ExecuteTurn()
     {
-        // Ruft deinen bestehenden Rundenablauf auf
-        yield return StartCoroutine(ExecuteBossTurn());
+        InitializePositionIfNeeded();
+
+        // 1. PHASE: Fällige Einschläge ausführen (rot aufblitzen, Raum zerstören/belegen)
+        yield return StartCoroutine(ResolveTelegraphsRoutine());
+
+        // 2. PHASE: Boss bewegt sich 1 Schritt in Richtung Slime
+        yield return StartCoroutine(MoveTowardsSlimeRoutine());
+
+        // 3. PHASE: Nächsten Angriff für die Folgerunde telegrafieren
+        TelegraphNextAttack();
+
+        // Kurze Pause zum Abschluss, damit das Geschehen auf der Karte gut lesbar bleibt
+        yield return new WaitForSeconds(0.4f);
+    }
+
+    private IEnumerator MoveTowardsSlimeRoutine()
+    {
+        Vector2Int targetCoord = currentGridPosition;
+
+        // Ziel ist der Raum, in dem sich der Slime gerade befindet
+        if (MacroGridManager.Instance != null)
+        {
+            targetCoord = MacroGridManager.Instance.CurrentCoordinate;
+        }
+
+        Vector2Int delta = targetCoord - currentGridPosition;
+        Vector2Int stepDirection = Vector2Int.zero;
+
+        // Schrittweise Annäherung: Achse mit der größeren Distanz bevorzugen
+        if (Mathf.Abs(delta.x) >= Mathf.Abs(delta.y))
+        {
+            if (delta.x != 0) stepDirection.x = delta.x > 0 ? 1 : -1;
+            else if (delta.y != 0) stepDirection.y = delta.y > 0 ? 1 : -1;
+        }
+        else
+        {
+            if (delta.y != 0) stepDirection.y = delta.y > 0 ? 1 : -1;
+            else if (delta.x != 0) stepDirection.x = delta.x > 0 ? 1 : -1;
+        }
+
+        if (stepDirection != Vector2Int.zero)
+        {
+            Vector2Int nextGridPos = currentGridPosition + stepDirection;
+            float offset = GridManager.Instance != null ? GridManager.Instance.offset : 1.1f;
+
+            Vector3 startWorld = transform.localPosition;
+            Vector3 targetWorld = new Vector3(nextGridPos.x * offset, nextGridPos.y * offset, startWorld.z);
+
+            float elapsed = 0f;
+            while (elapsed < moveStepDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.SmoothStep(0f, 1f, elapsed / moveStepDuration);
+                transform.localPosition = Vector3.Lerp(startWorld, targetWorld, t);
+                yield return null;
+            }
+
+            transform.localPosition = targetWorld;
+            currentGridPosition = nextGridPos;
+        }
+
+        yield return new WaitForSeconds(0.1f);
+    }
+
+    private void TelegraphNextAttack()
+    {
+        // Sucht sich als Angriffsziel das Feld direkt vor sich in Richtung Slime aus
+        Vector2Int slimeCoord = currentGridPosition;
+        if (MacroGridManager.Instance != null)
+        {
+            slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
+        }
+
+        Vector2Int diff = slimeCoord - currentGridPosition;
+        Vector2Int aimDir = Vector2Int.zero;
+
+        if (Mathf.Abs(diff.x) >= Mathf.Abs(diff.y))
+        {
+            aimDir.x = diff.x >= 0 ? 1 : -1;
+        }
+        else
+        {
+            aimDir.y = diff.y >= 0 ? 1 : -1;
+        }
+
+        Vector2Int strikeTarget = currentGridPosition + aimDir;
+
+        // Kündigt die Kachel für 1 Runde an
+        Telegraph(new List<Vector2Int> { strikeTarget }, attackType, telegraphTurns);
     }
 }
