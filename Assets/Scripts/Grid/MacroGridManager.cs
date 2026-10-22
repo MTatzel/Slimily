@@ -378,6 +378,24 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Zerstört einen Raum an der angegebenen Koordinate und entfernt ihn aus dem Grid.
+    /// Wird unter anderem bei Boss-Angriffen aufgerufen.
+    /// </summary>
+    public void RemoveRoomAt(Vector2Int coord)
+    {
+        if (grid.TryGetValue(coord, out Room roomInstance) && roomInstance != null)
+        {
+            Destroy(roomInstance.gameObject);
+        }
+
+        grid.Remove(coord);
+        roomPrefabs.Remove(coord);
+
+        // Türen der umgebenden Räume aktualisieren, damit geschlossene Wände entstehen
+        UpdateActiveRooms(currentCoordinate);
+    }
+
     public static Vector2Int DirectionToOffset(Direction dir)
     {
         return dir switch
@@ -406,7 +424,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (playerTransform != null) return;
 
-        var slime = FindFirstObjectByType<PlatformerSlimeController>();
+        var slime = FindAnyObjectByType<PlatformerSlimeController>();
         if (slime != null)
         {
             playerTransform = slime.transform;
@@ -424,7 +442,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (cinemachineCam == null)
         {
-            cinemachineCam = FindFirstObjectByType<CinemachineCamera>();
+            cinemachineCam = FindAnyObjectByType<CinemachineCamera>();
         }
 
         if (cinemachineConfiner == null && cinemachineCam != null)
@@ -440,7 +458,6 @@ public class MacroGridManager : MonoBehaviour
     {
         if (slimeTransform == null) return;
 
-        // Raum-Position holen und Slime etwas nach oben versetzen (z.B. +2.5f Einheiten über den Pivot)
         Vector3 targetPos = GetWorldPosition(coord) + new Vector3(0f, 2.5f, 0f);
         slimeTransform.position = targetPos;
 

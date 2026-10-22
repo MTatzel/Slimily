@@ -9,7 +9,7 @@ public class EventManager : MonoBehaviour
     public GameManager gameManager;
     public PlacementManager placementManager;
     public InventoryManager inventoryManager;
-    public BossController boss;
+    public BossBase boss;
 
     void Update()
     {
@@ -53,7 +53,7 @@ public class EventManager : MonoBehaviour
         // 3. Boss-Aktion ausführen
         if (boss != null)
         {
-            yield return StartCoroutine(boss.ExecuteBossTurn());
+            yield return StartCoroutine(boss.ExecuteTurn());
         }
 
         // 4. Runden-Reset

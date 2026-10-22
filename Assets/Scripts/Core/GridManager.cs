@@ -95,4 +95,38 @@ public class GridManager : MonoBehaviour
             }
         }
     }
+
+    /// <summary>
+    /// Schnittstelle für BossBase: Aktiviert das Warnsignal und färbt die Zelle ein
+    /// </summary>
+    public void HighlightCell(Vector2Int coord, Color highlightColor)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
+        if (grid == null || grid[coord.x, coord.y] == null) return;
+
+        grid[coord.x, coord.y].SetWarning(true);
+
+        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
+        if (renderer != null)
+        {
+            renderer.color = highlightColor;
+        }
+    }
+
+    /// <summary>
+    /// Schnittstelle für BossBase: Schaltet die Warnung ab und setzt die Farbe zurück
+    /// </summary>
+    public void ResetCellHighlight(Vector2Int coord)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
+        if (grid == null || grid[coord.x, coord.y] == null) return;
+
+        grid[coord.x, coord.y].SetWarning(false);
+
+        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
+        if (renderer != null)
+        {
+            renderer.color = Color.white;
+        }
+    }
 }

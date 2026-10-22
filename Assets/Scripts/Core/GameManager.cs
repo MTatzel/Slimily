@@ -22,6 +22,10 @@ public class GameManager : MonoBehaviour
     [Header("Level Konfiguration")]
     [SerializeField] private LevelConfiguration currentLevelConfig;
 
+    [Header("Encounter & Event-Referenzen")]
+    [SerializeField] private EventManager eventManager;
+    private BossBase activeBossInstance;
+
     [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
     [SerializeField] private Camera mainCamera;
@@ -55,6 +59,7 @@ public class GameManager : MonoBehaviour
     private float macroOverviewSize;
 
     public float BuildHoldProgress => Mathf.Clamp01(buildModeHoldTimer / buildModeHoldDuration);
+    public BossBase ActiveBoss => activeBossInstance;
 
     private void Awake()
     {
@@ -105,7 +110,47 @@ public class GameManager : MonoBehaviour
             }
         }
 
+        SetupLevelEncounter(config);
         CalculateMacroOverviewParameters(config);
+    }
+
+    private void SetupLevelEncounter(LevelConfiguration config)
+    {
+        // 1. Alten Boss entfernen falls vorhanden
+        if (activeBossInstance != null)
+        {
+            Destroy(activeBossInstance.gameObject);
+            activeBossInstance = null;
+        }
+
+        if (eventManager == null)
+        {
+            eventManager = FindAnyObjectByType<EventManager>();
+        }
+
+        // 2. Boss aus Config spawnen falls definiert
+        if (config != null && config.bossPrefab != null)
+        {
+            Transform spawnParent = transform.parent != null ? transform.parent : transform;
+            activeBossInstance = Instantiate(config.bossPrefab, spawnParent);
+
+            // Startposition auf dem Makro-Raster setzen
+            float posX = config.bossSpawnCoordinate.x * config.cellOffset;
+            float posY = config.bossSpawnCoordinate.y * config.cellOffset;
+            activeBossInstance.transform.localPosition = new Vector3(posX, posY, 0f);
+
+            if (eventManager != null)
+            {
+                eventManager.boss = activeBossInstance;
+            }
+        }
+        else
+        {
+            if (eventManager != null)
+            {
+                eventManager.boss = null;
+            }
+        }
     }
 
     private void CalculateMacroOverviewParameters(LevelConfiguration config)
@@ -147,10 +192,14 @@ public class GameManager : MonoBehaviour
 
         if (endTurnTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
         {
-            EventManager eventMgr = FindAnyObjectByType<EventManager>();
-            if (eventMgr != null)
+            if (eventManager == null)
             {
-                eventMgr.StartCoroutine("TurnSequenceRoutine");
+                eventManager = FindAnyObjectByType<EventManager>();
+            }
+
+            if (eventManager != null)
+            {
+                eventManager.StartCoroutine("TurnSequenceRoutine");
             }
             return;
         }
@@ -175,7 +224,7 @@ public class GameManager : MonoBehaviour
             bool isGrounded = slimeController != null && slimeController.IsGrounded;
             bool isStandingStill = slimeController != null && slimeController.Velocity.sqrMagnitude < 0.1f;
 
-            // Karte toggeln (Touchpad / M) – NUR WENN AUF EINER FLÄCHE
+            // Karte toggeln (Touchpad / M) – nur wenn auf einer Fläche
             bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
             if (mapToggle)
             {
@@ -272,9 +321,9 @@ public class GameManager : MonoBehaviour
         if (currentState == newState) return;
 
         GameState previous = currentState;
-        currentState = newState; // Erst den State setzen...
+        currentState = newState;
 
-        ExitState(previous);     // ...dann Exit des alten States ausführen
+        ExitState(previous);
         EnterState(newState, previous);
     }
 
@@ -365,7 +414,7 @@ public class GameManager : MonoBehaviour
             PlacementManager placementMgr = FindAnyObjectByType<PlacementManager>();
             if (placementMgr != null)
             {
-                placementMgr.ClearSelection(); // Ruft nur noch ClearSelection auf!
+                placementMgr.ClearSelection();
             }
         }
     }
@@ -492,6 +541,11 @@ public class GameManager : MonoBehaviour
 
     private void FindReferencesIfNeeded()
     {
+        if (eventManager == null)
+        {
+            eventManager = FindAnyObjectByType<EventManager>();
+        }
+
         if (macroCamera == null)
         {
             macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();

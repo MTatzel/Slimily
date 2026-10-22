@@ -2,7 +2,7 @@ using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 
-public class BossController : MonoBehaviour
+public class BossController : BossBase
 {
     public GridManager gridManager;
     public GameManager gameManager;
@@ -113,5 +113,10 @@ public class BossController : MonoBehaviour
             UpdateWorldPosition();
             Debug.Log($"Boss bewegt sich auf Position: {originX}, {originY}");
         }
+    }
+    public override IEnumerator ExecuteTurn()
+    {
+        // Ruft deinen bestehenden Rundenablauf auf
+        yield return StartCoroutine(ExecuteBossTurn());
     }
 }
