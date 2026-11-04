@@ -10,6 +10,8 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
+    private SpriteRenderer visualRenderer;
+    private Color defaultSpriteColor = Color.white;
     private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
 
@@ -30,8 +32,10 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+
     // --- Meditations- & Interaktionsstatus ---
     public bool IsViewingMap { get; set; }
+    public bool IsMeditating { get; set; }
 
     private float detachCooldownTimer;
     private Vector2 lastDetachedNormal = Vector2.zero;
@@ -40,13 +44,18 @@ public class PlatformerSlimeController : MonoBehaviour
     [SerializeField] private float jumpBufferDuration = 0.12f;
     private float jumpBufferTimer;
 
+    [Header("Treffer & Unverwundbarkeit (Schritt 3)")]
+    [Tooltip("Kurze Schutzzeit nach einem Treffer, damit ein Hindernis nicht mehrfach pro Sekunde Fokus abzieht")]
+    [SerializeField] private float damageInvincibilityDuration = 0.75f;
+    [Tooltip("Erlaubt das Simulieren eines Treffers über die Taste K auf der Tastatur")]
+    [SerializeField] private bool enableDebugDamageKeyK = true;
+    private float invincibilityTimer = 0f;
+
     [Header("Controller Settings")]
     [SerializeField] private float stickDeadzone = 0.2f;
 
     public bool HasBufferedJump => jumpBufferTimer > 0f;
-
-    // --- Meditations- & Interaktionsstatus ---
-    public bool IsMeditating { get; set; }
+    public bool IsInvincible => invincibilityTimer > 0f;
 
     public void ConsumeJumpBuffer()
     {
@@ -57,6 +66,19 @@ public class PlatformerSlimeController : MonoBehaviour
     {
         rb = GetComponent<Rigidbody2D>();
         boxCollider = GetComponent<BoxCollider2D>();
+
+        if (visualTransform != null)
+        {
+            visualRenderer = visualTransform.GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer == null)
+        {
+            visualRenderer = GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer != null)
+        {
+            defaultSpriteColor = visualRenderer.color;
+        }
 
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
 
@@ -74,7 +96,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void Start()
     {
-        // Ohne deprecated Parameter -> Warnung weg
         Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude);
         foreach (var tm in allTilemaps)
         {
@@ -84,8 +105,25 @@ public class PlatformerSlimeController : MonoBehaviour
         StateMachine.Initialize(AirborneState);
     }
 
+    private void OnDisable()
+    {
+        // Stellt sicher, dass der Slime beim Einfrieren (Zwangsstopp) normal sichtbar ist
+        if (visualRenderer != null)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
+    }
+
     private void Update()
     {
+        // Debug-Taste K zum jederzeitigen Testen von Treffer & Zwangsstopp
+        if (enableDebugDamageKeyK && Keyboard.current != null && Keyboard.current.kKey.wasPressedThisFrame)
+        {
+            TakeDamage();
+            // Falls TakeDamage() zu 0 Fokus geführt hat, wurde dieser Controller soeben deaktiviert
+            if (!enabled) return;
+        }
+
         ReadInput();
         StateMachine.Update();
         UpdateSurfaceRotation();
@@ -94,12 +132,56 @@ public class PlatformerSlimeController : MonoBehaviour
         {
             detachCooldownTimer -= Time.deltaTime;
         }
+
+        UpdateInvincibilityVisuals();
     }
 
     private void FixedUpdate()
     {
         StateMachine.FixedUpdate();
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
+    }
+
+    private void UpdateInvincibilityVisuals()
+    {
+        if (invincibilityTimer > 0f)
+        {
+            invincibilityTimer -= Time.deltaTime;
+
+            if (visualRenderer != null)
+            {
+                if (invincibilityTimer <= 0f)
+                {
+                    visualRenderer.color = defaultSpriteColor;
+                }
+                else
+                {
+                    // Schnelles rotes Blinken während der kurzen Unverwundbarkeit
+                    float blink = Mathf.PingPong(Time.time * 18f, 1f);
+                    visualRenderer.color = Color.Lerp(defaultSpriteColor, new Color(1f, 0.2f, 0.2f, 0.45f), blink);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stoppt jede Bewegung sofort (wird beim Zwangsstopp aufgerufen).
+    /// </summary>
+    public void ZeroOutMomentum()
+    {
+        Velocity = Vector2.zero;
+        MoveInput = Vector2.zero;
+        jumpBufferTimer = 0f;
+
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector2.zero;
+        }
+
+        if (visualRenderer != null)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
     }
 
     public void TriggerDetach(float duration = 0.15f)
@@ -219,7 +301,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void ReadInput()
     {
-        // Wenn meditiert wird oder die Karte offen ist: Keine Bewegungs-/Sprungeingaben
         if (IsMeditating || IsViewingMap)
         {
             MoveInput = Vector2.zero;
@@ -257,7 +338,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 stickDir = rawStick.normalized;
                 float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
 
-                // Achsen-Snapping gegen Schräglauf-Rauschen
                 if (Mathf.Abs(stickDir.x) > 0.7f)
                 {
                     stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
@@ -274,7 +354,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
             Vector2 dpad = gamepad.dpad.ReadValue();
 
-            // Gamepad-Eingaben zur Tastatur addieren statt überschreiben
             if (dpad.sqrMagnitude > 0.1f)
             {
                 input += dpad;
@@ -288,11 +367,9 @@ public class PlatformerSlimeController : MonoBehaviour
             if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
         }
 
-        // Maximale Eingabe begrenzen
         input.x = Mathf.Clamp(input.x, -1f, 1f);
         input.y = Mathf.Clamp(input.y, -1f, 1f);
 
-        // Sprung-Puffer aktualisieren
         if (jumpPressedThisFrame)
         {
             jumpBufferTimer = jumpBufferDuration;
@@ -659,6 +736,22 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.MovePosition(position);
     }
 
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other.CompareTag("Hazard"))
+        {
+            TakeDamage();
+        }
+    }
+
+    private void OnCollisionEnter2D(Collision2D collision)
+    {
+        if (collision.collider.CompareTag("Hazard"))
+        {
+            TakeDamage();
+        }
+    }
+
     private void OnDrawGizmos()
     {
         BoxCollider2D col = GetComponent<BoxCollider2D>();
@@ -669,22 +762,19 @@ public class PlatformerSlimeController : MonoBehaviour
         Gizmos.DrawWireCube(center, col.size);
     }
 
-/// <summary>
-    /// Schnittstelle für Fallen/Gegner: Bricht Meditation oder Karte sofort ab.
+    /// <summary>
+    /// Schnittstelle für Fallen/Gegner (oder Test-Taste K):
+    /// Zieht Fokus ab, erhöht die Albtraumleiste und führt bei 0 Fokus zum sofortigen Zwangsstopp.
     /// </summary>
     public void TakeDamage()
     {
+        if (IsInvincible) return;
+
+        invincibilityTimer = damageInvincibilityDuration;
+
         if (GameManager.Instance != null)
         {
-            GameManager.Instance.InterruptMeditation();
-
-            // Falls die Karte offen ist: Sofort schließen und zurück zum Slime
-            if (GameManager.Instance.currentState == GameState.MapView)
-            {
-                GameManager.Instance.ChangeState(GameState.FreeRoam);
-            }
+            GameManager.Instance.OnSlimeDamaged();
         }
-
-        // Hier folgen später Lebenspunkte-Abzug oder Respawn
     }
 }

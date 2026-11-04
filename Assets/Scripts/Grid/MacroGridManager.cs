@@ -47,12 +47,16 @@ public class MacroGridManager : MonoBehaviour
     // Vorlagen pro Koordinate für das spätere Instanziieren
     private readonly Dictionary<Vector2Int, Room> roomPrefabs = new Dictionary<Vector2Int, Room>();
 
+    // Speichert alle Koordinaten, die der Slime in diesem Run bereits betreten/gesäubert hat
+    private readonly HashSet<Vector2Int> visitedRooms = new HashSet<Vector2Int>();
+
     private Vector2Int currentCoordinate;
     private float lastTransitionTime = -1f;
     private const float TransitionCooldown = 0.25f;
 
     public Vector2Int CurrentCoordinate => currentCoordinate;
     public IReadOnlyDictionary<Vector2Int, Room> Grid => grid;
+    public int VisitedRoomCount => visitedRooms.Count;
 
     private void Awake()
     {
@@ -77,12 +81,35 @@ public class MacroGridManager : MonoBehaviour
         Room.OnExitTriggered -= HandleRoomExit;
     }
 
-    /// <summary>
-    /// Wird vom GameManager aufgerufen, um das Level datenbasiert aufzubauen.
-    /// </summary>
+    public bool IsRoomVisited(Vector2Int coord)
+    {
+        return visitedRooms.Contains(coord);
+    }
+
+    public int GetRoomEntryFocusCost(Vector2Int targetCoord)
+    {
+        if (GameManager.Instance == null) return 0;
+
+        return IsRoomVisited(targetCoord)
+            ? GameManager.Instance.EnterClearedRoomFocusCost
+            : GameManager.Instance.EnterNewRoomFocusCost;
+    }
+
+    public bool CanEnterRoomAt(Vector2Int targetCoord)
+    {
+        if (!HasRoom(targetCoord)) return false;
+
+        int requiredFocus = GetRoomEntryFocusCost(targetCoord);
+        if (GameManager.Instance != null)
+        {
+            return GameManager.Instance.CanAffordFocus(requiredFocus);
+        }
+
+        return true;
+    }
+
     public void Initialize(LevelConfiguration config)
     {
-        // 1. Werte aus der Config übernehmen
         if (config != null)
         {
             roomSpacing = config.roomSpacing;
@@ -96,7 +123,6 @@ public class MacroGridManager : MonoBehaviour
         FindPlayerIfNeeded();
         FindCameraIfNeeded();
 
-        // 2. Bestehende Räume aufräumen (falls vorher schon ein Level lief)
         foreach (var room in grid.Values)
         {
             if (room != null)
@@ -106,27 +132,25 @@ public class MacroGridManager : MonoBehaviour
         }
         grid.Clear();
         roomPrefabs.Clear();
+        visitedRooms.Clear();
 
-        // 3. Vorlagen aus Inspector-Liste neu registrieren
         InitializeGrid();
 
-        // 4. Startraum registrieren (falls noch nicht in roomEntries vorhanden)
         if (!roomPrefabs.ContainsKey(startCoordinate) && defaultRoomPrefab != null)
         {
             RegisterRoom(startCoordinate, defaultRoomPrefab);
         }
 
-        // 5. Startraum und Umfeld aktivieren
         currentCoordinate = startCoordinate;
+        visitedRooms.Add(startCoordinate);
+
         UpdateActiveRooms(currentCoordinate);
 
-        // 6. Makro-Marker auf der Karte synchronisieren
         if (MacroSlimeMarker.Instance != null)
         {
             MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
         }
 
-        // 7. Kamera initial auf den Startraum eichen
         if (grid.TryGetValue(currentCoordinate, out Room startRoom) && startRoom != null)
         {
             UpdateCameraConfiner(startRoom);
@@ -154,15 +178,11 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Aktualisiert das 5er-Fenster (aktueller Raum + 4 Nachbarn).
-    /// </summary>
     public void UpdateActiveRooms(Vector2Int center)
     {
         currentCoordinate = center;
         HashSet<Vector2Int> targetCoords = GetActiveWindowCoordinates(center);
 
-        // 1. Die 5 aktiven Räume instanziieren / aktivieren
         foreach (Vector2Int coord in targetCoords)
         {
             if (HasRoom(coord))
@@ -177,7 +197,6 @@ public class MacroGridManager : MonoBehaviour
             }
         }
 
-        // 2. Weiter entfernte Räume deaktivieren oder zerstören
         List<Vector2Int> loadedCoords = new List<Vector2Int>(grid.Keys);
         foreach (Vector2Int coord in loadedCoords)
         {
@@ -199,7 +218,12 @@ public class MacroGridManager : MonoBehaviour
             }
         }
 
-        // 3. Türen für alle aktiven Räume anpassen
+        RefreshActiveRoomDoors();
+    }
+
+    public void RefreshActiveRoomDoors()
+    {
+        HashSet<Vector2Int> targetCoords = GetActiveWindowCoordinates(currentCoordinate);
         foreach (Vector2Int coord in targetCoords)
         {
             if (grid.TryGetValue(coord, out Room room) && room != null && room.gameObject.activeSelf)
@@ -214,10 +238,10 @@ public class MacroGridManager : MonoBehaviour
         return new HashSet<Vector2Int>
         {
             center,
-            center + Vector2Int.up,    // Nord
-            center + Vector2Int.right, // Ost
-            center + Vector2Int.down,  // Süd
-            center + Vector2Int.left   // West
+            center + Vector2Int.up,
+            center + Vector2Int.right,
+            center + Vector2Int.down,
+            center + Vector2Int.left
         };
     }
 
@@ -253,10 +277,20 @@ public class MacroGridManager : MonoBehaviour
 
     private void UpdateRoomDoors(Room room, Vector2Int coord)
     {
-        room.SetDoorOpen(Direction.North, HasRoom(coord + Vector2Int.up));
-        room.SetDoorOpen(Direction.East, HasRoom(coord + Vector2Int.right));
-        room.SetDoorOpen(Direction.South, HasRoom(coord + Vector2Int.down));
-        room.SetDoorOpen(Direction.West, HasRoom(coord + Vector2Int.left));
+        if (coord == currentCoordinate)
+        {
+            room.SetDoorOpen(Direction.North, CanEnterRoomAt(coord + Vector2Int.up));
+            room.SetDoorOpen(Direction.East, CanEnterRoomAt(coord + Vector2Int.right));
+            room.SetDoorOpen(Direction.South, CanEnterRoomAt(coord + Vector2Int.down));
+            room.SetDoorOpen(Direction.West, CanEnterRoomAt(coord + Vector2Int.left));
+        }
+        else
+        {
+            room.SetDoorOpen(Direction.North, HasRoom(coord + Vector2Int.up));
+            room.SetDoorOpen(Direction.East, HasRoom(coord + Vector2Int.right));
+            room.SetDoorOpen(Direction.South, HasRoom(coord + Vector2Int.down));
+            room.SetDoorOpen(Direction.West, HasRoom(coord + Vector2Int.left));
+        }
     }
 
     private void HandleRoomExit(Room fromRoom, Direction exitDirection)
@@ -275,12 +309,24 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        lastTransitionTime = Time.time;
+        bool wasAlreadyVisited = IsRoomVisited(targetCoord);
+        int entryCost = GetRoomEntryFocusCost(targetCoord);
 
-        // 1. 5er-Fenster aktualisieren
+        if (GameManager.Instance != null)
+        {
+            string reason = wasAlreadyVisited ? $"Gesäuberten Raum {targetCoord} durchquert" : $"Neuen Raum {targetCoord} erschlossen";
+            if (!GameManager.Instance.TrySpendFocus(entryCost, reason))
+            {
+                RefreshActiveRoomDoors();
+                return;
+            }
+        }
+
+        lastTransitionTime = Time.time;
+        visitedRooms.Add(targetCoord);
+
         UpdateActiveRooms(targetCoord);
 
-        // 2. Makro-Marker auf der Karte nachziehen
         if (MacroSlimeMarker.Instance != null)
         {
             MacroSlimeMarker.Instance.SetGridPosition(targetCoord);
@@ -292,17 +338,14 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        // 3. Gegenüberliegende Tür als Einstiegspunkt wählen
         Direction enterFromDirection = GetOppositeDirection(exitDirection);
         Transform spawnPoint = targetRoom.GetSpawnPoint(enterFromDirection);
 
-        // 4. Teleportation des Spielers durchführen
         Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
         Vector3 targetPos = (spawnPoint != null) ? spawnPoint.position : GetWorldPosition(currentCoordinate);
-        
+
         TeleportPlayer(targetPos, exitDirection);
 
-        // 5. Cinemachine 3.x anpassen & warpen
         Vector3 deltaPosition = targetPos - previousPos;
         UpdateCameraForTransition(targetRoom, deltaPosition);
     }
@@ -326,7 +369,7 @@ public class MacroGridManager : MonoBehaviour
             Vector2 forwardDir = DirectionToOffset(exitDirection);
             if (Vector2.Dot(rb.linearVelocity, forwardDir) < 2f)
             {
-                rb.linearVelocity = forwardDir * 4f; 
+                rb.linearVelocity = forwardDir * 4f;
             }
         }
 
@@ -379,11 +422,20 @@ public class MacroGridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Zerstört einen Raum an der angegebenen Koordinate und entfernt ihn aus dem Grid.
-    /// Wird unter anderem bei Boss-Angriffen aufgerufen.
+    /// Zerstört einen Raum an der angegebenen Koordinate.
+    /// Steht der Slime darauf, wird er unter Albtraum-Anstieg auf ein Nachbarfeld geschleudert.
     /// </summary>
     public void RemoveRoomAt(Vector2Int coord)
     {
+        // Der Hub darf niemals komplett gelöscht werden
+        if (coord == startCoordinate)
+        {
+            Debug.Log("[MacroGridManager] Der Hub-Raum ist unzerstörbar!");
+            return;
+        }
+
+        bool slimeWasInDestroyedRoom = (coord == currentCoordinate);
+
         if (grid.TryGetValue(coord, out Room roomInstance) && roomInstance != null)
         {
             Destroy(roomInstance.gameObject);
@@ -391,9 +443,92 @@ public class MacroGridManager : MonoBehaviour
 
         grid.Remove(coord);
         roomPrefabs.Remove(coord);
+        visitedRooms.Remove(coord);
 
-        // Türen der umgebenden Räume aktualisieren, damit geschlossene Wände entstehen
-        UpdateActiveRooms(currentCoordinate);
+        // Visuelle Kachel auf dem Makro-Grid wieder in den Nebel zurücksetzen
+        if (GridManager.Instance != null && GridManager.Instance.grid != null &&
+            coord.x >= 0 && coord.x < GridManager.Instance.width &&
+            coord.y >= 0 && coord.y < GridManager.Instance.height)
+        {
+            GridManager.Instance.grid[coord.x, coord.y].DestroyBlock();
+        }
+
+        // Falls der Slime auf der zerstörten Kachel stand -> Notfall-Schleudern auf Nachbarfeld!
+        if (slimeWasInDestroyedRoom)
+        {
+            Vector2Int fallbackCoord = FindNearestBuiltRoom(coord);
+            Debug.LogWarning($"[Boss-Treffer] Raum {coord} unter dem Slime zerstört! Slime wird nach {fallbackCoord} geschleudert.");
+
+            currentCoordinate = fallbackCoord;
+            visitedRooms.Add(fallbackCoord);
+            UpdateActiveRooms(currentCoordinate);
+
+            if (MacroSlimeMarker.Instance != null)
+            {
+                MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
+            }
+
+            FindPlayerIfNeeded();
+            PlaceSlimeInRoom(currentCoordinate, playerTransform);
+
+            if (grid.TryGetValue(currentCoordinate, out Room fallbackRoom) && fallbackRoom != null)
+            {
+                UpdateCameraConfiner(fallbackRoom);
+            }
+
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.AddNightmare(GameManager.Instance.NightmareOnBossRoomDestroy, "Raum unter Slime vom Boss zerstört");
+            }
+        }
+        else
+        {
+            UpdateActiveRooms(currentCoordinate);
+        }
+    }
+
+    private Vector2Int FindNearestBuiltRoom(Vector2Int fromCoord)
+    {
+        // 1. Direkte Nachbarn prüfen
+        Vector2Int[] neighbors = new Vector2Int[]
+        {
+            fromCoord + Vector2Int.down,
+            fromCoord + Vector2Int.up,
+            fromCoord + Vector2Int.left,
+            fromCoord + Vector2Int.right
+        };
+
+        foreach (var n in neighbors)
+        {
+            if (HasRoom(n)) return n;
+        }
+
+        // 2. Nächstgelegenen existierenden Raum im gesamten Grid suchen
+        float bestDist = float.MaxValue;
+        Vector2Int bestCoord = startCoordinate;
+
+        foreach (var kvp in roomPrefabs)
+        {
+            float d = Vector2Int.Distance(fromCoord, kvp.Key);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                bestCoord = kvp.Key;
+            }
+        }
+
+        // 3. Sicherheits-Fallback: Hub garantieren
+        if (!HasRoom(bestCoord) && defaultRoomPrefab != null)
+        {
+            RegisterRoom(startCoordinate, defaultRoomPrefab);
+            if (GridManager.Instance != null)
+            {
+                GridManager.Instance.SetCellState(startCoordinate.x, startCoordinate.y, CellState.Built);
+            }
+            return startCoordinate;
+        }
+
+        return bestCoord;
     }
 
     public static Vector2Int DirectionToOffset(Direction dir)
@@ -451,9 +586,6 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Teleportiert den Slime in den Startraum anhand der Grid-Koordinate.
-    /// </summary>
     public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)
     {
         if (slimeTransform == null) return;

@@ -41,6 +41,9 @@ The content is organized as follows:
 </file_summary>
 
 <directory_structure>
+Boss/
+  BossBase.cs
+  BossController.cs
 Core/
   EventManager.cs
   GameManager.cs
@@ -50,7 +53,6 @@ Data/
   LevelConfiguration.cs
 Grid/
   BossAction.cs
-  BossController.cs
   GridCell.cs
   MacroGridManager.cs
   MacroSlimeMarker.cs
@@ -69,6 +71,8 @@ Slime/
   PlatformerSlimeController.cs
   PlatformerSlimeState.cs
   PlatformerStateMachine.cs
+UI/
+  TurnBannerUI.cs
 .repomixignore
 PROJEKT_KONTEXT.md
 repomix.config.json
@@ -76,6 +80,315 @@ repomix.config.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="Boss/BossBase.cs">
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public enum BossHazardType
+{
+    DestroyRoom,    // Raum komplett zerstören und vom Grid entfernen
+    HazardSpikes,   // Stacheln auf dem Kachel-Boden aktivieren
+    HazardPoison,   // Giftzone: Slime nimmt Schaden über Zeit
+    LockDoors,      // Verbindungen für eine bestimmte Rundenzahl blockieren
+    Custom          // Eigener boss-spezifischer Callback
+}
+
+[System.Serializable]
+public class BossTelegraphZone
+{
+    public List<Vector2Int> targetCoordinates = new List<Vector2Int>();
+    public int turnsRemaining = 1;
+    public BossHazardType hazardType;
+
+    public BossTelegraphZone(List<Vector2Int> coords, BossHazardType type, int turns)
+    {
+        targetCoordinates = new List<Vector2Int>(coords);
+        hazardType = type;
+        turnsRemaining = turns;
+    }
+}
+
+public abstract class BossBase : MonoBehaviour
+{
+    [Header("Boss Einstellungen")]
+    [SerializeField] protected string bossName = "Unbekannter Boss";
+
+    [Header("Aktive Telegrafie-Zonen")]
+    [SerializeField] protected List<BossTelegraphZone> activeZones = new List<BossTelegraphZone>();
+
+    [Header("Visuelle Farben für Warnung")]
+    [SerializeField] protected Color warningColor = new Color(1f, 0.75f, 0.1f, 0.8f); // Orange/Gelb
+    [SerializeField] protected Color strikeColor = new Color(0.9f, 0.15f, 0.1f, 0.9f);   // Rot für Einschlag
+
+    public string BossName => bossName;
+    public IReadOnlyList<BossTelegraphZone> ActiveZones => activeZones;
+
+    /// <summary>
+    /// Wird vom EventManager in der Gegnerphase aufgerufen.
+    /// Jeder Boss steuert hier seine Reihenfolge aus Einschlag, Bewegung und Vorwarnung.
+    /// </summary>
+    public abstract IEnumerator ExecuteTurn();
+
+    /// <summary>
+    /// Kündigt einen Angriff auf bestimmten Koordinaten an und färbt die Kacheln ein.
+    /// </summary>
+    public virtual void Telegraph(List<Vector2Int> coords, BossHazardType type, int turns = 1)
+    {
+        if (coords == null || coords.Count == 0) return;
+
+        BossTelegraphZone zone = new BossTelegraphZone(coords, type, turns);
+        activeZones.Add(zone);
+
+        HighlightCoordinates(coords, warningColor);
+    }
+
+    /// <summary>
+    /// Zählt Timer herunter, lässt abgelaufene Zonen einschlagen und bereinigt die Liste.
+    /// </summary>
+    public virtual IEnumerator ResolveTelegraphsRoutine()
+    {
+        List<BossTelegraphZone> expiredZones = new List<BossTelegraphZone>();
+
+        for (int i = 0; i < activeZones.Count; i++)
+        {
+            BossTelegraphZone zone = activeZones[i];
+            zone.turnsRemaining--;
+
+            if (zone.turnsRemaining <= 0)
+            {
+                expiredZones.Add(zone);
+
+                // Kurzes rotes Aufblitzen vor dem Einschlag
+                HighlightCoordinates(zone.targetCoordinates, strikeColor);
+            }
+        }
+
+        if (expiredZones.Count > 0)
+        {
+            yield return new WaitForSeconds(0.4f);
+
+            foreach (BossTelegraphZone zone in expiredZones)
+            {
+                foreach (Vector2Int coord in zone.targetCoordinates)
+                {
+                    ApplyHazardToCoord(coord, zone.hazardType);
+                }
+
+                ResetCoordinatesHighlight(zone.targetCoordinates);
+                activeZones.Remove(zone);
+            }
+        }
+
+        yield return null;
+    }
+
+    /// <summary>
+    /// Wendet den gewählten Effekt auf eine Kachel an.
+    /// </summary>
+    protected virtual void ApplyHazardToCoord(Vector2Int coord, BossHazardType type)
+    {
+        switch (type)
+        {
+            case BossHazardType.DestroyRoom:
+                if (MacroGridManager.Instance != null)
+                {
+                    MacroGridManager.Instance.RemoveRoomAt(coord);
+                }
+                break;
+
+            case BossHazardType.HazardSpikes:
+                Debug.Log($"[BossBase] Stacheln auf {coord} aktiviert.");
+                break;
+
+            case BossHazardType.HazardPoison:
+                Debug.Log($"[BossBase] Giftgas auf {coord} freigesetzt.");
+                break;
+
+            case BossHazardType.LockDoors:
+                Debug.Log($"[BossBase] Türen auf {coord} verriegelt.");
+                break;
+
+            case BossHazardType.Custom:
+                ExecuteCustomHazard(coord);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Virtuelle Schnittstelle für Effekte, die nur ein ganz bestimmter Boss beherrscht.
+    /// </summary>
+    protected virtual void ExecuteCustomHazard(Vector2Int coord) { }
+
+    /// <summary>
+    /// Hook für visuelle Kachel-Hervorhebung auf dem Makro-Grid.
+    /// </summary>
+    protected virtual void HighlightCoordinates(List<Vector2Int> coords, Color color)
+    {
+        if (GridManager.Instance != null)
+        {
+            foreach (Vector2Int pos in coords)
+            {
+                GridManager.Instance.HighlightCell(pos, color);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Setzt die Kachel-Optik nach dem Einschlag wieder zurück.
+    /// </summary>
+    protected virtual void ResetCoordinatesHighlight(List<Vector2Int> coords)
+    {
+        if (GridManager.Instance != null)
+        {
+            foreach (Vector2Int pos in coords)
+            {
+                GridManager.Instance.ResetCellHighlight(pos);
+            }
+        }
+    }
+
+    public virtual void OnPhaseTransition(int newPhase) { }
+}
+</file>
+
+<file path="Boss/BossController.cs">
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class BossController : BossBase
+{
+    [Header("Bewegung & Raster")]
+    [SerializeField] private Vector2Int currentGridPosition;
+    [SerializeField] private float moveStepDuration = 0.3f;
+
+    [Header("Angriffs-Einstellungen")]
+    [SerializeField] private BossHazardType attackType = BossHazardType.DestroyRoom;
+    [SerializeField] private int telegraphTurns = 1;
+
+    private bool isInitialized = false;
+
+    private void Start()
+    {
+        InitializePositionIfNeeded();
+    }
+
+    /// <summary>
+    /// Liest die Startposition aus der aktuellen Transform-Position aus
+    /// </summary>
+    public void InitializePositionIfNeeded()
+    {
+        if (isInitialized) return;
+
+        float offset = 1.1f;
+        if (GridManager.Instance != null && GridManager.Instance.offset > 0.01f)
+        {
+            offset = GridManager.Instance.offset;
+        }
+
+        int startX = Mathf.RoundToInt(transform.localPosition.x / offset);
+        int startY = Mathf.RoundToInt(transform.localPosition.y / offset);
+        currentGridPosition = new Vector2Int(startX, startY);
+
+        isInitialized = true;
+    }
+
+    public override IEnumerator ExecuteTurn()
+    {
+        InitializePositionIfNeeded();
+
+        // 1. PHASE: Fällige Einschläge ausführen (rot aufblitzen, Raum zerstören/belegen)
+        yield return StartCoroutine(ResolveTelegraphsRoutine());
+
+        // 2. PHASE: Boss bewegt sich 1 Schritt in Richtung Slime
+        yield return StartCoroutine(MoveTowardsSlimeRoutine());
+
+        // 3. PHASE: Nächsten Angriff für die Folgerunde telegrafieren
+        TelegraphNextAttack();
+
+        // Kurze Pause zum Abschluss, damit das Geschehen auf der Karte gut lesbar bleibt
+        yield return new WaitForSeconds(0.4f);
+    }
+
+    private IEnumerator MoveTowardsSlimeRoutine()
+    {
+        Vector2Int targetCoord = currentGridPosition;
+
+        // Ziel ist der Raum, in dem sich der Slime gerade befindet
+        if (MacroGridManager.Instance != null)
+        {
+            targetCoord = MacroGridManager.Instance.CurrentCoordinate;
+        }
+
+        Vector2Int delta = targetCoord - currentGridPosition;
+        Vector2Int stepDirection = Vector2Int.zero;
+
+        // Schrittweise Annäherung: Achse mit der größeren Distanz bevorzugen
+        if (Mathf.Abs(delta.x) >= Mathf.Abs(delta.y))
+        {
+            if (delta.x != 0) stepDirection.x = delta.x > 0 ? 1 : -1;
+            else if (delta.y != 0) stepDirection.y = delta.y > 0 ? 1 : -1;
+        }
+        else
+        {
+            if (delta.y != 0) stepDirection.y = delta.y > 0 ? 1 : -1;
+            else if (delta.x != 0) stepDirection.x = delta.x > 0 ? 1 : -1;
+        }
+
+        if (stepDirection != Vector2Int.zero)
+        {
+            Vector2Int nextGridPos = currentGridPosition + stepDirection;
+            float offset = GridManager.Instance != null ? GridManager.Instance.offset : 1.1f;
+
+            Vector3 startWorld = transform.localPosition;
+            Vector3 targetWorld = new Vector3(nextGridPos.x * offset, nextGridPos.y * offset, startWorld.z);
+
+            float elapsed = 0f;
+            while (elapsed < moveStepDuration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.SmoothStep(0f, 1f, elapsed / moveStepDuration);
+                transform.localPosition = Vector3.Lerp(startWorld, targetWorld, t);
+                yield return null;
+            }
+
+            transform.localPosition = targetWorld;
+            currentGridPosition = nextGridPos;
+        }
+
+        yield return new WaitForSeconds(0.1f);
+    }
+
+    private void TelegraphNextAttack()
+    {
+        // Sucht sich als Angriffsziel das Feld direkt vor sich in Richtung Slime aus
+        Vector2Int slimeCoord = currentGridPosition;
+        if (MacroGridManager.Instance != null)
+        {
+            slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
+        }
+
+        Vector2Int diff = slimeCoord - currentGridPosition;
+        Vector2Int aimDir = Vector2Int.zero;
+
+        if (Mathf.Abs(diff.x) >= Mathf.Abs(diff.y))
+        {
+            aimDir.x = diff.x >= 0 ? 1 : -1;
+        }
+        else
+        {
+            aimDir.y = diff.y >= 0 ? 1 : -1;
+        }
+
+        Vector2Int strikeTarget = currentGridPosition + aimDir;
+
+        // Kündigt die Kachel für 1 Runde an
+        Telegraph(new List<Vector2Int> { strikeTarget }, attackType, telegraphTurns);
+    }
+}
+</file>
 
 <file path="Core/EventManager.cs">
 using UnityEngine;
@@ -89,41 +402,54 @@ public class EventManager : MonoBehaviour
     public GameManager gameManager;
     public PlacementManager placementManager;
     public InventoryManager inventoryManager;
-    public BossController boss;
+    public BossBase boss;
 
-    void Update()   
+    void Update()
     {
-        // 1. Niemals im Platformer (FreeRoam) auf Space/Enter für Zug-Ende reagieren!
-        // Der Zug soll nur auf der Makro-Ebene (Inventory) beendet werden können.
-        if (gameManager != null && gameManager.currentState != GameState.Inventory) return;
+        // Ein Zug kann im MacroPlan oder FreeRoam per E-Taste beendet werden
+        if (gameManager == null) return;
+        if (gameManager.currentState != GameState.MacroPlan && gameManager.currentState != GameState.FreeRoam) return;
         if (Keyboard.current == null) return;
 
-        // Vorerst: Space komplett entfernen, damit Sprünge sicher frei bleiben.
-        // Optional auf eine separate Taste legen (z. B. 'E') oder ganz auskommentieren:
         if (Keyboard.current.eKey.wasPressedThisFrame)
         {
             StartCoroutine(TurnSequenceRoutine());
         }
     }
 
-    // Der zentrale Runden-Ablauf
-    IEnumerator TurnSequenceRoutine()
+    public IEnumerator TurnSequenceRoutine()
     {
-        // 1. Spieler-Eingaben sperren
-        if (gameManager != null)
+        Debug.Log("--- ZUG BEENDET | WECHSEL IN GEGNERPHASE ---");
+
+        // 1. Falls der Spieler im Platformer war: Zuerst nach oben ins Makro schalten
+        if (gameManager != null && gameManager.currentState == GameState.FreeRoam)
+        {
+            gameManager.ChangeState(GameState.EnemyTurn);
+            // Kleiner Puffer für die Kamerafahrt
+            yield return new WaitForSeconds(0.4f);
+        }
+        else if (gameManager != null)
         {
             gameManager.ChangeState(GameState.EnemyTurn);
         }
 
-        Debug.Log("--- SPIELER-ZUG BEENDET | GEGNER-PHASE STARTET ---");
-
-        // 2. Boss ausführen und warten, bis er fertig ist
-        if (boss != null)
+        // 2. Banner "GEGNERPHASE" anzeigen
+        if (TurnBannerUI.Instance != null)
         {
-            yield return StartCoroutine(boss.ExecuteBossTurn());
+            yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("GEGNERPHASE", isEnemyTurn: true, duration: 0.8f));
+        }
+        else
+        {
+            yield return new WaitForSeconds(0.4f);
         }
 
-        // 3. Runden-Reset für den Spieler
+        // 3. Boss-Aktion ausführen
+        if (boss != null)
+        {
+            yield return StartCoroutine(boss.ExecuteTurn());
+        }
+
+        // 4. Runden-Reset
         if (placementManager != null)
         {
             placementManager.ResetTurnPlacements();
@@ -134,28 +460,36 @@ public class EventManager : MonoBehaviour
             inventoryManager.CheckAndRefillIfEmpty();
         }
 
-        // 4. Spieler wieder freigeben (zurück auf Makro-Ebene)
-        if (gameManager != null)
+        // 5. Banner "DEIN ZUG" anzeigen
+        if (TurnBannerUI.Instance != null)
         {
-            gameManager.ChangeState(GameState.Inventory);
+            yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("DEIN ZUG", isEnemyTurn: false, duration: 0.7f));
         }
 
-        Debug.Log("--- GEGNER-PHASE BEENDET | SPIELER IST DRAN ---");
+        // 6. Spieler startet die neue Runde im Baumodus (MacroPlan)
+        if (gameManager != null)
+        {
+            gameManager.ChangeState(GameState.MacroPlan);
+        }
+
+        Debug.Log("--- SPIELER IST WIEDER AM ZUG (BAUMODUS) ---");
     }
 }
 </file>
 
 <file path="Core/GameManager.cs">
+using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 public enum GameState
 {
-    FreeRoam,    // Platformer-Modus (Mikro-Ebene)
-    MacroPlan,   // Bau- & Planungsphase auf dem Grid (Makro-Ebene)
-    Inventory,
-    Placement,
-    EnemyTurn
+    FreeRoam,    // Mikro-Ebene: Platformer-Steuerung aktiv
+    MapView,     // Makro-Ebene: Reine Karten-Übersicht (keine Bau-UI)
+    MacroPlan,   // Makro-Ebene: Bau- & Planungsphase (Hotbar aktiv)
+    Placement,   // Makro-Ebene: Form hängt am Cursor zur Platzierung
+    EnemyTurn    // Gegnerphase: Boss führt Aktionen aus
 }
 
 public class GameManager : MonoBehaviour
@@ -168,17 +502,44 @@ public class GameManager : MonoBehaviour
     [Header("Level Konfiguration")]
     [SerializeField] private LevelConfiguration currentLevelConfig;
 
+    [Header("Encounter & Event-Referenzen")]
+    [SerializeField] private EventManager eventManager;
+    private BossBase activeBossInstance;
+
     [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
-    [SerializeField] private Camera mainCamera; // Platformer-Kamera
+    [SerializeField] private Camera mainCamera;
 
     [Header("UI")]
     public GameObject inventoryScreen;
     public InventoryManager inventoryManager;
 
+    [Header("Hold-Feedback UI (Optional)")]
+    [Tooltip("UI-Image mit Image Type 'Filled' für den Fortschrittskreis/Balken")]
+    [SerializeField] private Image holdProgressImage;
+    [Tooltip("Container-Objekt der Ladeanzeige (wird nur beim Halten eingeblendet)")]
+    [SerializeField] private GameObject holdProgressContainer;
+
     [Header("Spieler-Referenz (Micro)")]
     [SerializeField] private PlatformerSlimeController slimeController;
     [SerializeField] private Rigidbody2D slimeRigidbody;
+
+    [Header("Transition Settings")]
+    [Tooltip("Dauer in Sekunden, die Dreieck gehalten werden muss, um in den Baumodus zu wechseln.")]
+    [SerializeField] private float buildModeHoldDuration = 0.85f;
+    [Tooltip("Dauer des Kamera-Zooms zwischen Slime und Übersicht in Sekunden.")]
+    [SerializeField] private float cameraTransitionDuration = 0.35f;
+
+    private float buildModeHoldTimer = 0f;
+    private Vector2 cachedSlimeVelocity;
+    private Coroutine activeCameraTransition;
+
+    // Lokale Zielwerte der Makro-Kamera für die Übersicht
+    private Vector3 macroOverviewPosition;
+    private float macroOverviewSize;
+
+    public float BuildHoldProgress => Mathf.Clamp01(buildModeHoldTimer / buildModeHoldDuration);
+    public BossBase ActiveBoss => activeBossInstance;
 
     private void Awake()
     {
@@ -206,121 +567,436 @@ public class GameManager : MonoBehaviour
             Debug.LogError("[GameManager] Keine LevelConfiguration zugewiesen!");
         }
 
-        // Startet direkt im Makro-Planungsmodus (Grid aktiv, Slime pausiert)
-        SetViewMode(isMacro: true);
+        UpdateHoldUI(0f);
+        ChangeState(GameState.MacroPlan);
     }
 
     public void LoadLevel(LevelConfiguration config)
     {
         currentLevelConfig = config;
 
-        // 1. Makro-Grid aufbauen
         if (GridManager.Instance != null)
         {
             GridManager.Instance.Initialize(config);
         }
 
-        // 2. Mikro-Räume & Slime initialisieren
         if (MacroGridManager.Instance != null)
         {
             MacroGridManager.Instance.Initialize(config);
 
-            // --- HIER: Slime direkt an den Startraum setzen ---
             if (slimeController != null)
             {
                 MacroGridManager.Instance.PlaceSlimeInRoom(config.startCoordinate, slimeController.transform);
             }
         }
 
-        // 3. Makro-Kamera auf das Grid zentrieren
-        PositionMacroCamera(config);
+        SetupLevelEncounter(config);
+        CalculateMacroOverviewParameters(config);
     }
 
-    private void PositionMacroCamera(LevelConfiguration config)
+    private void SetupLevelEncounter(LevelConfiguration config)
+    {
+        // 1. Alten Boss entfernen falls vorhanden
+        if (activeBossInstance != null)
+        {
+            Destroy(activeBossInstance.gameObject);
+            activeBossInstance = null;
+        }
+
+        if (eventManager == null)
+        {
+            eventManager = FindAnyObjectByType<EventManager>();
+        }
+
+        // 2. Boss aus Config spawnen falls definiert
+        if (config != null && config.bossPrefab != null)
+        {
+            Transform spawnParent = transform.parent != null ? transform.parent : transform;
+            activeBossInstance = Instantiate(config.bossPrefab, spawnParent);
+
+            // Startposition auf dem Makro-Raster setzen
+            float posX = config.bossSpawnCoordinate.x * config.cellOffset;
+            float posY = config.bossSpawnCoordinate.y * config.cellOffset;
+            activeBossInstance.transform.localPosition = new Vector3(posX, posY, 0f);
+
+            if (eventManager != null)
+            {
+                eventManager.boss = activeBossInstance;
+            }
+        }
+        else
+        {
+            if (eventManager != null)
+            {
+                eventManager.boss = null;
+            }
+        }
+    }
+
+    private void CalculateMacroOverviewParameters(LevelConfiguration config)
     {
         if (macroCamera == null)
         {
             macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
         }
 
+        float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
+        float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
+
+        // Lokale Koordinaten relativ zum Macro_Grid-Parent
+        macroOverviewPosition = new Vector3(centerX, centerY, -10f);
+        macroOverviewSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
+
         if (macroCamera != null)
         {
-            float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
-            float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
-
-            macroCamera.transform.localPosition = new Vector3(centerX, centerY, -10f);
-            macroCamera.orthographicSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
+            macroCamera.transform.localPosition = macroOverviewPosition;
+            macroCamera.orthographicSize = macroOverviewSize;
         }
     }
 
-    void Update()
+    private void Update()
     {
-        if (Keyboard.current == null) return;
+        HandleTransitionInputs();
+    }
 
-        // Mit TAB zwischen Makro- (Bauen) und Mikro-Ebene (FreeRoam) wechseln
-        if (Keyboard.current.tabKey.wasPressedThisFrame)
+    private void HandleTransitionInputs()
+    {
+        if (activeCameraTransition != null) return;
+
+        var gamepad = Gamepad.current;
+        var keyboard = Keyboard.current;
+
+        // 1. ZUG BEENDEN (R3 auf Gamepad oder Taste E)
+        bool endTurnTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
+                                (keyboard != null && keyboard.eKey.wasPressedThisFrame);
+
+        if (endTurnTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
         {
-            // Nicht umschalten, solange man gerade einen Block platziert
-            if (currentState == GameState.Placement) return;
+            if (eventManager == null)
+            {
+                eventManager = FindAnyObjectByType<EventManager>();
+            }
 
-            bool toMacro = (currentState == GameState.FreeRoam);
-            SetViewMode(toMacro);
+            if (eventManager != null)
+            {
+                eventManager.StartCoroutine("TurnSequenceRoutine");
+            }
+            return;
+        }
+
+        // Touchpad-Erkennung (DualSense) oder Fallback auf Select
+        bool touchpadPressed = false;
+        if (gamepad != null)
+        {
+            if (gamepad is UnityEngine.InputSystem.DualShock.DualShockGamepad dualShock)
+            {
+                touchpadPressed = dualShock.touchpadButton.wasPressedThisFrame;
+            }
+            else
+            {
+                touchpadPressed = gamepad.selectButton.wasPressedThisFrame;
+            }
+        }
+
+        // 2. MIKRO-EBENE (FreeRoam) -> MAKRO
+        if (currentState == GameState.FreeRoam)
+        {
+            bool isGrounded = slimeController != null && slimeController.IsGrounded;
+            bool isStandingStill = slimeController != null && slimeController.Velocity.sqrMagnitude < 0.1f;
+
+            // Karte toggeln (Touchpad / M) – nur wenn auf einer Fläche
+            bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
+            if (mapToggle)
+            {
+                if (isGrounded)
+                {
+                    InterruptMeditation();
+                    ChangeState(GameState.MapView);
+                    return;
+                }
+                else
+                {
+                    Debug.Log("[GameManager] Karte kann im Flug nicht geöffnet werden!");
+                }
+            }
+
+            // In den Baumodus meditieren: Dreieck / Taste B halten
+            bool isHoldingBuild = (gamepad != null && gamepad.buttonNorth.isPressed) ||
+                                  (keyboard != null && keyboard.bKey.isPressed);
+
+            bool canMeditate = isGrounded && isStandingStill;
+
+            if (isHoldingBuild && canMeditate)
+            {
+                if (slimeController != null)
+                {
+                    slimeController.IsMeditating = true;
+                }
+
+                buildModeHoldTimer += Time.deltaTime;
+                UpdateHoldUI(BuildHoldProgress);
+
+                if (buildModeHoldTimer >= buildModeHoldDuration)
+                {
+                    if (slimeController != null)
+                    {
+                        slimeController.IsMeditating = false;
+                    }
+
+                    buildModeHoldTimer = 0f;
+                    UpdateHoldUI(0f);
+                    ChangeState(GameState.MacroPlan);
+                }
+            }
+            else
+            {
+                // Bei Loslassen oder Bewegung/Sprung sofort abbrechen
+                if (buildModeHoldTimer > 0f || (slimeController != null && slimeController.IsMeditating))
+                {
+                    InterruptMeditation();
+                }
+            }
+        }
+        // 3. MAKRO-EBENE -> ZURÜCK ZU MIKRO
+        else if (currentState == GameState.MapView || currentState == GameState.MacroPlan)
+        {
+            bool exitMacro = (gamepad != null && (gamepad.buttonEast.wasPressedThisFrame || gamepad.buttonNorth.wasPressedThisFrame)) ||
+                             (keyboard != null && keyboard.escapeKey.wasPressedThisFrame);
+
+            bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
+
+            if (exitMacro || (currentState == GameState.MapView && mapToggle))
+            {
+                ChangeState(GameState.FreeRoam);
+            }
         }
     }
 
-    /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
- /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
-    /// <summary>
-    /// Zentrale Umschaltung zwischen Makro-Bauen und Mikro-Platformer
-    /// </summary>
-    public void SetViewMode(bool isMacro)
+    public void InterruptMeditation()
+    {
+        buildModeHoldTimer = 0f;
+        UpdateHoldUI(0f);
+
+        if (slimeController != null)
+        {
+            slimeController.IsMeditating = false;
+        }
+    }
+
+    private void UpdateHoldUI(float progress)
+    {
+        if (holdProgressContainer != null)
+        {
+            holdProgressContainer.SetActive(progress > 0.01f);
+        }
+
+        if (holdProgressImage != null)
+        {
+            holdProgressImage.fillAmount = progress;
+        }
+    }
+
+    public void ChangeState(GameState newState)
+    {
+        if (currentState == newState) return;
+
+        GameState previous = currentState;
+        currentState = newState;
+
+        ExitState(previous);
+        EnterState(newState, previous);
+    }
+
+    private void EnterState(GameState state, GameState fromState)
     {
         FindReferencesIfNeeded();
+        InterruptMeditation();
 
-        if (isMacro)
+        bool isGoingToMacro = (state == GameState.MacroPlan || state == GameState.MapView || state == GameState.EnemyTurn);
+        bool comingFromMicro = (fromState == GameState.FreeRoam);
+
+        if (state == GameState.FreeRoam)
         {
-            currentState = GameState.Inventory;
+            SetUIActive(inventory: false);
+            if (slimeController != null) slimeController.IsViewingMap = false;
 
-            // Kameras umstellen
-            if (macroCamera != null) macroCamera.gameObject.SetActive(true);
-            if (mainCamera != null) mainCamera.gameObject.SetActive(false);
+            if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
+            activeCameraTransition = StartCoroutine(TransitionToMicroRoutine());
+        }
+        else if (isGoingToMacro && comingFromMicro)
+        {
+            if (state == GameState.MapView)
+            {
+                // Karte: Slime bleibt physikalisch in der Welt, aber Steuerung gesperrt
+                if (slimeController != null)
+                {
+                    slimeController.enabled = true;
+                    slimeController.IsViewingMap = true;
+                }
+                if (slimeRigidbody != null)
+                {
+                    slimeRigidbody.simulated = true;
+                }
+            }
+            else
+            {
+                // Baumodus (MacroPlan): Slime komplett einfrieren
+                SetSlimeActive(false);
+            }
 
-            // Hotbar/Inventar für Makro-Ebene einblenden
-            if (inventoryScreen != null) inventoryScreen.SetActive(true);
-            Canvas.ForceUpdateCanvases();
-            if (inventoryManager != null) inventoryManager.ResetSelection();
+            bool showInventory = (state == GameState.MacroPlan || state == GameState.Placement);
 
-            // Slime-Steuerung & Physik deaktivieren
-            SetSlimeInputActive(false);
+            if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
+            activeCameraTransition = StartCoroutine(TransitionToMacroRoutine(showInventory));
         }
         else
         {
-            // Falls der Spieler mitten im Block-Platzieren TAB drückt: sauber abbrechen
-            PlacementManager placementMgr = FindFirstObjectByType<PlacementManager>();
-            if (placementMgr != null && currentState == GameState.Placement)
+            // Direkter Wechsel zwischen zwei Makro-Zuständen (z. B. MapView <-> MacroPlan)
+            SetCameraActive(macro: true, micro: false);
+
+            if (state == GameState.MapView)
             {
-                placementMgr.CancelSelection();
+                if (slimeController != null)
+                {
+                    slimeController.enabled = true;
+                    slimeController.IsViewingMap = true;
+                }
+                if (slimeRigidbody != null)
+                {
+                    slimeRigidbody.simulated = true;
+                }
+            }
+            else
+            {
+                SetSlimeActive(false);
             }
 
-            currentState = GameState.FreeRoam;
+            SetUIActive(inventory: (state == GameState.MacroPlan || state == GameState.Placement));
 
-            // Kameras umstellen
-            if (macroCamera != null) macroCamera.gameObject.SetActive(false);
-            if (mainCamera != null) mainCamera.gameObject.SetActive(true);
-
-            // Hotbar/Inventar für Mikro-Ebene komplett ausblenden
-            if (inventoryScreen != null) inventoryScreen.SetActive(false);
-
-            // Slime-Steuerung & Physik aktivieren
-            SetSlimeInputActive(true);
+            if (state == GameState.MacroPlan && inventoryManager != null)
+            {
+                inventoryManager.ResetSelection();
+            }
         }
     }
 
-    private void SetSlimeInputActive(bool active)
+    private void ExitState(GameState oldState)
+    {
+        if (oldState == GameState.MapView)
+        {
+            if (slimeController != null)
+            {
+                slimeController.IsViewingMap = false;
+            }
+        }
+        else if (oldState == GameState.Placement)
+        {
+            PlacementManager placementMgr = FindAnyObjectByType<PlacementManager>();
+            if (placementMgr != null)
+            {
+                placementMgr.ClearSelection();
+            }
+        }
+    }
+
+    private IEnumerator TransitionToMacroRoutine(bool showInventory)
+    {
+        Vector3 startLocalPos = macroOverviewPosition;
+        if (MacroSlimeMarker.Instance != null)
+        {
+            startLocalPos = MacroSlimeMarker.Instance.transform.localPosition;
+            startLocalPos.z = -10f;
+        }
+
+        float closeUpSize = 6f;
+
+        if (macroCamera != null)
+        {
+            macroCamera.transform.localPosition = startLocalPos;
+            macroCamera.orthographicSize = closeUpSize;
+        }
+
+        SetCameraActive(macro: true, micro: false);
+        SetUIActive(inventory: false);
+
+        float elapsed = 0f;
+        while (elapsed < cameraTransitionDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.SmoothStep(0f, 1f, elapsed / cameraTransitionDuration);
+
+            if (macroCamera != null)
+            {
+                macroCamera.transform.localPosition = Vector3.Lerp(startLocalPos, macroOverviewPosition, t);
+                macroCamera.orthographicSize = Mathf.Lerp(closeUpSize, macroOverviewSize, t);
+            }
+            yield return null;
+        }
+
+        if (macroCamera != null)
+        {
+            macroCamera.transform.localPosition = macroOverviewPosition;
+            macroCamera.orthographicSize = macroOverviewSize;
+        }
+
+        SetUIActive(inventory: showInventory);
+        if (showInventory && inventoryManager != null)
+        {
+            inventoryManager.ResetSelection();
+        }
+
+        activeCameraTransition = null;
+    }
+
+    private IEnumerator TransitionToMicroRoutine()
+    {
+        Vector3 targetLocalPos = macroOverviewPosition;
+        if (MacroSlimeMarker.Instance != null)
+        {
+            targetLocalPos = MacroSlimeMarker.Instance.transform.localPosition;
+            targetLocalPos.z = -10f;
+        }
+
+        float closeUpSize = 6f;
+        Vector3 startLocalPos = (macroCamera != null) ? macroCamera.transform.localPosition : macroOverviewPosition;
+        float startSize = (macroCamera != null) ? macroCamera.orthographicSize : macroOverviewSize;
+
+        float elapsed = 0f;
+        while (elapsed < cameraTransitionDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.SmoothStep(0f, 1f, elapsed / cameraTransitionDuration);
+
+            if (macroCamera != null)
+            {
+                macroCamera.transform.localPosition = Vector3.Lerp(startLocalPos, targetLocalPos, t);
+                macroCamera.orthographicSize = Mathf.Lerp(startSize, closeUpSize, t);
+            }
+            yield return null;
+        }
+
+        SetCameraActive(macro: false, micro: true);
+        SetSlimeActive(true);
+
+        activeCameraTransition = null;
+    }
+
+    private void SetCameraActive(bool macro, bool micro)
+    {
+        if (macroCamera != null) macroCamera.gameObject.SetActive(macro);
+        if (mainCamera != null) mainCamera.gameObject.SetActive(micro);
+    }
+
+    private void SetUIActive(bool inventory)
+    {
+        if (inventoryScreen != null)
+        {
+            inventoryScreen.SetActive(inventory);
+            if (inventory) Canvas.ForceUpdateCanvases();
+        }
+    }
+
+    private void SetSlimeActive(bool active)
     {
         if (slimeController != null)
         {
@@ -331,18 +1007,25 @@ public class GameManager : MonoBehaviour
         {
             if (!active)
             {
+                cachedSlimeVelocity = slimeRigidbody.linearVelocity;
                 slimeRigidbody.linearVelocity = Vector2.zero;
                 slimeRigidbody.simulated = false;
             }
             else
             {
                 slimeRigidbody.simulated = true;
+                slimeRigidbody.linearVelocity = cachedSlimeVelocity;
             }
         }
     }
 
     private void FindReferencesIfNeeded()
     {
+        if (eventManager == null)
+        {
+            eventManager = FindAnyObjectByType<EventManager>();
+        }
+
         if (macroCamera == null)
         {
             macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
@@ -364,11 +1047,6 @@ public class GameManager : MonoBehaviour
         {
             slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
         }
-    }
-
-    public void ChangeState(GameState newState)
-    {
-        currentState = newState;
     }
 }
 </file>
@@ -471,6 +1149,40 @@ public class GridManager : MonoBehaviour
             }
         }
     }
+
+    /// <summary>
+    /// Schnittstelle für BossBase: Aktiviert das Warnsignal und färbt die Zelle ein
+    /// </summary>
+    public void HighlightCell(Vector2Int coord, Color highlightColor)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
+        if (grid == null || grid[coord.x, coord.y] == null) return;
+
+        grid[coord.x, coord.y].SetWarning(true);
+
+        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
+        if (renderer != null)
+        {
+            renderer.color = highlightColor;
+        }
+    }
+
+    /// <summary>
+    /// Schnittstelle für BossBase: Schaltet die Warnung ab und setzt die Farbe zurück
+    /// </summary>
+    public void ResetCellHighlight(Vector2Int coord)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
+        if (grid == null || grid[coord.x, coord.y] == null) return;
+
+        grid[coord.x, coord.y].SetWarning(false);
+
+        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
+        if (renderer != null)
+        {
+            renderer.color = Color.white;
+        }
+    }
 }
 </file>
 
@@ -497,7 +1209,11 @@ public class InventoryManager : MonoBehaviour
     private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
     private int currentSelectedIndex = 0;
 
-   void Awake()
+    // Timer gegen zu schnelles Durchrutschen der Slots mit dem Stick
+    [SerializeField] private float navRepeatDelay = 0.18f;
+    private float navRepeatTimer = 0f;
+
+    void Awake()
     {
         InitializeSlotPreviews();
 
@@ -509,8 +1225,15 @@ public class InventoryManager : MonoBehaviour
 
     void Start()
     {
+        FindReferencesIfNeeded();
         RefreshAllPreviews();
         UpdateCursorPosition();
+    }
+
+    private void FindReferencesIfNeeded()
+    {
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
     }
 
     public void InitializeSlotPreviews()
@@ -527,7 +1250,6 @@ public class InventoryManager : MonoBehaviour
                 preview = uiSlotTransforms[i].gameObject.AddComponent<ShapePreviewUI>();
             }
 
-            // Garantiert immer zuweisen, auch wenn die Komponente schon im Editor existierte:
             preview.uiBlockPrefab = uiBlockPrefab;
             preview.container = uiSlotTransforms[i];
             slotPreviews[i] = preview;
@@ -536,28 +1258,61 @@ public class InventoryManager : MonoBehaviour
 
     void Update()
     {
-        if (gameManager == null || gameManager.currentState != GameState.Inventory) return;
-        if (Keyboard.current == null) return;
+        if (gameManager == null || gameManager.currentState != GameState.MacroPlan) return;
 
-        if (Keyboard.current.aKey.wasPressedThisFrame || Keyboard.current.leftArrowKey.wasPressedThisFrame)
+        var gamepad = Gamepad.current;
+        var keyboard = Keyboard.current;
+
+        // 1. DURCH DIE SLOTS BLÄTTERN (D-Pad / Stick oder A/D / Pfeiltasten)
+        int moveDir = 0;
+
+        if (gamepad != null)
         {
-            if (currentSelectedIndex > 0)
-            {
-                currentSelectedIndex--;
-                UpdateSelection();
-            }
+            Vector2 dpad = gamepad.dpad.ReadValue();
+            Vector2 stick = gamepad.leftStick.ReadValue();
+
+            if (dpad.x < -0.5f || stick.x < -0.55f) moveDir = -1;
+            else if (dpad.x > 0.5f || stick.x > 0.55f) moveDir = 1;
         }
 
-        if (Keyboard.current.dKey.wasPressedThisFrame || Keyboard.current.rightArrowKey.wasPressedThisFrame)
+        if (keyboard != null && moveDir == 0)
         {
-            if (currentSelectedIndex < hotbarSlots.Length - 1)
-            {
-                currentSelectedIndex++;
-                UpdateSelection();
-            }
+            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) moveDir = -1;
+            else if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) moveDir = 1;
         }
 
-        if (Keyboard.current.enterKey.wasPressedThisFrame || Keyboard.current.numpadEnterKey.wasPressedThisFrame)
+        if (moveDir != 0)
+        {
+            if (navRepeatTimer <= 0f)
+            {
+                if (moveDir < 0 && currentSelectedIndex > 0)
+                {
+                    currentSelectedIndex--;
+                    UpdateSelection();
+                }
+                else if (moveDir > 0 && currentSelectedIndex < hotbarSlots.Length - 1)
+                {
+                    currentSelectedIndex++;
+                    UpdateSelection();
+                }
+
+                navRepeatTimer = navRepeatDelay;
+            }
+            else
+            {
+                navRepeatTimer -= Time.deltaTime;
+            }
+        }
+        else
+        {
+            navRepeatTimer = 0f;
+        }
+
+        // 2. FORM AUSWÄHLEN (X auf Controller, Enter oder Leertaste)
+        bool selectPressed = (gamepad != null && gamepad.buttonSouth.wasPressedThisFrame) ||
+                             (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame));
+
+        if (selectPressed)
         {
             TrySelectCurrentSlot();
         }
@@ -597,7 +1352,7 @@ public class InventoryManager : MonoBehaviour
         UpdateCenterPreview();
     }
 
-   void UpdateCenterPreview()
+    void UpdateCenterPreview()
     {
         if (centerPreview == null || !centerPreview.gameObject.activeInHierarchy) return;
 
@@ -613,6 +1368,11 @@ public class InventoryManager : MonoBehaviour
 
     void TrySelectCurrentSlot()
     {
+        if (placementManager == null)
+        {
+            placementManager = FindAnyObjectByType<PlacementManager>();
+        }
+
         if (placementManager != null && !placementManager.CanPlaceMoreThisTurn())
         {
             Debug.Log("Maximale Platzierungen für diesen Zug erreicht!");
@@ -621,9 +1381,6 @@ public class InventoryManager : MonoBehaviour
 
         if (hotbarSlots[currentSelectedIndex] != null)
         {
-            // ALTE ZEILE (entfernen oder auskommentieren!):
-            // gameManager.inventoryScreen.SetActive(false);
-
             placementManager.SelectShape(hotbarSlots[currentSelectedIndex], currentSelectedIndex);
         }
         else
@@ -719,11 +1476,25 @@ public class InventoryManager : MonoBehaviour
 </file>
 
 <file path="Data/LevelConfiguration.cs">
+using System.Collections.Generic;
 using UnityEngine;
+
+public enum LevelGoalType
+{
+    DefeatBoss,      // Ziel: Boss besiegen
+    ReachExit,       // Ziel: Von Start zu Zielkoordinate gelangen
+    SurviveTurns,    // Ziel: Bestimmte Rundenanzahl überleben
+    ClearMinions     // Ziel: Alle Minions auf dem Feld besiegen
+}
 
 [CreateAssetMenu(fileName = "LevelConfig_New", menuName = "Slimily/Level Configuration")]
 public class LevelConfiguration : ScriptableObject
 {
+    [Header("Level-Ziel & Bedingungen")]
+    public LevelGoalType goalType = LevelGoalType.DefeatBoss;
+    public Vector2Int exitCoordinate = new Vector2Int(45, 45);
+    public int turnsToSurvive = 5;
+
     [Header("Grid-Dimensionen")]
     public int gridWidth = 50;
     public int gridHeight = 50;
@@ -735,8 +1506,9 @@ public class LevelConfiguration : ScriptableObject
     public float roomSpacing = 100f;
 
     [Header("Boss & Encounter")]
-    public GameObject bossPrefab;
+    public BossBase bossPrefab;
     public Vector2Int bossSpawnCoordinate = new Vector2Int(25, 40);
+    public List<GameObject> minionPrefabs = new List<GameObject>();
 
     [Header("Optik & Theming")]
     public Sprite backgroundSprite;
@@ -801,126 +1573,6 @@ public abstract class BossAction : MonoBehaviour
 
     protected abstract List<Vector2Int> CalculateTargetCells(GridManager gridManager, MacroSlimeMarker slime);
     protected abstract IEnumerator ExecuteActionEffect(GridManager gridManager, MacroSlimeMarker slime);
-}
-</file>
-
-<file path="Grid/BossController.cs">
-using UnityEngine;
-using System.Collections;
-using System.Collections.Generic;
-
-public class BossController : MonoBehaviour
-{
-    public GridManager gridManager;
-    public GameManager gameManager;
-    public MacroSlimeMarker slime;
-
-    // Linke untere Ecke des 2x2-Bosses auf dem Grid
-    public int originX = 35;
-    public int originY = 35;
-
-    private List<Vector2Int> occupiedOffsets = new List<Vector2Int>
-    {
-        new Vector2Int(0, 0),
-        new Vector2Int(1, 0),
-        new Vector2Int(0, 1),
-        new Vector2Int(1, 1)
-    };
-
-    void Start()
-    {
-        UpdateWorldPosition();
-        OccupyGridCells(true);
-    }
-
-    // Setzt die 4 Kacheln auf besetzt/unbesetzt
-    public void OccupyGridCells(bool occupy)
-    {
-        if (gridManager == null || gridManager.grid == null) return;
-
-        foreach (var offset in occupiedOffsets)
-        {
-            int checkX = originX + offset.x;
-            int checkY = originY + offset.y;
-
-            if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
-            {
-                GridCell cell = gridManager.grid[checkX, checkY];
-
-                if (occupy)
-                {
-                    cell.SetBlocked();   // Setzt Zustand auf Blocked & färbt Dunkelblau
-                }
-                else
-                {
-                    cell.DestroyBlock(); // Setzt Zustand zurück auf Empty & färbt Weiß
-                }
-            }
-        }
-    }
-
-    // Zentriert das 2x2 Sprite exakt über den 4 Feldern
-    public void UpdateWorldPosition()
-    {
-        if (gridManager == null) return;
-
-        // + 0.5f sorgt dafür, dass das Sprite genau im Zentrum der 4 Felder liegt
-        float worldX = (originX + 0.5f) * gridManager.offset;
-        float worldY = (originY + 0.5f) * gridManager.offset;
-
-        transform.position = new Vector3(worldX, worldY, -2f); // -2f, damit er vor Slime und Grid rendert
-    }
-
-    // Hier läuft die Rundenlogik des Bosses ab
-    public IEnumerator ExecuteBossTurn()
-    {
-        Debug.Log("Boss beginnt seinen Zug...");
-
-        // Kurze Pause für das Spielgefühl (0.5s warten)
-        yield return new WaitForSeconds(0.5f);
-
-        // BEISPIEL-AKTION: 1 Feld in Richtung Slime rücken (falls möglich)
-        MoveTowardsSlime();
-
-        yield return new WaitForSeconds(0.3f);
-        Debug.Log("Boss hat seinen Zug beendet.");
-    }
-
-    void MoveTowardsSlime()
-    {
-        if (slime == null) return;
-
-        int stepX = 0;
-        int stepY = 0;
-
-        if (slime.currentX < originX) stepX = -1;
-        else if (slime.currentX > originX) stepX = 1;
-
-        if (slime.currentY < originY) stepY = -1;
-        else if (slime.currentY > originY) stepY = 1;
-
-        // Nur eine Achse pro Zug bewegen (z. B. primär X, sonst Y)
-        if (stepX != 0) stepY = 0;
-
-        int targetX = originX + stepX;
-        int targetY = originY + stepY;
-
-        // Prüfen, ob die 4 Zielfelder innerhalb des Grids liegen
-        if (targetX >= 0 && targetX + 1 < gridManager.width &&
-            targetY >= 0 && targetY + 1 < gridManager.height)
-        {
-            // Alte Felder freigeben
-            OccupyGridCells(false);
-
-            originX = targetX;
-            originY = targetY;
-
-            // Neue Felder blockieren & Sprite bewegen
-            OccupyGridCells(true);
-            UpdateWorldPosition();
-            Debug.Log($"Boss bewegt sich auf Position: {originX}, {originY}");
-        }
-    }
 }
 </file>
 
@@ -1441,6 +2093,24 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Zerstört einen Raum an der angegebenen Koordinate und entfernt ihn aus dem Grid.
+    /// Wird unter anderem bei Boss-Angriffen aufgerufen.
+    /// </summary>
+    public void RemoveRoomAt(Vector2Int coord)
+    {
+        if (grid.TryGetValue(coord, out Room roomInstance) && roomInstance != null)
+        {
+            Destroy(roomInstance.gameObject);
+        }
+
+        grid.Remove(coord);
+        roomPrefabs.Remove(coord);
+
+        // Türen der umgebenden Räume aktualisieren, damit geschlossene Wände entstehen
+        UpdateActiveRooms(currentCoordinate);
+    }
+
     public static Vector2Int DirectionToOffset(Direction dir)
     {
         return dir switch
@@ -1469,7 +2139,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (playerTransform != null) return;
 
-        var slime = FindFirstObjectByType<PlatformerSlimeController>();
+        var slime = FindAnyObjectByType<PlatformerSlimeController>();
         if (slime != null)
         {
             playerTransform = slime.transform;
@@ -1487,7 +2157,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (cinemachineCam == null)
         {
-            cinemachineCam = FindFirstObjectByType<CinemachineCamera>();
+            cinemachineCam = FindAnyObjectByType<CinemachineCamera>();
         }
 
         if (cinemachineConfiner == null && cinemachineCam != null)
@@ -1503,7 +2173,6 @@ public class MacroGridManager : MonoBehaviour
     {
         if (slimeTransform == null) return;
 
-        // Raum-Position holen und Slime etwas nach oben versetzen (z.B. +2.5f Einheiten über den Pivot)
         Vector3 targetPos = GetWorldPosition(coord) + new Vector3(0f, 2.5f, 0f);
         slimeTransform.position = targetPos;
 
@@ -1603,10 +2272,16 @@ public class PlacementManager : MonoBehaviour
 
     private ShapeData currentShape = null;
     private int currentSlotIndex = -1;
-    
+
     private List<GridCell> lastHoveredCells = new List<GridCell>();
 
+    [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
+
+    [Header("Gamepad Grid-Cursor")]
+    [SerializeField] private Vector2Int cursorCoord;
+    [SerializeField] private float moveRepeatDelay = 0.18f;
+    private float moveRepeatTimer = 0f;
 
     private Camera GetActiveRaycastCamera()
     {
@@ -1634,105 +2309,190 @@ public class PlacementManager : MonoBehaviour
 
         currentShape = shape.Clone();
         currentSlotIndex = slotIndex;
-        
+
+        // Cursor initial am Slime-Marker ausrichten
+        if (MacroSlimeMarker.Instance != null)
+        {
+            cursorCoord = new Vector2Int(MacroSlimeMarker.Instance.currentX, MacroSlimeMarker.Instance.currentY);
+        }
+        else if (gridManager != null)
+        {
+            cursorCoord = new Vector2Int(gridManager.width / 2, gridManager.height / 2);
+        }
+
         if (gameManager != null)
         {
             gameManager.ChangeState(GameState.Placement);
         }
+
+        UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
     }
 
-    public void CancelSelection()   
+    /// <summary>
+    /// Räumt nur die visuelle Vorschau und Daten auf, ohne einen State-Wechsel zu triggern.
+    /// </summary>
+    public void ClearSelection()
     {
         currentShape = null;
         currentSlotIndex = -1;
-        
-        foreach (GridCell cell in lastHoveredCells)
-        {
-            cell.RevertPreview();
-        }
-        lastHoveredCells.Clear();
+        ClearHoverPreview();
+    }
 
-        if (gameManager != null)
+    /// <summary>
+    /// Bricht die Platzierung ab und wechselt zurück in den MacroPlan-Zustand.
+    /// </summary>
+    public void CancelSelection()
+    {
+        if (currentShape == null && currentSlotIndex == -1) return;
+
+        ClearSelection();
+
+        if (gameManager != null && gameManager.currentState == GameState.Placement)
         {
-            // Zurück in die Slot-Auswahl der Makro-Ebene:
-            gameManager.ChangeState(GameState.Inventory);
+            gameManager.ChangeState(GameState.MacroPlan);
         }
     }
 
     void Update()
     {
         if (gameManager != null && gameManager.currentState != GameState.Placement) return;
-        if (Mouse.current == null || Keyboard.current == null) return;
+        if (currentShape == null) return;
 
-        if (Keyboard.current.escapeKey.wasPressedThisFrame)
+        var gamepad = Gamepad.current;
+        var keyboard = Keyboard.current;
+        var mouse = Mouse.current;
+
+        // 1. ABBRUCH (Kreis auf PS5 oder Escape)
+        bool cancelPressed = (gamepad != null && gamepad.buttonEast.wasPressedThisFrame) ||
+                             (keyboard != null && keyboard.escapeKey.wasPressedThisFrame);
+        if (cancelPressed)
         {
             CancelSelection();
             return;
         }
 
-        if (currentShape == null) return;
+        // 2. ROTATION (L1 / R1 oder Q / E / Rechtsklick)
+        bool rotateCW = (gamepad != null && gamepad.rightShoulder.wasPressedThisFrame) ||
+                        (keyboard != null && keyboard.eKey.wasPressedThisFrame) ||
+                        (mouse != null && mouse.rightButton.wasPressedThisFrame);
 
-        if (Mouse.current.rightButton.wasPressedThisFrame)
+        bool rotateCCW = (gamepad != null && gamepad.leftShoulder.wasPressedThisFrame) ||
+                         (keyboard != null && keyboard.qKey.wasPressedThisFrame);
+
+        if (rotateCW)
         {
             currentShape.RotateClockwise();
+            UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
+        }
+        else if (rotateCCW)
+        {
+            // 3x im Uhrzeigersinn = 1x gegen den Uhrzeigersinn
+            currentShape.RotateClockwise();
+            currentShape.RotateClockwise();
+            currentShape.RotateClockwise();
+            UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
         }
 
-        UpdatePreview();
+        // 3. CURSOR-STEUERUNG (Gamepad Stick/D-Pad & Pfeiltasten/WASD)
+        Vector2Int moveInput = Vector2Int.zero;
 
-        if (Mouse.current.leftButton.wasPressedThisFrame) 
+        if (gamepad != null)
         {
-            TryPlaceShape();
+            Vector2 stick = gamepad.leftStick.ReadValue();
+            Vector2 dpad = gamepad.dpad.ReadValue();
+
+            if (dpad.x > 0.5f || stick.x > 0.55f) moveInput.x = 1;
+            else if (dpad.x < -0.5f || stick.x < -0.55f) moveInput.x = -1;
+
+            if (dpad.y > 0.5f || stick.y > 0.55f) moveInput.y = 1;
+            else if (dpad.y < -0.5f || stick.y < -0.55f) moveInput.y = -1;
+        }
+
+        if (keyboard != null && moveInput == Vector2Int.zero)
+        {
+            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) moveInput.x = 1;
+            else if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) moveInput.x = -1;
+
+            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) moveInput.y = 1;
+            else if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) moveInput.y = -1;
+        }
+
+        if (moveInput != Vector2Int.zero)
+        {
+            if (moveRepeatTimer <= 0f)
+            {
+                cursorCoord.x = Mathf.Clamp(cursorCoord.x + moveInput.x, 0, gridManager.width - 1);
+                cursorCoord.y = Mathf.Clamp(cursorCoord.y + moveInput.y, 0, gridManager.height - 1);
+                UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
+
+                moveRepeatTimer = moveRepeatDelay;
+            }
+            else
+            {
+                moveRepeatTimer -= Time.deltaTime;
+            }
+        }
+        else
+        {
+            moveRepeatTimer = 0f;
+
+            // Optionaler Fallback: Wenn Maus bewegt wird, Mausposition nutzen
+            if (mouse != null && mouse.delta.ReadValue().sqrMagnitude > 4f)
+            {
+                Vector2Int mouseCell = GetCellUnderMouse();
+                if (mouseCell.x >= 0 && (mouseCell.x != cursorCoord.x || mouseCell.y != cursorCoord.y))
+                {
+                    cursorCoord = mouseCell;
+                    UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
+                }
+            }
+        }
+
+        // 4. PLATZIEREN (Kreuz auf PS5, Enter oder Linksklick)
+        bool placePressed = (gamepad != null && gamepad.buttonSouth.wasPressedThisFrame) ||
+                            (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame)) ||
+                            (mouse != null && mouse.leftButton.wasPressedThisFrame);
+
+        if (placePressed)
+        {
+            TryPlaceShapeAt(cursorCoord.x, cursorCoord.y);
         }
     }
 
-   void UpdatePreview()
+    private void UpdatePreviewAt(int startX, int startY)
     {
-        foreach (GridCell cell in lastHoveredCells)
+        ClearHoverPreview();
+
+        if (gridManager == null || currentShape == null) return;
+
+        bool isValid = CanPlaceShape(startX, startY);
+
+        foreach (ShapeCell cell in currentShape.cells)
         {
-            cell.RevertPreview();
-        }
-        lastHoveredCells.Clear();
+            int checkX = startX + cell.localPosition.x;
+            int checkY = startY + cell.localPosition.y;
 
-        Camera activeCam = GetActiveRaycastCamera();
-        if (activeCam == null || gridManager == null) return;
-
-        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
-        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
-        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
-
-        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
-        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
-
-        if (startX >= 0 && startX < gridManager.width && startY >= 0 && startY < gridManager.height)
-        {
-            bool isValid = CanPlaceShape(startX, startY);
-
-            foreach (ShapeCell cell in currentShape.cells)
+            if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
             {
-                int checkX = startX + cell.localPosition.x;
-                int checkY = startY + cell.localPosition.y;
-
-                if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
-                {
-                    GridCell hoverCell = gridManager.grid[checkX, checkY];
-                    hoverCell.SetPreview(isValid);
-                    lastHoveredCells.Add(hoverCell);
-                }
+                GridCell hoverCell = gridManager.grid[checkX, checkY];
+                hoverCell.SetPreview(isValid);
+                lastHoveredCells.Add(hoverCell);
             }
         }
     }
 
-   void TryPlaceShape()
+    private void ClearHoverPreview()
     {
-        Camera activeCam = GetActiveRaycastCamera();
-        if (activeCam == null || gridManager == null) return;
+        foreach (GridCell cell in lastHoveredCells)
+        {
+            if (cell != null) cell.RevertPreview();
+        }
+        lastHoveredCells.Clear();
+    }
 
-        Vector2 mouseScreenPosition = Mouse.current.position.ReadValue();
-        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mouseScreenPosition.x, mouseScreenPosition.y, -activeCam.transform.position.z));
-        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
-
-        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
-        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
+    private void TryPlaceShapeAt(int startX, int startY)
+    {
+        if (gridManager == null || currentShape == null) return;
 
         if (CanPlaceShape(startX, startY))
         {
@@ -1748,21 +2508,50 @@ public class PlacementManager : MonoBehaviour
                     MacroGridManager.Instance.RegisterRoom(coord, null);
                 }
             }
-            
+
             if (MacroGridManager.Instance != null)
             {
                 MacroGridManager.Instance.UpdateActiveRooms(MacroGridManager.Instance.CurrentCoordinate);
             }
 
-            inventoryManager.ConsumeShape(currentSlotIndex);
+            if (inventoryManager != null)
+            {
+                inventoryManager.ConsumeShape(currentSlotIndex);
+            }
+
             placementsThisTurn++;
             Debug.Log($"Form platziert ({placementsThisTurn}/{maxPlacementsPerTurn} in dieser Runde).");
 
             CancelSelection();
         }
+        else
+        {
+            Debug.Log("Ungültige Platzierung!");
+        }
     }
 
-    bool CanPlaceShape(int startX, int startY)
+    private Vector2Int GetCellUnderMouse()
+    {
+        Camera activeCam = GetActiveRaycastCamera();
+        if (activeCam == null || gridManager == null || Mouse.current == null)
+            return new Vector2Int(-1, -1);
+
+        Vector2 mousePos = Mouse.current.position.ReadValue();
+        Vector3 worldPos = activeCam.ScreenToWorldPoint(new Vector3(mousePos.x, mousePos.y, -activeCam.transform.position.z));
+        Vector3 localPos = gridManager.transform.InverseTransformPoint(worldPos);
+
+        int startX = Mathf.RoundToInt(localPos.x / gridManager.offset);
+        int startY = Mathf.RoundToInt(localPos.y / gridManager.offset);
+
+        if (startX >= 0 && startX < gridManager.width && startY >= 0 && startY < gridManager.height)
+        {
+            return new Vector2Int(startX, startY);
+        }
+
+        return new Vector2Int(-1, -1);
+    }
+
+    private bool CanPlaceShape(int startX, int startY)
     {
         bool hasAdjacent = false;
 
@@ -1772,30 +2561,29 @@ public class PlacementManager : MonoBehaviour
             int checkY = startY + cell.localPosition.y;
 
             if (checkX < 0 || checkX >= gridManager.width || checkY < 0 || checkY >= gridManager.height)
-                return false; 
+                return false;
 
             if (!gridManager.grid[checkX, checkY].IsBuildable)
                 return false;
 
-            if (IsOccupied(checkX + 1, checkY) || 
-                IsOccupied(checkX - 1, checkY) || 
-                IsOccupied(checkX, checkY + 1) || 
+            if (IsOccupied(checkX + 1, checkY) ||
+                IsOccupied(checkX - 1, checkY) ||
+                IsOccupied(checkX, checkY + 1) ||
                 IsOccupied(checkX, checkY - 1))
             {
                 hasAdjacent = true;
             }
         }
-        
-        return hasAdjacent; 
+
+        return hasAdjacent;
     }
 
-    bool IsOccupied(int x, int y)
+    private bool IsOccupied(int x, int y)
     {
         if (x < 0 || x >= gridManager.width || y < 0 || y >= gridManager.height)
-            return false; 
-            
-        // Prüft, ob dort wirklich ein gebauter Weg (grau) liegt
-        return gridManager.grid[x, y].currentState == CellState.Built; 
+            return false;
+
+        return gridManager.grid[x, y].currentState == CellState.Built;
     }
 }
 </file>
@@ -2479,6 +3267,8 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+    // --- Meditations- & Interaktionsstatus ---
+    public bool IsViewingMap { get; set; }
 
     private float detachCooldownTimer;
     private Vector2 lastDetachedNormal = Vector2.zero;
@@ -2491,6 +3281,9 @@ public class PlatformerSlimeController : MonoBehaviour
     [SerializeField] private float stickDeadzone = 0.2f;
 
     public bool HasBufferedJump => jumpBufferTimer > 0f;
+
+    // --- Meditations- & Interaktionsstatus ---
+    public bool IsMeditating { get; set; }
 
     public void ConsumeJumpBuffer()
     {
@@ -2519,7 +3312,7 @@ public class PlatformerSlimeController : MonoBehaviour
     private void Start()
     {
         // Ohne deprecated Parameter -> Warnung weg
-        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude);
         foreach (var tm in allTilemaps)
         {
             tm.RefreshAllTiles();
@@ -2663,6 +3456,15 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void ReadInput()
     {
+        // Wenn meditiert wird oder die Karte offen ist: Keine Bewegungs-/Sprungeingaben
+        if (IsMeditating || IsViewingMap)
+        {
+            MoveInput = Vector2.zero;
+            jumpBufferTimer = 0f;
+            JumpHeld = false;
+            return;
+        }
+
         Vector2 input = Vector2.zero;
         bool jumpPressedThisFrame = false;
         bool jumpIsHeld = false;
@@ -3103,6 +3905,25 @@ public class PlatformerSlimeController : MonoBehaviour
         Vector2 center = (Vector2)transform.position + col.offset;
         Gizmos.DrawWireCube(center, col.size);
     }
+
+/// <summary>
+    /// Schnittstelle für Fallen/Gegner: Bricht Meditation oder Karte sofort ab.
+    /// </summary>
+    public void TakeDamage()
+    {
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.InterruptMeditation();
+
+            // Falls die Karte offen ist: Sofort schließen und zurück zum Slime
+            if (GameManager.Instance.currentState == GameState.MapView)
+            {
+                GameManager.Instance.ChangeState(GameState.FreeRoam);
+            }
+        }
+
+        // Hier folgen später Lebenspunkte-Abzug oder Respawn
+    }
 }
 </file>
 
@@ -3182,6 +4003,85 @@ public class PlatformerStateMachine
     public void FixedUpdate()
     {
         CurrentState?.PhysicsUpdate();
+    }
+}
+</file>
+
+<file path="UI/TurnBannerUI.cs">
+using System.Collections;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class TurnBannerUI : MonoBehaviour
+{
+    public static TurnBannerUI Instance { get; private set; }
+
+    [Header("UI-Komponenten")]
+    [SerializeField] private CanvasGroup canvasGroup;
+    [SerializeField] private TextMeshProUGUI bannerText;
+    [SerializeField] private Image bannerImage;
+
+    [Header("Design-Farben")]
+    [SerializeField] private Color enemyTurnColor = new Color(0.9f, 0.25f, 0.2f);
+    [SerializeField] private Color playerTurnColor = new Color(0.2f, 0.8f, 0.4f);
+
+    private Coroutine activeBannerRoutine;
+
+    private void Awake()
+    {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+
+        if (canvasGroup == null) canvasGroup = GetComponent<CanvasGroup>();
+
+        // Beim Start unsichtbar schalten
+        if (canvasGroup != null)
+        {
+            canvasGroup.alpha = 0f;
+            canvasGroup.blocksRaycasts = false;
+        }
+    }
+
+    /// <summary>
+    /// Blendet das Banner mit Text und Farbe für eine bestimmte Dauer ein.
+    /// </summary>
+    public IEnumerator ShowBannerRoutine(string message, bool isEnemyTurn, float duration = 1.0f)
+    {
+        if (bannerText != null)
+        {
+            bannerText.text = message;
+            bannerText.color = isEnemyTurn ? enemyTurnColor : playerTurnColor;
+        }
+
+        if (bannerImage != null)
+        {
+            // Tönt die spätere Grafik dezent ein (oder weiß lassen falls schon coloriert)
+            bannerImage.color = isEnemyTurn ? enemyTurnColor : playerTurnColor;
+        }
+
+        // Einblenden (0.2s)
+        yield return StartCoroutine(FadeCanvasGroup(0f, 1f, 0.2f));
+
+        // Halten
+        yield return new WaitForSeconds(duration);
+
+        // Ausblenden (0.2s)
+        yield return StartCoroutine(FadeCanvasGroup(1f, 0f, 0.2f));
+    }
+
+    private IEnumerator FadeCanvasGroup(float from, float to, float time)
+    {
+        if (canvasGroup == null) yield break;
+
+        float elapsed = 0f;
+        while (elapsed < time)
+        {
+            elapsed += Time.deltaTime;
+            canvasGroup.alpha = Mathf.Lerp(from, to, elapsed / time);
+            yield return null;
+        }
+        canvasGroup.alpha = to;
     }
 }
 </file>

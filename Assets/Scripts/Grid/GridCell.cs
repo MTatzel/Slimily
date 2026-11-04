@@ -2,31 +2,49 @@ using UnityEngine;
 
 public enum CellState
 {
-    Empty,      // Weiß: Leeres Feld
-    Built,      // Grau: Gebauter Block (Slime kann laufen)
-    Blocked     // Dunkelblau: Boss / Hindernis (unpassierbar & unbaubar)
+    Empty,      // Im Nebel (bebaubar, Zone schimmert schwach durch)
+    Built,      // Gebauter Raum (leuchtet intensiv in der Zonenfarbe)
+    Blocked     // Hindernis (unpassierbar & unbaubar)
+}
+
+public enum ZoneType
+{
+    Hub,                // Sicheres Zentrum
+    Forest,             // Tier 1: Wald / Verstrickung (Grün)
+    Ocean,              // Tier 1: Meer / Bodenlose Tiefe (Blau)
+    Ruins,              // Tier 1: Ruinen / Einsturz (Ocker/Gold)
+    Swamp,              // Tier 2: Sumpf (Türkis/Giftgrün - grenzt an Wald)
+    PurpleNightmare,    // Äußerer Rand: Erschwerte Albtraum-Räume (Lila)
+    BlackVoid           // Ganz außen: Extrem harte / tödliche Räume (Schwarz)
 }
 
 public class GridCell : MonoBehaviour
 {
     public int x, y;
     public CellState currentState = CellState.Empty;
+    public ZoneType zoneType = ZoneType.Forest;
 
     [Header("Renderers")]
     [SerializeField] private SpriteRenderer baseRenderer;
     [SerializeField] private SpriteRenderer overlayRenderer;
 
-    public bool isTargeted = false; 
-    public bool isHovered = false; 
+    [Header("Nebel & Zonen-Optik")]
+    [Tooltip("Wie stark die Zonenfarbe durch den unentdeckten Nebel schimmert (0.15 - 0.30 empfohlen)")]
+    [SerializeField] private float fogTintStrength = 0.22f;
+
+    public bool isTargeted = false;
+    public bool isHovered = false;
     public float pulseSpeed = 4f;
 
-    // Grundfarben des Bodens
-    private static readonly Color ColorEmpty = Color.white;
-    private static readonly Color ColorBuilt = Color.gray;
-    private static readonly Color ColorBlocked = new Color(0.1f, 0.2f, 0.6f); // Dunkelblau
+    // Grundfarben für Nebel und Blockaden
+    private static readonly Color FogBaseColor = new Color(0.07f, 0.07f, 0.09f, 1f);
+    private static readonly Color ColorBlocked = new Color(0.1f, 0.15f, 0.3f, 1f);
 
-    // Aktuelle Warnfarbe für das Overlay
-    private Color currentWarningColor = new Color(1f, 0.5f, 0f); // Standard: Orange
+    // Zugewiesene Zonenfarbe dieser Kachel
+    private Color zoneColor = Color.white;
+
+    // Aktuelle Warnfarbe für das Overlay (Boss-Telegrafie)
+    private Color currentWarningColor = new Color(1f, 0.5f, 0f);
 
     // Hilfseigenschaften für andere Skripte
     public bool IsWalkableForSlime => currentState == CellState.Built;
@@ -34,7 +52,6 @@ public class GridCell : MonoBehaviour
 
     void Awake()
     {
-        // Falls im Inspector nicht zugewiesen, automatisch zuweisen
         if (baseRenderer == null)
             baseRenderer = GetComponent<SpriteRenderer>();
 
@@ -48,6 +65,16 @@ public class GridCell : MonoBehaviour
         y = gridY;
         gameObject.name = $"Feld_{x}_{y}";
         SetState(CellState.Empty);
+    }
+
+    /// <summary>
+    /// Weist der Kachel eine Zone und ihre Grundfarbe zu.
+    /// </summary>
+    public void SetZone(ZoneType type, Color color)
+    {
+        zoneType = type;
+        zoneColor = color;
+        UpdateBaseColor();
     }
 
     public void SetState(CellState newState)
@@ -68,21 +95,26 @@ public class GridCell : MonoBehaviour
         UpdateOverlay();
     }
 
-    // Maus-Vorschau beim Platzieren von Formen
+    // Vorschau beim Platzieren von Würfelnetzen
     public void SetPreview(bool isValid)
     {
         isHovered = true;
         if (overlayRenderer != null)
         {
             overlayRenderer.gameObject.SetActive(true);
-            // Halbtransparentes Grün oder Rot über die Kachel legen
-            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.45f) : new Color(1f, 0f, 0f, 0.45f);
+            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.55f) : new Color(1f, 0f, 0f, 0.55f);
+        }
+        else if (baseRenderer != null)
+        {
+            // Fallback, falls im Prefab kein separater OverlayRenderer zugewiesen ist
+            baseRenderer.color = isValid ? new Color(0.2f, 0.9f, 0.2f, 1f) : new Color(0.9f, 0.2f, 0.2f, 1f);
         }
     }
 
     public void RevertPreview()
     {
         isHovered = false;
+        UpdateBaseColor();
         UpdateOverlay();
     }
 
@@ -90,9 +122,33 @@ public class GridCell : MonoBehaviour
     {
         switch (currentState)
         {
-            case CellState.Built: return ColorBuilt;
-            case CellState.Blocked: return ColorBlocked;
-            default: return ColorEmpty;
+            case CellState.Built:
+                // Belegte Felder leuchten kräftig in der vollen Farbe ihrer Zone
+                return zoneColor;
+
+            case CellState.Blocked:
+                return ColorBlocked;
+
+            case CellState.Empty:
+            default:
+                // Hub ist immer klar sichtbar
+                if (zoneType == ZoneType.Hub)
+                {
+                    return zoneColor * 0.8f;
+                }
+                // Schwarzer Rand ist fast tiefschwarz
+                if (zoneType == ZoneType.BlackVoid)
+                {
+                    return new Color(0.03f, 0.02f, 0.04f, 1f);
+                }
+                // Lila Albtraum-Rand hebt sich bedrohlich ab
+                if (zoneType == ZoneType.PurpleNightmare)
+                {
+                    return Color.Lerp(FogBaseColor, zoneColor, 0.42f);
+                }
+
+                // Normale Zonen im Nebel: Dunkler Grundton mit durchschimmernder Zonenfarbe
+                return Color.Lerp(FogBaseColor, zoneColor, fogTintStrength);
         }
     }
 
@@ -108,7 +164,7 @@ public class GridCell : MonoBehaviour
     {
         if (overlayRenderer == null) return;
 
-        if (isHovered) return; // Hover hat Vorrang
+        if (isHovered) return;
 
         if (isTargeted)
         {
@@ -124,8 +180,7 @@ public class GridCell : MonoBehaviour
     {
         if (isHovered || !isTargeted || overlayRenderer == null) return;
 
-        // Lässt nur die Deckkraft (Alpha) des Overlays pulsieren
-        float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f; // Pendelt zwischen 0.2 und 0.7
+        float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f;
         Color pulsedColor = currentWarningColor;
         pulsedColor.a = alpha;
         overlayRenderer.color = pulsedColor;

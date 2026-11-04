@@ -9,8 +9,10 @@ public class PlacementManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public GameManager gameManager;
 
-    // Runden-Begrenzung
-    public int maxPlacementsPerTurn = 2;
+    [Header("Fokus & Platzierungs-Regeln")]
+    [Tooltip("Wenn aktiv, wird das Platzieren über Fokus-Punkte (GameManager) begrenzt statt über ein starres Rundenlimit.")]
+    public bool useFocusCost = true;
+    public int maxPlacementsPerTurn = 99;
     public int placementsThisTurn = 0;
 
     private ShapeData currentShape = null;
@@ -34,6 +36,15 @@ public class PlacementManager : MonoBehaviour
 
     public bool CanPlaceMoreThisTurn()
     {
+        if (useFocusCost)
+        {
+            if (gameManager == null) gameManager = GameManager.Instance;
+            if (gameManager != null)
+            {
+                return gameManager.CanAffordFocus(gameManager.PlaceCubeFocusCost);
+            }
+        }
+
         return placementsThisTurn < maxPlacementsPerTurn;
     }
 
@@ -46,7 +57,8 @@ public class PlacementManager : MonoBehaviour
     {
         if (!CanPlaceMoreThisTurn())
         {
-            Debug.Log("Platzierungslimit für diese Runde bereits erreicht!");
+            int needed = (gameManager != null) ? gameManager.PlaceCubeFocusCost : 1;
+            Debug.Log($"[PlacementManager] Nicht genug Fokus zum Bauen! (Benötigt: {needed})");
             return;
         }
 
@@ -129,7 +141,6 @@ public class PlacementManager : MonoBehaviour
         }
         else if (rotateCCW)
         {
-            // 3x im Uhrzeigersinn = 1x gegen den Uhrzeigersinn
             currentShape.RotateClockwise();
             currentShape.RotateClockwise();
             currentShape.RotateClockwise();
@@ -179,7 +190,6 @@ public class PlacementManager : MonoBehaviour
         {
             moveRepeatTimer = 0f;
 
-            // Optionaler Fallback: Wenn Maus bewegt wird, Mausposition nutzen
             if (mouse != null && mouse.delta.ReadValue().sqrMagnitude > 4f)
             {
                 Vector2Int mouseCell = GetCellUnderMouse();
@@ -208,7 +218,7 @@ public class PlacementManager : MonoBehaviour
 
         if (gridManager == null || currentShape == null) return;
 
-        bool isValid = CanPlaceShape(startX, startY);
+        bool isValid = CanPlaceShape(startX, startY) && CanPlaceMoreThisTurn();
 
         foreach (ShapeCell cell in currentShape.cells)
         {
@@ -237,8 +247,23 @@ public class PlacementManager : MonoBehaviour
     {
         if (gridManager == null || currentShape == null) return;
 
+        if (!CanPlaceMoreThisTurn())
+        {
+            Debug.Log("[PlacementManager] Nicht genug Fokus für diese Platzierung!");
+            return;
+        }
+
         if (CanPlaceShape(startX, startY))
         {
+            if (useFocusCost)
+            {
+                if (gameManager == null) gameManager = GameManager.Instance;
+                if (gameManager != null && !gameManager.TrySpendFocus(gameManager.PlaceCubeFocusCost, $"Würfel '{currentShape.shapeName}' gelegt"))
+                {
+                    return;
+                }
+            }
+
             foreach (ShapeCell cell in currentShape.cells)
             {
                 int x = startX + cell.localPosition.x;
@@ -263,8 +288,6 @@ public class PlacementManager : MonoBehaviour
             }
 
             placementsThisTurn++;
-            Debug.Log($"Form platziert ({placementsThisTurn}/{maxPlacementsPerTurn} in dieser Runde).");
-
             CancelSelection();
         }
         else
