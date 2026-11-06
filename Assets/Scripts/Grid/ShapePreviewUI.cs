@@ -1,13 +1,11 @@
 using UnityEngine;
 using UnityEngine.UI;
-using System.Collections.Generic;
 
 public class ShapePreviewUI : MonoBehaviour
 {
     public GameObject uiBlockPrefab;
     public RectTransform container;
 
-    // Erzeugt die Form visuell im angegebenen Container
     public void DisplayShape(ShapeData shape, float blockSize = 24f, float spacing = 2f)
     {
         Clear();
@@ -15,7 +13,6 @@ public class ShapePreviewUI : MonoBehaviour
         if (shape == null || shape.cells.Count == 0 || container == null || uiBlockPrefab == null)
             return;
 
-        // 1. Min/Max-Grenzen der Form ermitteln zur Zentrierung
         int minX = int.MaxValue, maxX = int.MinValue;
         int minY = int.MaxValue, maxY = int.MinValue;
 
@@ -30,11 +27,9 @@ public class ShapePreviewUI : MonoBehaviour
         float totalWidth = (maxX - minX + 1) * (blockSize + spacing) - spacing;
         float totalHeight = (maxY - minY + 1) * (blockSize + spacing) - spacing;
 
-        // Start-Offset berechnen, damit die Form exakt mittig im Panel sitzt
         float startOffsetX = -totalWidth / 2f + (blockSize / 2f);
         float startOffsetY = -totalHeight / 2f + (blockSize / 2f);
 
-        // 2. Jeden Block instanziieren und positionieren
         foreach (ShapeCell cell in shape.cells)
         {
             GameObject block = Instantiate(uiBlockPrefab, container);
@@ -46,17 +41,28 @@ public class ShapePreviewUI : MonoBehaviour
             float posY = startOffsetY + (cell.localPosition.y - minY) * (blockSize + spacing);
             rt.anchoredPosition = new Vector2(posX, posY);
 
-            // Vorläufige Farb-Darstellung für Modifier
             Image img = block.GetComponent<Image>();
             if (img != null)
             {
-                if (cell.modifiers.Contains(BlockModifier.Ice))
+                if (cell.modifiers.Contains(BlockModifier.SkillIcon))
+                {
+                    img.color = new Color(1f, 0.82f, 0.22f); // Goldgelb für Taktik-/Skill-Karten
+                }
+                else if (cell.modifiers.Contains(BlockModifier.Shrine))
+                {
+                    img.color = new Color(0.2f, 0.95f, 0.55f); // Leuchtendes Heil-Grün für Schreine
+                }
+                else if (cell.modifiers.Contains(BlockModifier.Ice))
                 {
                     img.color = new Color(0.4f, 0.8f, 1f); // Eisblau
                 }
                 else if (cell.modifiers.Contains(BlockModifier.Fire))
                 {
                     img.color = new Color(1f, 0.3f, 0.2f); // Feuriges Rot
+                }
+                else if (cell.modifiers.Contains(BlockModifier.Poison))
+                {
+                    img.color = new Color(0.75f, 0.3f, 0.95f); // Gift-Violett
                 }
                 else
                 {

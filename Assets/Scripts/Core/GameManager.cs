@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -11,7 +12,22 @@ public enum GameState
     MapView,     // Makro-Ebene: Reine Karten-Übersicht (keine Bau-UI)
     MacroPlan,   // Makro-Ebene: Bau- & Planungsphase (Hotbar aktiv)
     Placement,   // Makro-Ebene: Form hängt am Cursor zur Platzierung
-    EnemyTurn    // Gegnerphase: Boss führt Aktionen aus
+    EnemyTurn    // Optionaler Makro-Zustand
+}
+
+[Serializable]
+public class ScheduledTimelineEntry
+{
+    public TimelineEventType eventType;
+    public string label;
+    public int ticksRemaining;
+
+    public ScheduledTimelineEntry(TimelineEventType type, string eventLabel, int ticks)
+    {
+        eventType = type;
+        label = eventLabel;
+        ticksRemaining = ticks;
+    }
 }
 
 public class GameManager : MonoBehaviour
@@ -21,42 +37,34 @@ public class GameManager : MonoBehaviour
     [Header("Aktueller Spielstatus")]
     public GameState currentState = GameState.MacroPlan;
 
-    [Header("Fokus-System & Kosten (Anpassbar)")]
-    [Tooltip("Wie viel Fokus der Spieler zu Beginn jeder Runde erhält")]
+    [Header("Timeline & Tick-Kosten")]
+    [Tooltip("Abstand in Ticks zwischen zwei großen Boss-Zügen auf der Timeline")]
     [SerializeField] private int maxFocusPerTurn = 4;
-    [Tooltip("Aktuell verfügbarer Fokus in dieser Runde")]
+    [Tooltip("Ticks bis zum nächsten großen Boss-Zug (wird automatisch mit der Timeline synchronisiert)")]
     [SerializeField] private int currentFocus = 4;
-    [Tooltip("Fokus-Kosten für das Platzieren eines 6er-Würfels auf dem Grid")]
+    [Tooltip("Standard-Tick-Kosten für das Platzieren eines Würfels")]
     [SerializeField] private int placeCubeFocusCost = 1;
-    [Tooltip("Fokus-Kosten für das erstmalige Betreten eines neuen Raumes")]
+    [Tooltip("Tick-Kosten für das erstmalige Betreten eines neuen Raumes")]
     [SerializeField] private int enterNewRoomFocusCost = 1;
-    [Tooltip("Fokus-Kosten für das Durchqueren eines bereits besuchten/gesäuberten Raumes")]
+    [Tooltip("Tick-Kosten für das Durchqueren eines bereits gesäuberten Raumes")]
     [SerializeField] private int enterClearedRoomFocusCost = 0;
-    [Tooltip("Fokus-Verlust bei einem Treffer im Platformer")]
+    [Tooltip("Straf-Ticks auf der Timeline bei einem Treffer im Platformer")]
     [SerializeField] private int damageFocusCost = 1;
-    [Tooltip("Wenn aktiv, wird der Zug sofort beendet, sobald der Fokus durch einen Treffer auf 0 fällt")]
-    [SerializeField] private bool forceEndTurnOnZeroFocusHit = true;
+    [Tooltip("Tick-Kosten für 'Durchatmen / Hand neu ziehen' (Taste E oder R3)")]
+    [SerializeField] private int mulliganTickCost = 2;
 
     [Header("Albtraumleiste (0% - 100%, Anpassbar)")]
     [SerializeField] private float currentNightmare = 0f;
     [SerializeField] private float maxNightmare = 100f;
-    [Tooltip("Anstieg der Albtraumleiste bei einem Treffer im Raum")]
     [SerializeField] private float nightmarePerDamage = 12f;
-    [Tooltip("Passiver Anstieg der Albtraumleiste pro beendeter Runde")]
     [SerializeField] private float nightmarePerTurn = 3f;
-    [Tooltip("Zusätzlicher Anstieg am Rundenende, wenn der Slime auf einem lila Feld steht")]
     [SerializeField] private float nightmareOnPurpleTile = 10f;
-    [Tooltip("Zusätzlicher Anstieg am Rundenende, wenn der Slime auf einem schwarzen Randfeld steht")]
     [SerializeField] private float nightmareOnBlackVoidTile = 25f;
-    [Tooltip("Anstieg, wenn der Raum unter dem Slime vom Boss zerstört wird")]
     [SerializeField] private float nightmareOnBossRoomDestroy = 25f;
 
-    [Header("Fokus & Albtraum UI")]
-    [Tooltip("Optional: Eigenes TextMeshPro-Feld im Canvas. Wenn leer, wird automatisch oben links ein HUD gezeichnet.")]
+    [Header("Timeline & Albtraum UI")]
     [SerializeField] private TextMeshProUGUI focusText;
-    [Tooltip("Optional: Eigenes Image (Filled) für die Albtraumleiste")]
     [SerializeField] private Image nightmareFillImage;
-    [Tooltip("Zeigt oben links automatisch Fokus & Albtraumleiste, solange kein focusText zugewiesen ist")]
     [SerializeField] private bool showFallbackFocusHUD = true;
 
     [Header("Level Konfiguration")]
@@ -75,9 +83,7 @@ public class GameManager : MonoBehaviour
     public InventoryManager inventoryManager;
 
     [Header("Hold-Feedback UI (Optional)")]
-    [Tooltip("UI-Image mit Image Type 'Filled' für den Fortschrittskreis/Balken")]
     [SerializeField] private Image holdProgressImage;
-    [Tooltip("Container-Objekt der Ladeanzeige (wird nur beim Halten eingeblendet)")]
     [SerializeField] private GameObject holdProgressContainer;
 
     [Header("Spieler-Referenz (Micro)")]
@@ -85,27 +91,35 @@ public class GameManager : MonoBehaviour
     [SerializeField] private Rigidbody2D slimeRigidbody;
 
     [Header("Transition Settings")]
-    [Tooltip("Dauer in Sekunden, die Dreieck gehalten werden muss, um in den Baumodus zu wechseln.")]
     [SerializeField] private float buildModeHoldDuration = 0.85f;
-    [Tooltip("Dauer des Kamera-Zooms zwischen Slime und Übersicht in Sekunden.")]
     [SerializeField] private float cameraTransitionDuration = 0.35f;
+
+    // Die mehrstufige Aktions-Timeline (zeigt die nächsten Events im Voraus)
+    private readonly List<ScheduledTimelineEntry> upcomingTimelineEvents = new List<ScheduledTimelineEntry>();
 
     private float buildModeHoldTimer = 0f;
     private Vector2 cachedSlimeVelocity;
     private Coroutine activeCameraTransition;
+    private Coroutine activeRumbleCoroutine;
     private bool isResettingRun = false;
+    private int totalTicksElapsed = 0;
 
-    // Lokale Zielwerte der Makro-Kamera für die Übersicht
     private Vector3 macroOverviewPosition;
     private float macroOverviewSize;
 
     // Öffentliche Getter
     public int CurrentFocus => currentFocus;
+    public int TicksUntilNextEvent => currentFocus;
     public int MaxFocusPerTurn => maxFocusPerTurn;
+    public int BossIntervalTicks => maxFocusPerTurn;
+    public int TotalTicksElapsed => totalTicksElapsed;
+    public IReadOnlyList<ScheduledTimelineEntry> UpcomingTimelineEvents => upcomingTimelineEvents;
+
     public int PlaceCubeFocusCost => placeCubeFocusCost;
     public int EnterNewRoomFocusCost => enterNewRoomFocusCost;
     public int EnterClearedRoomFocusCost => enterClearedRoomFocusCost;
     public int DamageFocusCost => damageFocusCost;
+    public int MulliganTickCost => mulliganTickCost;
 
     public float CurrentNightmare => currentNightmare;
     public float MaxNightmare => maxNightmare;
@@ -139,7 +153,8 @@ public class GameManager : MonoBehaviour
         FindReferencesIfNeeded();
 
         currentNightmare = 0f;
-        RefillFocus();
+        totalTicksElapsed = 0;
+        InitializeTimelineQueue();
 
         if (currentLevelConfig != null)
         {
@@ -155,45 +170,201 @@ public class GameManager : MonoBehaviour
     }
 
     // =====================================================================
-    // FOKUS- & ALBTRAUM-LOGIK
+    // MEHRSTUFIGE AKTIONS-TIMELINE & RUMBLE
     // =====================================================================
+
+    /// <summary>
+    /// Baut die initiale Vorschau-Leiste mit abwechselnden Umwelt- und Boss-Events auf.
+    /// </summary>
+    public void InitializeTimelineQueue()
+    {
+        upcomingTimelineEvents.Clear();
+
+        int interval = Mathf.Max(2, maxFocusPerTurn);
+        int halfInterval = Mathf.Max(1, interval / 2);
+
+        // Zyklus 1 & 2 im Voraus planen, damit der Spieler immer 3-4 Events weit blicken kann
+        upcomingTimelineEvents.Add(new ScheduledTimelineEntry(TimelineEventType.AmbientNightmareRipple, "Schatten-Beben", halfInterval));
+        upcomingTimelineEvents.Add(new ScheduledTimelineEntry(TimelineEventType.BossMajorPulse, "⚡ BOSS-ZUG", interval));
+        upcomingTimelineEvents.Add(new ScheduledTimelineEntry(TimelineEventType.AmbientNightmareRipple, "Schatten-Beben", interval + halfInterval));
+        upcomingTimelineEvents.Add(new ScheduledTimelineEntry(TimelineEventType.BossMajorPulse, "⚡ BOSS-ZUG", interval * 2));
+
+        SyncCurrentFocusToNextBossEvent();
+        NotifyFocusChanged();
+    }
+
+    private void SyncCurrentFocusToNextBossEvent()
+    {
+        foreach (var ev in upcomingTimelineEvents)
+        {
+            if (ev.eventType == TimelineEventType.BossMajorPulse)
+            {
+                currentFocus = ev.ticksRemaining;
+                return;
+            }
+        }
+
+        currentFocus = maxFocusPerTurn;
+    }
+
+    private void AppendNextTimelineEvent(TimelineEventType finishedType)
+    {
+        int furthestTick = 0;
+        foreach (var ev in upcomingTimelineEvents)
+        {
+            if (ev.ticksRemaining > furthestTick)
+            {
+                furthestTick = ev.ticksRemaining;
+            }
+        }
+
+        int step = Mathf.Max(2, maxFocusPerTurn / 2);
+        int nextTick = furthestTick + step;
+
+        string label = finishedType == TimelineEventType.BossMajorPulse ? "⚡ BOSS-ZUG" : "Schatten-Beben";
+        upcomingTimelineEvents.Add(new ScheduledTimelineEntry(finishedType, label, nextTick));
+    }
 
     public bool CanAffordFocus(int cost)
     {
-        if (cost <= 0) return true;
-        return currentFocus >= cost;
+        return !isResettingRun;
     }
 
     public bool TrySpendFocus(int cost, string actionName = "")
     {
-        if (cost <= 0) return true;
-
-        if (currentFocus < cost)
-        {
-            Debug.Log($"[Fokus] Nicht genug Fokus für '{actionName}'! Benötigt: {cost}, Vorhanden: {currentFocus}");
-            return false;
-        }
-
-        currentFocus = Mathf.Max(0, currentFocus - cost);
-        Debug.Log($"[Fokus] -{cost} für '{actionName}' -> Verbleibend: {currentFocus}/{maxFocusPerTurn}");
-
-        NotifyFocusChanged();
+        if (isResettingRun) return false;
+        AdvanceTicks(cost, actionName);
         return true;
     }
 
     public void ForceDrainFocus(int amount, string reason = "")
     {
-        if (amount <= 0) return;
+        AdvanceTicks(amount, reason);
+    }
 
-        currentFocus = Mathf.Max(0, currentFocus - amount);
-        Debug.Log($"[Fokus-Verlust] -{amount} ({reason}) -> Verbleibend: {currentFocus}/{maxFocusPerTurn}");
+    /// <summary>
+    /// Schiebt alle Events auf der Timeline um 'ticks' Schritte nach links.
+    /// Jedes Event, das 0 erreicht, wird sofort im Hintergrund ausgelöst.
+    /// </summary>
+    public void AdvanceTicks(int ticks, string reason = "")
+    {
+        if (ticks <= 0 || isResettingRun) return;
+
+        if (upcomingTimelineEvents.Count == 0)
+        {
+            InitializeTimelineQueue();
+        }
+
+        if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
+
+        for (int step = 0; step < ticks; step++)
+        {
+            totalTicksElapsed++;
+
+            for (int i = 0; i < upcomingTimelineEvents.Count; i++)
+            {
+                upcomingTimelineEvents[i].ticksRemaining--;
+            }
+
+            // Alle fälligen Events (ticksRemaining <= 0) auslösen und hinten neu einreihen
+            for (int i = 0; i < upcomingTimelineEvents.Count; i++)
+            {
+                if (upcomingTimelineEvents[i].ticksRemaining <= 0)
+                {
+                    TimelineEventType triggeredType = upcomingTimelineEvents[i].eventType;
+                    upcomingTimelineEvents.RemoveAt(i);
+                    i--;
+
+                    if (eventManager != null)
+                    {
+                        eventManager.EnqueueTimelineEvent(triggeredType);
+                    }
+
+                    AppendNextTimelineEvent(triggeredType);
+                }
+            }
+        }
+
+        upcomingTimelineEvents.Sort((a, b) => a.ticksRemaining.CompareTo(b.ticksRemaining));
+        SyncCurrentFocusToNextBossEvent();
+
+        Debug.Log($"[Timeline] +{ticks} Tick(s) ({reason}) -> Nächster Boss-Zug in {currentFocus} Tick(s)");
         NotifyFocusChanged();
+    }
+
+    /// <summary>
+    /// Schiebt alle anstehenden Events auf der Timeline nach hinten (z. B. durch 'Zeit-Anker').
+    /// </summary>
+    public void DelayNextBossEvent(int extraTicks, string reason = "")
+    {
+        if (extraTicks <= 0 || isResettingRun) return;
+
+        foreach (var ev in upcomingTimelineEvents)
+        {
+            ev.ticksRemaining += extraTicks;
+        }
+
+        SyncCurrentFocusToNextBossEvent();
+        Debug.Log($"[Timeline] Alle Timeline-Events um +{extraTicks} Ticks verzögert ({reason})!");
+        NotifyFocusChanged();
+    }
+
+    /// <summary>
+    /// Lässt den Slime/Raum im Platformer kurz erbeben, wenn der Boss im Hintergrund agiert.
+    /// </summary>
+    public void TriggerMicroCameraRumble(float intensity = 0.25f, float duration = 0.3f)
+    {
+        if (currentState != GameState.FreeRoam || slimeController == null) return;
+
+        if (activeRumbleCoroutine != null)
+        {
+            StopCoroutine(activeRumbleCoroutine);
+        }
+        activeRumbleCoroutine = StartCoroutine(MicroRumbleRoutine(intensity, duration));
+    }
+
+    private IEnumerator MicroRumbleRoutine(float intensity, float duration)
+    {
+        // Kurzes Squash-Zucken am Slime + optisches Kamera-Rütteln
+        if (slimeController != null)
+        {
+            slimeController.ApplySquashAndStretch(1f + intensity * 0.45f, 1f - intensity * 0.35f);
+        }
+
+        Transform camTransform = mainCamera != null ? mainCamera.transform : null;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float damper = 1f - (elapsed / duration);
+            if (camTransform != null)
+            {
+                Vector2 shake = UnityEngine.Random.insideUnitCircle * (intensity * damper * 0.15f);
+                camTransform.position += new Vector3(shake.x, shake.y, 0f);
+            }
+            yield return null;
+        }
+
+        activeRumbleCoroutine = null;
+    }
+
+    public void TriggerMulliganRedraw()
+    {
+        if (isResettingRun) return;
+
+        if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
+        if (inventoryManager != null)
+        {
+            inventoryManager.MulliganHand();
+        }
+
+        AdvanceTicks(mulliganTickCost, "Durchatmen / Neue Hand gezogen");
     }
 
     public void RefillFocus()
     {
-        currentFocus = maxFocusPerTurn;
-        NotifyFocusChanged();
+        InitializeTimelineQueue();
     }
 
     public void AddNightmare(float amount, string reason = "")
@@ -211,54 +382,25 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Wird von PlatformerSlimeController.TakeDamage() aufgerufen.
-    /// Zieht Fokus ab, erhöht die Albtraumleiste und löst bei 0 Fokus den Zwangsstopp aus.
-    /// </summary>
     public void OnSlimeDamaged()
     {
-        if (isResettingRun || currentState == GameState.EnemyTurn) return;
+        if (isResettingRun) return;
 
         InterruptMeditation();
 
-        // Falls die Karte offen war, sofort schließen
         if (currentState == GameState.MapView)
         {
             ChangeState(GameState.FreeRoam);
         }
 
-        // 1. Fokus abziehen & Albtraum erhöhen
-        ForceDrainFocus(damageFocusCost, "Treffer im Raum");
         AddNightmare(nightmarePerDamage, "Treffer im Raum");
 
-        if (isResettingRun) return;
-
-        // 2. ZWANGSSTOPP prüfen: Fällt Fokus auf 0, bleibt der Slime sofort stehen und der Zug endet!
-        if (forceEndTurnOnZeroFocusHit && currentFocus <= 0)
+        if (!isResettingRun)
         {
-            Debug.LogWarning("[ZWANGSSTOPP] Fokus durch Treffer auf 0 gefallen! Slime friert ein & Zug endet sofort.");
-
-            // Geschwindigkeit nullen, damit der Slime beim nächsten Rundenstart nicht weiterfliegt
-            if (slimeController != null)
-            {
-                slimeController.ZeroOutMomentum();
-            }
-            cachedSlimeVelocity = Vector2.zero;
-
-            // Slime an Ort und Stelle (auch an Wand/Decke/Luft) einfrieren
-            SetSlimeActive(false);
-
-            if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
-            if (eventManager != null)
-            {
-                eventManager.TriggerEndTurn(forcedByZeroFocus: true);
-            }
+            AdvanceTicks(damageFocusCost, "Straf-Tick durch Treffer");
         }
     }
 
-    /// <summary>
-    /// Wird ausgelöst, wenn die Albtraumleiste 100 % erreicht: Run scheitert, Slime wacht im Hub auf.
-    /// </summary>
     private IEnumerator WakeUpInHubRoutine()
     {
         isResettingRun = true;
@@ -275,10 +417,16 @@ public class GameManager : MonoBehaviour
             yield return new WaitForSeconds(1.2f);
         }
 
-        // Werte zurücksetzen und Level/Grid neu im Hub starten
         currentNightmare = 0f;
+        totalTicksElapsed = 0;
         NotifyNightmareChanged();
-        RefillFocus();
+        InitializeTimelineQueue();
+
+        if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
+        if (inventoryManager != null)
+        {
+            inventoryManager.ResetDeckAndDrawStartingHand();
+        }
 
         if (currentLevelConfig != null)
         {
@@ -306,26 +454,53 @@ public class GameManager : MonoBehaviour
         OnNightmareChanged?.Invoke(currentNightmare, maxNightmare);
     }
 
-    private string BuildFocusDisplayString()
+    private string BuildTimelineDisplayString()
     {
         System.Text.StringBuilder sb = new System.Text.StringBuilder();
-        sb.Append("FOKUS: ");
+        sb.Append("TIMELINE: [JETZT]");
 
-        int displayMax = Mathf.Max(maxFocusPerTurn, currentFocus);
-        for (int i = 0; i < displayMax; i++)
+        int count = Mathf.Min(3, upcomingTimelineEvents.Count);
+        for (int i = 0; i < count; i++)
         {
-            sb.Append(i < currentFocus ? "◆ " : "◇ ");
+            var ev = upcomingTimelineEvents[i];
+            sb.Append($" ──► [+{ev.ticksRemaining} {ev.label}]");
         }
 
-        sb.Append($"({currentFocus}/{maxFocusPerTurn})");
         return sb.ToString();
+    }
+
+    private string BuildRoomThreatWarningString(out bool currentRoomInDanger)
+    {
+        currentRoomInDanger = false;
+        if (MacroGridManager.Instance == null) return "";
+
+        Vector2Int current = MacroGridManager.Instance.CurrentCoordinate;
+        currentRoomInDanger = MacroGridManager.Instance.IsCellTargetedByBoss(current);
+
+        List<string> threatenedDoors = new List<string>();
+        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.up)) threatenedDoors.Add("NORD");
+        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.right)) threatenedDoors.Add("OST");
+        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.down)) threatenedDoors.Add("SÜD");
+        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.left)) threatenedDoors.Add("WEST");
+
+        if (currentRoomInDanger)
+        {
+            return $"⚠️ AKUTE GEFAHR: DIESER RAUM WIRD IN {currentFocus} TICKS GETROFFEN! (Schnell verlassen oder Läuterung nutzen!)";
+        }
+
+        if (threatenedDoors.Count > 0)
+        {
+            return $"🔥 TÜR-WARNUNG: Roter Rauch an Tür [{string.Join(", ", threatenedDoors)}] -> Nachbarraum ist vom Boss anvisiert!";
+        }
+
+        return "";
     }
 
     private void UpdateHUDTexts()
     {
         if (focusText != null)
         {
-            focusText.text = $"{BuildFocusDisplayString()}   |   ALBTRAUM: {currentNightmare:0}%";
+            focusText.text = $"{BuildTimelineDisplayString()}   |   ALBTRAUM: {currentNightmare:0}%";
         }
 
         if (nightmareFillImage != null)
@@ -338,14 +513,18 @@ public class GameManager : MonoBehaviour
     {
         if (!showFallbackFocusHUD || focusText != null) return;
 
-        // Haupt-Hintergrundbox oben links
+        bool currentRoomInDanger;
+        string threatWarning = BuildRoomThreatWarningString(out currentRoomInDanger);
+
         GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
-        boxStyle.fontSize = 16;
+        boxStyle.fontSize = 14;
         boxStyle.fontStyle = FontStyle.Bold;
         boxStyle.alignment = TextAnchor.UpperLeft;
-        boxStyle.normal.textColor = currentFocus > 0 ? new Color(0.3f, 0.95f, 1f) : new Color(1f, 0.35f, 0.35f);
+        boxStyle.normal.textColor = currentRoomInDanger
+            ? new Color(1f, 0.25f, 0.25f)
+            : (currentFocus > 1 ? new Color(0.3f, 0.95f, 1f) : new Color(1f, 0.65f, 0.25f));
 
-        string roomStatus = "";
+        string roomAndDeckStatus = "";
         if (MacroGridManager.Instance != null)
         {
             Vector2Int coord = MacroGridManager.Instance.CurrentCoordinate;
@@ -358,33 +537,88 @@ public class GameManager : MonoBehaviour
             {
                 currentZone = GridManager.Instance.grid[coord.x, coord.y].zoneType;
             }
-            roomStatus = $"\nRaum: [{coord.x}, {coord.y}] ({currentZone}) | Gesäubert: {visitedCount}";
+            roomAndDeckStatus = $"\nRaum: [{coord.x}, {coord.y}] ({currentZone}) | Erschlossen: {visitedCount}";
         }
 
-        string hint = "\n[Taste K: Test-Treffer]   [Taste E / R3: Zug beenden]";
-        GUI.Box(new Rect(16f, 16f, 450f, 118f), BuildFocusDisplayString() + roomStatus + hint, boxStyle);
+        if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
+        if (inventoryManager != null)
+        {
+            roomAndDeckStatus += $"   ||   DECK: Nachziehen [{inventoryManager.DrawPileCount}]  |  Hand [{inventoryManager.HandCount}/{inventoryManager.maxHandSize}]  |  Ablage [{inventoryManager.DiscardPileCount}]";
+        }
 
-        // Albtraumleisten-Hintergrund
-        Rect barBgRect = new Rect(28f, 98f, 426f, 24f);
+        string hint = $"\n[Taste K: Test-Treffer (-1 Tick)]   [Taste E / R3: Hand neu ziehen (-{mulliganTickCost} Ticks)]   [Taste M / Touchpad: Schnellkarte]";
+        GUI.Box(new Rect(16f, 16f, 760f, 122f), BuildTimelineDisplayString() + roomAndDeckStatus + hint, boxStyle);
+
+        // Albtraumleiste
+        Rect barBgRect = new Rect(28f, 100f, 736f, 24f);
         Color prevColor = GUI.color;
         GUI.color = new Color(0.12f, 0.05f, 0.18f, 0.95f);
         GUI.Box(barBgRect, GUIContent.none);
 
-        // Albtraumleisten-Füllung
-        float fillWidth = 422f * NightmareRatio;
+        float fillWidth = 732f * NightmareRatio;
         if (fillWidth > 1f)
         {
             GUI.color = Color.Lerp(new Color(0.55f, 0.15f, 0.85f, 1f), new Color(0.95f, 0.1f, 0.25f, 1f), NightmareRatio);
-            GUI.Box(new Rect(30f, 100f, fillWidth, 20f), GUIContent.none);
+            GUI.Box(new Rect(30f, 102f, fillWidth, 20f), GUIContent.none);
         }
 
-        // Albtraum-Beschriftung
         GUI.color = Color.white;
         GUIStyle barLabelStyle = new GUIStyle(GUI.skin.label);
         barLabelStyle.alignment = TextAnchor.MiddleCenter;
         barLabelStyle.fontStyle = FontStyle.Bold;
         barLabelStyle.fontSize = 13;
         GUI.Label(barBgRect, $"ALBTRAUM: {currentNightmare:0}% / {maxNightmare:0}%", barLabelStyle);
+
+        float nextBoxY = 146f;
+
+        // Rote Umwelt-Warnbox einblenden, wenn aktueller Raum oder eine Nachbartür bedroht ist
+        if (!string.IsNullOrEmpty(threatWarning))
+        {
+            GUI.color = currentRoomInDanger ? new Color(0.65f, 0.05f, 0.05f, 0.95f) : new Color(0.45f, 0.15f, 0.05f, 0.92f);
+            Rect warnRect = new Rect(16f, nextBoxY, 760f, 34f);
+            GUI.Box(warnRect, GUIContent.none);
+
+            GUI.color = Color.white;
+            GUIStyle warnStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleCenter
+            };
+            GUI.Label(warnRect, threatWarning, warnStyle);
+            nextBoxY += 40f;
+        }
+
+        // Karten-Details im Baumodus (MacroPlan)
+        if (currentState == GameState.MacroPlan && inventoryManager != null)
+        {
+            ShapeData selected = inventoryManager.CurrentlySelectedCard;
+            if (selected != null)
+            {
+                GUI.color = new Color(0.08f, 0.1f, 0.14f, 0.95f);
+                Rect cardInfoRect = new Rect(16f, nextBoxY, 760f, 62f);
+                GUI.Box(cardInfoRect, GUIContent.none);
+
+                GUI.color = selected.category == CardCategory.TacticalSkill
+                    ? new Color(1f, 0.85f, 0.3f)
+                    : new Color(0.5f, 1f, 0.75f);
+
+                GUIStyle cardStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 14,
+                    fontStyle = FontStyle.Bold,
+                    alignment = TextAnchor.MiddleLeft,
+                    wordWrap = true
+                };
+
+                string actionHint = selected.category == CardCategory.TacticalSkill
+                    ? "[X / Enter: Skill sofort auslösen]"
+                    : "[X / Enter: Würfel auf Grid platzieren]";
+
+                string cardText = $"  KARTE: {selected.shapeName}   (Kosten: {selected.tickCost} Tick{(selected.tickCost == 1 ? "" : "s")})   {actionHint}\n  Effekt: {selected.description}";
+                GUI.Label(cardInfoRect, cardText, cardStyle);
+            }
+        }
 
         GUI.color = prevColor;
     }
@@ -486,25 +720,15 @@ public class GameManager : MonoBehaviour
         var gamepad = Gamepad.current;
         var keyboard = Keyboard.current;
 
-        // 1. ZUG BEENDEN (R3 auf Gamepad oder Taste E)
-        bool endTurnTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
-                                (keyboard != null && keyboard.eKey.wasPressedThisFrame);
+        bool mulliganTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
+                                 (keyboard != null && keyboard.eKey.wasPressedThisFrame);
 
-        if (endTurnTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
+        if (mulliganTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
         {
-            if (eventManager == null)
-            {
-                eventManager = FindAnyObjectByType<EventManager>();
-            }
-
-            if (eventManager != null)
-            {
-                eventManager.TriggerEndTurn(forcedByZeroFocus: false);
-            }
+            TriggerMulliganRedraw();
             return;
         }
 
-        // Touchpad-Erkennung (DualSense) oder Fallback auf Select
         bool touchpadPressed = false;
         if (gamepad != null)
         {
@@ -518,7 +742,6 @@ public class GameManager : MonoBehaviour
             }
         }
 
-        // 2. MIKRO-EBENE (FreeRoam) -> MAKRO
         if (currentState == GameState.FreeRoam)
         {
             bool isGrounded = slimeController != null && slimeController.IsGrounded;
@@ -574,7 +797,6 @@ public class GameManager : MonoBehaviour
                 }
             }
         }
-        // 3. MAKRO-EBENE -> ZURÜCK ZU MIKRO
         else if (currentState == GameState.MapView || currentState == GameState.MacroPlan)
         {
             bool exitMacro = (gamepad != null && (gamepad.buttonEast.wasPressedThisFrame || gamepad.buttonNorth.wasPressedThisFrame)) ||

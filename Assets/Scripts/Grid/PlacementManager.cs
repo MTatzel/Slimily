@@ -9,11 +9,17 @@ public class PlacementManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public GameManager gameManager;
 
-    [Header("Fokus & Platzierungs-Regeln")]
-    [Tooltip("Wenn aktiv, wird das Platzieren über Fokus-Punkte (GameManager) begrenzt statt über ein starres Rundenlimit.")]
+    [Header("Tick-Kosten & Bau-Reichweite (Tether-Regel)")]
     public bool useFocusCost = true;
     public int maxPlacementsPerTurn = 99;
     public int placementsThisTurn = 0;
+
+    [Tooltip("Wenn aktiv, muss mindestens 1 Block des neuen Würfels in Reichweite der aktuellen Slime-Position liegen.")]
+    public bool enforceSlimeBuildRange = true;
+    [Tooltip("Maximale Distanz (in Feldern) zwischen Slime und dem nächsten Block des neuen Würfels.")]
+    public int maxBuildDistanceFromSlime = 2;
+    [Tooltip("Wie viel % Albtraum ein gebauter Schrein-Block sofort senkt.")]
+    public float nightmareReductionPerShrine = 8f;
 
     private ShapeData currentShape = null;
     private int currentSlotIndex = -1;
@@ -41,7 +47,8 @@ public class PlacementManager : MonoBehaviour
             if (gameManager == null) gameManager = GameManager.Instance;
             if (gameManager != null)
             {
-                return gameManager.CanAffordFocus(gameManager.PlaceCubeFocusCost);
+                int cost = (currentShape != null) ? currentShape.tickCost : gameManager.PlaceCubeFocusCost;
+                return gameManager.CanAffordFocus(cost);
             }
         }
 
@@ -55,17 +62,18 @@ public class PlacementManager : MonoBehaviour
 
     public void SelectShape(ShapeData shape, int slotIndex)
     {
-        if (!CanPlaceMoreThisTurn())
-        {
-            int needed = (gameManager != null) ? gameManager.PlaceCubeFocusCost : 1;
-            Debug.Log($"[PlacementManager] Nicht genug Fokus zum Bauen! (Benötigt: {needed})");
-            return;
-        }
+        if (shape == null) return;
 
         currentShape = shape.Clone();
         currentSlotIndex = slotIndex;
 
-        // Cursor initial am Slime-Marker ausrichten
+        if (!CanPlaceMoreThisTurn())
+        {
+            currentShape = null;
+            currentSlotIndex = -1;
+            return;
+        }
+
         if (MacroSlimeMarker.Instance != null)
         {
             cursorCoord = new Vector2Int(MacroSlimeMarker.Instance.currentX, MacroSlimeMarker.Instance.currentY);
@@ -83,9 +91,6 @@ public class PlacementManager : MonoBehaviour
         UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
     }
 
-    /// <summary>
-    /// Räumt nur die visuelle Vorschau und Daten auf, ohne einen State-Wechsel zu triggern.
-    /// </summary>
     public void ClearSelection()
     {
         currentShape = null;
@@ -93,9 +98,6 @@ public class PlacementManager : MonoBehaviour
         ClearHoverPreview();
     }
 
-    /// <summary>
-    /// Bricht die Platzierung ab und wechselt zurück in den MacroPlan-Zustand.
-    /// </summary>
     public void CancelSelection()
     {
         if (currentShape == null && currentSlotIndex == -1) return;
@@ -147,7 +149,7 @@ public class PlacementManager : MonoBehaviour
             UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
         }
 
-        // 3. CURSOR-STEUERUNG (Gamepad Stick/D-Pad & Pfeiltasten/WASD)
+        // 3. CURSOR-STEUERUNG
         Vector2Int moveInput = Vector2Int.zero;
 
         if (gamepad != null)
@@ -247,22 +249,11 @@ public class PlacementManager : MonoBehaviour
     {
         if (gridManager == null || currentShape == null) return;
 
-        if (!CanPlaceMoreThisTurn())
-        {
-            Debug.Log("[PlacementManager] Nicht genug Fokus für diese Platzierung!");
-            return;
-        }
-
         if (CanPlaceShape(startX, startY))
         {
-            if (useFocusCost)
-            {
-                if (gameManager == null) gameManager = GameManager.Instance;
-                if (gameManager != null && !gameManager.TrySpendFocus(gameManager.PlaceCubeFocusCost, $"Würfel '{currentShape.shapeName}' gelegt"))
-                {
-                    return;
-                }
-            }
+            string placedName = currentShape.shapeName;
+            int cardTickCost = currentShape.tickCost;
+            int shrineCount = currentShape.CountModifier(BlockModifier.Shrine);
 
             foreach (ShapeCell cell in currentShape.cells)
             {
@@ -289,10 +280,29 @@ public class PlacementManager : MonoBehaviour
 
             placementsThisTurn++;
             CancelSelection();
+
+            if (gameManager == null) gameManager = GameManager.Instance;
+
+            // Schrein-Bonus direkt beim Platzieren gutschreiben
+            if (shrineCount > 0 && gameManager != null)
+            {
+                float heal = shrineCount * nightmareReductionPerShrine;
+                gameManager.AddNightmare(-heal, $"Schrein gebaut ({placedName})");
+            }
+
+            // Individuelle Tick-Kosten der Karte (0, 1 oder 2 Ticks) auf der Timeline abrechnen
+            if (useFocusCost && gameManager != null && cardTickCost > 0)
+            {
+                gameManager.AdvanceTicks(cardTickCost, $"Karte '{placedName}' ({cardTickCost} Tick)");
+            }
+            else if (cardTickCost == 0)
+            {
+                Debug.Log($"[PlacementManager] '{placedName}' für 0 Ticks gebaut – Boss-Timeline bewegt sich nicht!");
+            }
         }
         else
         {
-            Debug.Log("Ungültige Platzierung!");
+            Debug.Log("[PlacementManager] Ungültige Platzierung (Muss an Gebautes angrenzen & max. 2 Felder vom Slime entfernt sein)!");
         }
     }
 
@@ -320,6 +330,17 @@ public class PlacementManager : MonoBehaviour
     private bool CanPlaceShape(int startX, int startY)
     {
         bool hasAdjacent = false;
+        bool isWithinSlimeRange = !enforceSlimeBuildRange;
+
+        Vector2Int slimeCoord = Vector2Int.zero;
+        if (MacroGridManager.Instance != null)
+        {
+            slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
+        }
+        else if (MacroSlimeMarker.Instance != null)
+        {
+            slimeCoord = new Vector2Int(MacroSlimeMarker.Instance.currentX, MacroSlimeMarker.Instance.currentY);
+        }
 
         foreach (ShapeCell cell in currentShape.cells)
         {
@@ -339,9 +360,18 @@ public class PlacementManager : MonoBehaviour
             {
                 hasAdjacent = true;
             }
+
+            if (enforceSlimeBuildRange)
+            {
+                int chebyshevDist = Mathf.Max(Mathf.Abs(checkX - slimeCoord.x), Mathf.Abs(checkY - slimeCoord.y));
+                if (chebyshevDist <= maxBuildDistanceFromSlime)
+                {
+                    isWithinSlimeRange = true;
+                }
+            }
         }
 
-        return hasAdjacent;
+        return hasAdjacent && isWithinSlimeRange;
     }
 
     private bool IsOccupied(int x, int y)

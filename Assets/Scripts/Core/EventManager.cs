@@ -1,6 +1,12 @@
-using UnityEngine;
-using UnityEngine.InputSystem;
 using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public enum TimelineEventType
+{
+    AmbientNightmareRipple, // Kleines Umwelt-Event zwischen den Boss-Zügen
+    BossMajorPulse          // Großer Boss-Zug (Einschlag + Bewegung + neue Telegrafie)
+}
 
 public class EventManager : MonoBehaviour
 {
@@ -11,97 +17,114 @@ public class EventManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public BossBase boss;
 
-    private bool isTurnRunning = false;
+    private bool isPulseRunning = false;
+    private readonly Queue<TimelineEventType> pendingEvents = new Queue<TimelineEventType>();
 
-    void Update()
+    /// <summary>
+    /// Reiht ein spezifisches Timeline-Event in die Hintergrund-Warteschlange ein.
+    /// </summary>
+    public void EnqueueTimelineEvent(TimelineEventType eventType)
     {
-        if (gameManager == null || isTurnRunning) return;
-        if (gameManager.currentState != GameState.MacroPlan && gameManager.currentState != GameState.FreeRoam) return;
-        if (Keyboard.current == null) return;
-
-        if (Keyboard.current.eKey.wasPressedThisFrame)
+        pendingEvents.Enqueue(eventType);
+        if (!isPulseRunning)
         {
-            TriggerEndTurn(forcedByZeroFocus: false);
+            StartCoroutine(ProcessEventQueueRoutine());
         }
+    }
+
+    // Abwärtskompatible Aufrufe
+    public void EnqueueTimelinePulse()
+    {
+        EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
     }
 
     public void TriggerEndTurn(bool forcedByZeroFocus = false)
     {
-        if (isTurnRunning) return;
-        StartCoroutine(TurnSequenceRoutine(forcedByZeroFocus));
+        EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
     }
 
-    public IEnumerator TurnSequenceRoutine(bool forcedByZeroFocus = false)
+    private IEnumerator ProcessEventQueueRoutine()
     {
-        if (isTurnRunning) yield break;
-        isTurnRunning = true;
+        isPulseRunning = true;
 
-        if (gameManager == null) gameManager = GameManager.Instance;
-        if (gridManager == null) gridManager = GridManager.Instance;
-
-        if (forcedByZeroFocus)
+        while (pendingEvents.Count > 0)
         {
-            Debug.Log("--- ZWANGSSTOPP (0 FOKUS) | SOFORTIGER WECHSEL IN GEGNERPHASE ---");
-            if (TurnBannerUI.Instance != null)
+            TimelineEventType nextEvent = pendingEvents.Dequeue();
+            if (nextEvent == TimelineEventType.AmbientNightmareRipple)
             {
-                yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("ZWANGSSTOPP! (0 FOKUS)", isEnemyTurn: true, duration: 0.9f));
+                yield return StartCoroutine(ExecuteAmbientRippleRoutine());
             }
             else
             {
-                yield return new WaitForSeconds(0.4f);
+                yield return StartCoroutine(ExecuteBossPulseRoutine());
             }
         }
-        else
+
+        isPulseRunning = false;
+    }
+
+    private IEnumerator ExecuteAmbientRippleRoutine()
+    {
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (gridManager == null) gridManager = GridManager.Instance;
+
+        Debug.Log("--- [TIMELINE-EVENT] UMWELT-BEBEN (ALBTRAUM-SCHAUER) ---");
+
+        // Dezentes Raum-Rumpeln im Platformer
+        if (gameManager != null)
         {
-            Debug.Log("--- ZUG BEENDET | WECHSEL IN GEGNERPHASE ---");
+            gameManager.TriggerMicroCameraRumble(intensity: 0.14f, duration: 0.22f);
+            float rippleAmount = Mathf.Max(1f, gameManager.NightmarePerTurn * 0.5f);
+            gameManager.AddNightmare(rippleAmount, "Albtraum-Schauer (Timeline)");
         }
 
-        // 1. Falls der Spieler im Platformer war: Zuerst nach oben ins Makro schalten
-        if (gameManager != null && gameManager.currentState == GameState.FreeRoam)
+        CheckHazardousStandingTile();
+
+        if (MacroGridManager.Instance != null)
         {
-            gameManager.ChangeState(GameState.EnemyTurn);
-            yield return new WaitForSeconds(0.45f);
-        }
-        else if (gameManager != null)
-        {
-            gameManager.ChangeState(GameState.EnemyTurn);
+            MacroGridManager.Instance.RefreshActiveRoomDoors();
         }
 
-        // 2. Banner "GEGNERPHASE" anzeigen
-        if (TurnBannerUI.Instance != null)
+        yield return new WaitForSeconds(0.1f);
+    }
+
+    private IEnumerator ExecuteBossPulseRoutine()
+    {
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (gridManager == null) gridManager = GridManager.Instance;
+
+        Debug.Log("--- [TIMELINE-EVENT] ⚡ GROSSER BOSS-PULS IM HINTERGRUND ---");
+
+        // Kräftigeres Raum-Beben im Platformer, wenn der Boss zieht
+        if (gameManager != null)
         {
-            yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("GEGNERPHASE", isEnemyTurn: true, duration: 0.8f));
-        }
-        else
-        {
-            yield return new WaitForSeconds(0.4f);
+            gameManager.TriggerMicroCameraRumble(intensity: 0.32f, duration: 0.38f);
         }
 
-        // 3. Boss-Aktion ausführen (Einschläge auf markierten Feldern + Bewegung + neue Warnung)
+        // 1. Boss-Aktion im Hintergrund ausführen (Einschläge + Bewegung + neue Warnung)
         if (boss != null)
         {
             yield return StartCoroutine(boss.ExecuteTurn());
         }
 
-        // 4. Albtraumleiste am Rundenende erhöhen (Zeit + evtl. lila/schwarzes Feld unter dem Slime)
-        ApplyEndOfTurnNightmare();
+        // 2. Regulärer Albtraum-Anstieg beim Boss-Zug
+        if (gameManager != null && gameManager.NightmarePerTurn > 0f)
+        {
+            gameManager.AddNightmare(gameManager.NightmarePerTurn, "Boss-Puls auf Timeline");
+        }
 
-        // Falls der Run durch 100% Albtraum zurückgesetzt wird, hier abbrechen
+        CheckHazardousStandingTile();
+
         if (gameManager != null && gameManager.CurrentNightmare >= gameManager.MaxNightmare)
         {
-            isTurnRunning = false;
+            pendingEvents.Clear();
             yield break;
         }
 
-        // 5. Runden-Reset & Fokus wieder auffüllen
+        // 3. Platzierungszähler & Raumtüren (inkl. roter Warn-Telegrafie!) aktualisieren
         if (placementManager != null)
         {
             placementManager.ResetTurnPlacements();
-        }
-
-        if (gameManager != null)
-        {
-            gameManager.RefillFocus();
         }
 
         if (inventoryManager != null)
@@ -109,50 +132,31 @@ public class EventManager : MonoBehaviour
             inventoryManager.CheckAndRefillIfEmpty();
         }
 
-        // 6. Banner "DEIN ZUG" anzeigen
-        if (TurnBannerUI.Instance != null)
+        if (MacroGridManager.Instance != null)
         {
-            yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("DEIN ZUG", isEnemyTurn: false, duration: 0.7f));
+            MacroGridManager.Instance.RefreshActiveRoomDoors();
         }
-
-        // 7. Spieler startet die neue Runde im Baumodus (MacroPlan)
-        if (gameManager != null)
-        {
-            gameManager.ChangeState(GameState.MacroPlan);
-        }
-
-        isTurnRunning = false;
-        Debug.Log("--- SPIELER IST WIEDER AM ZUG (BAUMODUS) ---");
     }
 
-    private void ApplyEndOfTurnNightmare()
+    private void CheckHazardousStandingTile()
     {
-        if (gameManager == null) return;
+        if (gameManager == null || MacroGridManager.Instance == null || gridManager == null || gridManager.grid == null)
+            return;
 
-        // Passiver Runden-Anstieg
-        if (gameManager.NightmarePerTurn > 0f)
+        Vector2Int slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
+        if (slimeCoord.x >= 0 && slimeCoord.x < gridManager.width &&
+            slimeCoord.y >= 0 && slimeCoord.y < gridManager.height)
         {
-            gameManager.AddNightmare(gameManager.NightmarePerTurn, "Rundenverlauf");
-        }
-
-        // Prüfen, ob der Slime bei Zugende auf einem lila oder schwarzen Feld steht
-        if (MacroGridManager.Instance != null && gridManager != null && gridManager.grid != null)
-        {
-            Vector2Int slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
-            if (slimeCoord.x >= 0 && slimeCoord.x < gridManager.width &&
-                slimeCoord.y >= 0 && slimeCoord.y < gridManager.height)
+            GridCell cell = gridManager.grid[slimeCoord.x, slimeCoord.y];
+            if (cell != null)
             {
-                GridCell cell = gridManager.grid[slimeCoord.x, slimeCoord.y];
-                if (cell != null)
+                if (cell.zoneType == ZoneType.PurpleNightmare)
                 {
-                    if (cell.zoneType == ZoneType.PurpleNightmare)
-                    {
-                        gameManager.AddNightmare(gameManager.NightmareOnPurpleTile, "Aufenthalt im lila Albtraum-Rand");
-                    }
-                    else if (cell.zoneType == ZoneType.BlackVoid)
-                    {
-                        gameManager.AddNightmare(gameManager.NightmareOnBlackVoidTile, "Aufenthalt im schwarzen Rand");
-                    }
+                    gameManager.AddNightmare(gameManager.NightmareOnPurpleTile, "Aufenthalt im lila Albtraum-Rand");
+                }
+                else if (cell.zoneType == ZoneType.BlackVoid)
+                {
+                    gameManager.AddNightmare(gameManager.NightmareOnBlackVoidTile, "Aufenthalt im schwarzen Rand");
                 }
             }
         }
