@@ -74,6 +74,7 @@ Slime/
 UI/
   TurnBannerUI.cs
 .repomixignore
+PROJEKT_KONTEXT_OLD.md
 PROJEKT_KONTEXT.md
 repomix.config.json
 </directory_structure>
@@ -404,29 +405,56 @@ public class EventManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public BossBase boss;
 
+    private bool isTurnRunning = false;
+
     void Update()
     {
-        // Ein Zug kann im MacroPlan oder FreeRoam per E-Taste beendet werden
-        if (gameManager == null) return;
+        if (gameManager == null || isTurnRunning) return;
         if (gameManager.currentState != GameState.MacroPlan && gameManager.currentState != GameState.FreeRoam) return;
         if (Keyboard.current == null) return;
 
         if (Keyboard.current.eKey.wasPressedThisFrame)
         {
-            StartCoroutine(TurnSequenceRoutine());
+            TriggerEndTurn(forcedByZeroFocus: false);
         }
     }
 
-    public IEnumerator TurnSequenceRoutine()
+    public void TriggerEndTurn(bool forcedByZeroFocus = false)
     {
-        Debug.Log("--- ZUG BEENDET | WECHSEL IN GEGNERPHASE ---");
+        if (isTurnRunning) return;
+        StartCoroutine(TurnSequenceRoutine(forcedByZeroFocus));
+    }
+
+    public IEnumerator TurnSequenceRoutine(bool forcedByZeroFocus = false)
+    {
+        if (isTurnRunning) yield break;
+        isTurnRunning = true;
+
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (gridManager == null) gridManager = GridManager.Instance;
+
+        if (forcedByZeroFocus)
+        {
+            Debug.Log("--- ZWANGSSTOPP (0 FOKUS) | SOFORTIGER WECHSEL IN GEGNERPHASE ---");
+            if (TurnBannerUI.Instance != null)
+            {
+                yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("ZWANGSSTOPP! (0 FOKUS)", isEnemyTurn: true, duration: 0.9f));
+            }
+            else
+            {
+                yield return new WaitForSeconds(0.4f);
+            }
+        }
+        else
+        {
+            Debug.Log("--- ZUG BEENDET | WECHSEL IN GEGNERPHASE ---");
+        }
 
         // 1. Falls der Spieler im Platformer war: Zuerst nach oben ins Makro schalten
         if (gameManager != null && gameManager.currentState == GameState.FreeRoam)
         {
             gameManager.ChangeState(GameState.EnemyTurn);
-            // Kleiner Puffer für die Kamerafahrt
-            yield return new WaitForSeconds(0.4f);
+            yield return new WaitForSeconds(0.45f);
         }
         else if (gameManager != null)
         {
@@ -443,16 +471,31 @@ public class EventManager : MonoBehaviour
             yield return new WaitForSeconds(0.4f);
         }
 
-        // 3. Boss-Aktion ausführen
+        // 3. Boss-Aktion ausführen (Einschläge auf markierten Feldern + Bewegung + neue Warnung)
         if (boss != null)
         {
             yield return StartCoroutine(boss.ExecuteTurn());
         }
 
-        // 4. Runden-Reset
+        // 4. Albtraumleiste am Rundenende erhöhen (Zeit + evtl. lila/schwarzes Feld unter dem Slime)
+        ApplyEndOfTurnNightmare();
+
+        // Falls der Run durch 100% Albtraum zurückgesetzt wird, hier abbrechen
+        if (gameManager != null && gameManager.CurrentNightmare >= gameManager.MaxNightmare)
+        {
+            isTurnRunning = false;
+            yield break;
+        }
+
+        // 5. Runden-Reset & Fokus wieder auffüllen
         if (placementManager != null)
         {
             placementManager.ResetTurnPlacements();
+        }
+
+        if (gameManager != null)
+        {
+            gameManager.RefillFocus();
         }
 
         if (inventoryManager != null)
@@ -460,25 +503,61 @@ public class EventManager : MonoBehaviour
             inventoryManager.CheckAndRefillIfEmpty();
         }
 
-        // 5. Banner "DEIN ZUG" anzeigen
+        // 6. Banner "DEIN ZUG" anzeigen
         if (TurnBannerUI.Instance != null)
         {
             yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("DEIN ZUG", isEnemyTurn: false, duration: 0.7f));
         }
 
-        // 6. Spieler startet die neue Runde im Baumodus (MacroPlan)
+        // 7. Spieler startet die neue Runde im Baumodus (MacroPlan)
         if (gameManager != null)
         {
             gameManager.ChangeState(GameState.MacroPlan);
         }
 
+        isTurnRunning = false;
         Debug.Log("--- SPIELER IST WIEDER AM ZUG (BAUMODUS) ---");
+    }
+
+    private void ApplyEndOfTurnNightmare()
+    {
+        if (gameManager == null) return;
+
+        // Passiver Runden-Anstieg
+        if (gameManager.NightmarePerTurn > 0f)
+        {
+            gameManager.AddNightmare(gameManager.NightmarePerTurn, "Rundenverlauf");
+        }
+
+        // Prüfen, ob der Slime bei Zugende auf einem lila oder schwarzen Feld steht
+        if (MacroGridManager.Instance != null && gridManager != null && gridManager.grid != null)
+        {
+            Vector2Int slimeCoord = MacroGridManager.Instance.CurrentCoordinate;
+            if (slimeCoord.x >= 0 && slimeCoord.x < gridManager.width &&
+                slimeCoord.y >= 0 && slimeCoord.y < gridManager.height)
+            {
+                GridCell cell = gridManager.grid[slimeCoord.x, slimeCoord.y];
+                if (cell != null)
+                {
+                    if (cell.zoneType == ZoneType.PurpleNightmare)
+                    {
+                        gameManager.AddNightmare(gameManager.NightmareOnPurpleTile, "Aufenthalt im lila Albtraum-Rand");
+                    }
+                    else if (cell.zoneType == ZoneType.BlackVoid)
+                    {
+                        gameManager.AddNightmare(gameManager.NightmareOnBlackVoidTile, "Aufenthalt im schwarzen Rand");
+                    }
+                }
+            }
+        }
     }
 }
 </file>
 
 <file path="Core/GameManager.cs">
+using System;
 using System.Collections;
+using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
@@ -498,6 +577,44 @@ public class GameManager : MonoBehaviour
 
     [Header("Aktueller Spielstatus")]
     public GameState currentState = GameState.MacroPlan;
+
+    [Header("Fokus-System & Kosten (Anpassbar)")]
+    [Tooltip("Wie viel Fokus der Spieler zu Beginn jeder Runde erhält")]
+    [SerializeField] private int maxFocusPerTurn = 4;
+    [Tooltip("Aktuell verfügbarer Fokus in dieser Runde")]
+    [SerializeField] private int currentFocus = 4;
+    [Tooltip("Fokus-Kosten für das Platzieren eines 6er-Würfels auf dem Grid")]
+    [SerializeField] private int placeCubeFocusCost = 1;
+    [Tooltip("Fokus-Kosten für das erstmalige Betreten eines neuen Raumes")]
+    [SerializeField] private int enterNewRoomFocusCost = 1;
+    [Tooltip("Fokus-Kosten für das Durchqueren eines bereits besuchten/gesäuberten Raumes")]
+    [SerializeField] private int enterClearedRoomFocusCost = 0;
+    [Tooltip("Fokus-Verlust bei einem Treffer im Platformer")]
+    [SerializeField] private int damageFocusCost = 1;
+    [Tooltip("Wenn aktiv, wird der Zug sofort beendet, sobald der Fokus durch einen Treffer auf 0 fällt")]
+    [SerializeField] private bool forceEndTurnOnZeroFocusHit = true;
+
+    [Header("Albtraumleiste (0% - 100%, Anpassbar)")]
+    [SerializeField] private float currentNightmare = 0f;
+    [SerializeField] private float maxNightmare = 100f;
+    [Tooltip("Anstieg der Albtraumleiste bei einem Treffer im Raum")]
+    [SerializeField] private float nightmarePerDamage = 12f;
+    [Tooltip("Passiver Anstieg der Albtraumleiste pro beendeter Runde")]
+    [SerializeField] private float nightmarePerTurn = 3f;
+    [Tooltip("Zusätzlicher Anstieg am Rundenende, wenn der Slime auf einem lila Feld steht")]
+    [SerializeField] private float nightmareOnPurpleTile = 10f;
+    [Tooltip("Zusätzlicher Anstieg am Rundenende, wenn der Slime auf einem schwarzen Randfeld steht")]
+    [SerializeField] private float nightmareOnBlackVoidTile = 25f;
+    [Tooltip("Anstieg, wenn der Raum unter dem Slime vom Boss zerstört wird")]
+    [SerializeField] private float nightmareOnBossRoomDestroy = 25f;
+
+    [Header("Fokus & Albtraum UI")]
+    [Tooltip("Optional: Eigenes TextMeshPro-Feld im Canvas. Wenn leer, wird automatisch oben links ein HUD gezeichnet.")]
+    [SerializeField] private TextMeshProUGUI focusText;
+    [Tooltip("Optional: Eigenes Image (Filled) für die Albtraumleiste")]
+    [SerializeField] private Image nightmareFillImage;
+    [Tooltip("Zeigt oben links automatisch Fokus & Albtraumleiste, solange kein focusText zugewiesen ist")]
+    [SerializeField] private bool showFallbackFocusHUD = true;
 
     [Header("Level Konfiguration")]
     [SerializeField] private LevelConfiguration currentLevelConfig;
@@ -533,13 +650,33 @@ public class GameManager : MonoBehaviour
     private float buildModeHoldTimer = 0f;
     private Vector2 cachedSlimeVelocity;
     private Coroutine activeCameraTransition;
+    private bool isResettingRun = false;
 
     // Lokale Zielwerte der Makro-Kamera für die Übersicht
     private Vector3 macroOverviewPosition;
     private float macroOverviewSize;
 
+    // Öffentliche Getter
+    public int CurrentFocus => currentFocus;
+    public int MaxFocusPerTurn => maxFocusPerTurn;
+    public int PlaceCubeFocusCost => placeCubeFocusCost;
+    public int EnterNewRoomFocusCost => enterNewRoomFocusCost;
+    public int EnterClearedRoomFocusCost => enterClearedRoomFocusCost;
+    public int DamageFocusCost => damageFocusCost;
+
+    public float CurrentNightmare => currentNightmare;
+    public float MaxNightmare => maxNightmare;
+    public float NightmareRatio => Mathf.Clamp01(currentNightmare / Mathf.Max(1f, maxNightmare));
+    public float NightmarePerTurn => nightmarePerTurn;
+    public float NightmareOnPurpleTile => nightmareOnPurpleTile;
+    public float NightmareOnBlackVoidTile => nightmareOnBlackVoidTile;
+    public float NightmareOnBossRoomDestroy => nightmareOnBossRoomDestroy;
+
     public float BuildHoldProgress => Mathf.Clamp01(buildModeHoldTimer / buildModeHoldDuration);
     public BossBase ActiveBoss => activeBossInstance;
+
+    public event Action<int, int> OnFocusChanged;
+    public event Action<float, float> OnNightmareChanged;
 
     private void Awake()
     {
@@ -558,6 +695,9 @@ public class GameManager : MonoBehaviour
     {
         FindReferencesIfNeeded();
 
+        currentNightmare = 0f;
+        RefillFocus();
+
         if (currentLevelConfig != null)
         {
             LoadLevel(currentLevelConfig);
@@ -570,6 +710,245 @@ public class GameManager : MonoBehaviour
         UpdateHoldUI(0f);
         ChangeState(GameState.MacroPlan);
     }
+
+    // =====================================================================
+    // FOKUS- & ALBTRAUM-LOGIK
+    // =====================================================================
+
+    public bool CanAffordFocus(int cost)
+    {
+        if (cost <= 0) return true;
+        return currentFocus >= cost;
+    }
+
+    public bool TrySpendFocus(int cost, string actionName = "")
+    {
+        if (cost <= 0) return true;
+
+        if (currentFocus < cost)
+        {
+            Debug.Log($"[Fokus] Nicht genug Fokus für '{actionName}'! Benötigt: {cost}, Vorhanden: {currentFocus}");
+            return false;
+        }
+
+        currentFocus = Mathf.Max(0, currentFocus - cost);
+        Debug.Log($"[Fokus] -{cost} für '{actionName}' -> Verbleibend: {currentFocus}/{maxFocusPerTurn}");
+
+        NotifyFocusChanged();
+        return true;
+    }
+
+    public void ForceDrainFocus(int amount, string reason = "")
+    {
+        if (amount <= 0) return;
+
+        currentFocus = Mathf.Max(0, currentFocus - amount);
+        Debug.Log($"[Fokus-Verlust] -{amount} ({reason}) -> Verbleibend: {currentFocus}/{maxFocusPerTurn}");
+        NotifyFocusChanged();
+    }
+
+    public void RefillFocus()
+    {
+        currentFocus = maxFocusPerTurn;
+        NotifyFocusChanged();
+    }
+
+    public void AddNightmare(float amount, string reason = "")
+    {
+        if (Mathf.Approximately(amount, 0f) || isResettingRun) return;
+
+        currentNightmare = Mathf.Clamp(currentNightmare + amount, 0f, maxNightmare);
+        Debug.Log($"[Albtraum] {(amount >= 0 ? "+" : "")}{amount:0.#}% ({reason}) -> Stand: {currentNightmare:0.#}%");
+
+        NotifyNightmareChanged();
+
+        if (currentNightmare >= maxNightmare && !isResettingRun)
+        {
+            StartCoroutine(WakeUpInHubRoutine());
+        }
+    }
+
+    /// <summary>
+    /// Wird von PlatformerSlimeController.TakeDamage() aufgerufen.
+    /// Zieht Fokus ab, erhöht die Albtraumleiste und löst bei 0 Fokus den Zwangsstopp aus.
+    /// </summary>
+    public void OnSlimeDamaged()
+    {
+        if (isResettingRun || currentState == GameState.EnemyTurn) return;
+
+        InterruptMeditation();
+
+        // Falls die Karte offen war, sofort schließen
+        if (currentState == GameState.MapView)
+        {
+            ChangeState(GameState.FreeRoam);
+        }
+
+        // 1. Fokus abziehen & Albtraum erhöhen
+        ForceDrainFocus(damageFocusCost, "Treffer im Raum");
+        AddNightmare(nightmarePerDamage, "Treffer im Raum");
+
+        if (isResettingRun) return;
+
+        // 2. ZWANGSSTOPP prüfen: Fällt Fokus auf 0, bleibt der Slime sofort stehen und der Zug endet!
+        if (forceEndTurnOnZeroFocusHit && currentFocus <= 0)
+        {
+            Debug.LogWarning("[ZWANGSSTOPP] Fokus durch Treffer auf 0 gefallen! Slime friert ein & Zug endet sofort.");
+
+            // Geschwindigkeit nullen, damit der Slime beim nächsten Rundenstart nicht weiterfliegt
+            if (slimeController != null)
+            {
+                slimeController.ZeroOutMomentum();
+            }
+            cachedSlimeVelocity = Vector2.zero;
+
+            // Slime an Ort und Stelle (auch an Wand/Decke/Luft) einfrieren
+            SetSlimeActive(false);
+
+            if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
+            if (eventManager != null)
+            {
+                eventManager.TriggerEndTurn(forcedByZeroFocus: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Wird ausgelöst, wenn die Albtraumleiste 100 % erreicht: Run scheitert, Slime wacht im Hub auf.
+    /// </summary>
+    private IEnumerator WakeUpInHubRoutine()
+    {
+        isResettingRun = true;
+        Debug.LogWarning("=== ALBTRAUM HAT 100% ERREICHT! RUN VORBEI -> ERWACHEN IM HUB ===");
+
+        SetSlimeActive(false);
+
+        if (TurnBannerUI.Instance != null)
+        {
+            yield return StartCoroutine(TurnBannerUI.Instance.ShowBannerRoutine("ALBTRAUM: 100% - ERWACHEN IM HUB", isEnemyTurn: true, duration: 1.6f));
+        }
+        else
+        {
+            yield return new WaitForSeconds(1.2f);
+        }
+
+        // Werte zurücksetzen und Level/Grid neu im Hub starten
+        currentNightmare = 0f;
+        NotifyNightmareChanged();
+        RefillFocus();
+
+        if (currentLevelConfig != null)
+        {
+            LoadLevel(currentLevelConfig);
+        }
+
+        ChangeState(GameState.MacroPlan);
+        isResettingRun = false;
+    }
+
+    private void NotifyFocusChanged()
+    {
+        UpdateHUDTexts();
+        OnFocusChanged?.Invoke(currentFocus, maxFocusPerTurn);
+
+        if (MacroGridManager.Instance != null)
+        {
+            MacroGridManager.Instance.RefreshActiveRoomDoors();
+        }
+    }
+
+    private void NotifyNightmareChanged()
+    {
+        UpdateHUDTexts();
+        OnNightmareChanged?.Invoke(currentNightmare, maxNightmare);
+    }
+
+    private string BuildFocusDisplayString()
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.Append("FOKUS: ");
+
+        int displayMax = Mathf.Max(maxFocusPerTurn, currentFocus);
+        for (int i = 0; i < displayMax; i++)
+        {
+            sb.Append(i < currentFocus ? "◆ " : "◇ ");
+        }
+
+        sb.Append($"({currentFocus}/{maxFocusPerTurn})");
+        return sb.ToString();
+    }
+
+    private void UpdateHUDTexts()
+    {
+        if (focusText != null)
+        {
+            focusText.text = $"{BuildFocusDisplayString()}   |   ALBTRAUM: {currentNightmare:0}%";
+        }
+
+        if (nightmareFillImage != null)
+        {
+            nightmareFillImage.fillAmount = NightmareRatio;
+        }
+    }
+
+    private void OnGUI()
+    {
+        if (!showFallbackFocusHUD || focusText != null) return;
+
+        // Haupt-Hintergrundbox oben links
+        GUIStyle boxStyle = new GUIStyle(GUI.skin.box);
+        boxStyle.fontSize = 16;
+        boxStyle.fontStyle = FontStyle.Bold;
+        boxStyle.alignment = TextAnchor.UpperLeft;
+        boxStyle.normal.textColor = currentFocus > 0 ? new Color(0.3f, 0.95f, 1f) : new Color(1f, 0.35f, 0.35f);
+
+        string roomStatus = "";
+        if (MacroGridManager.Instance != null)
+        {
+            Vector2Int coord = MacroGridManager.Instance.CurrentCoordinate;
+            int visitedCount = MacroGridManager.Instance.VisitedRoomCount;
+            ZoneType currentZone = ZoneType.Hub;
+            if (GridManager.Instance != null && GridManager.Instance.grid != null &&
+                coord.x >= 0 && coord.x < GridManager.Instance.width &&
+                coord.y >= 0 && coord.y < GridManager.Instance.height &&
+                GridManager.Instance.grid[coord.x, coord.y] != null)
+            {
+                currentZone = GridManager.Instance.grid[coord.x, coord.y].zoneType;
+            }
+            roomStatus = $"\nRaum: [{coord.x}, {coord.y}] ({currentZone}) | Gesäubert: {visitedCount}";
+        }
+
+        string hint = "\n[Taste K: Test-Treffer]   [Taste E / R3: Zug beenden]";
+        GUI.Box(new Rect(16f, 16f, 450f, 118f), BuildFocusDisplayString() + roomStatus + hint, boxStyle);
+
+        // Albtraumleisten-Hintergrund
+        Rect barBgRect = new Rect(28f, 98f, 426f, 24f);
+        Color prevColor = GUI.color;
+        GUI.color = new Color(0.12f, 0.05f, 0.18f, 0.95f);
+        GUI.Box(barBgRect, GUIContent.none);
+
+        // Albtraumleisten-Füllung
+        float fillWidth = 422f * NightmareRatio;
+        if (fillWidth > 1f)
+        {
+            GUI.color = Color.Lerp(new Color(0.55f, 0.15f, 0.85f, 1f), new Color(0.95f, 0.1f, 0.25f, 1f), NightmareRatio);
+            GUI.Box(new Rect(30f, 100f, fillWidth, 20f), GUIContent.none);
+        }
+
+        // Albtraum-Beschriftung
+        GUI.color = Color.white;
+        GUIStyle barLabelStyle = new GUIStyle(GUI.skin.label);
+        barLabelStyle.alignment = TextAnchor.MiddleCenter;
+        barLabelStyle.fontStyle = FontStyle.Bold;
+        barLabelStyle.fontSize = 13;
+        GUI.Label(barBgRect, $"ALBTRAUM: {currentNightmare:0}% / {maxNightmare:0}%", barLabelStyle);
+
+        GUI.color = prevColor;
+    }
+
+    // =====================================================================
+    // LEVEL & STATE MANAGEMENT
+    // =====================================================================
 
     public void LoadLevel(LevelConfiguration config)
     {
@@ -592,11 +971,11 @@ public class GameManager : MonoBehaviour
 
         SetupLevelEncounter(config);
         CalculateMacroOverviewParameters(config);
+        UpdateHUDTexts();
     }
 
     private void SetupLevelEncounter(LevelConfiguration config)
     {
-        // 1. Alten Boss entfernen falls vorhanden
         if (activeBossInstance != null)
         {
             Destroy(activeBossInstance.gameObject);
@@ -608,13 +987,11 @@ public class GameManager : MonoBehaviour
             eventManager = FindAnyObjectByType<EventManager>();
         }
 
-        // 2. Boss aus Config spawnen falls definiert
         if (config != null && config.bossPrefab != null)
         {
             Transform spawnParent = transform.parent != null ? transform.parent : transform;
             activeBossInstance = Instantiate(config.bossPrefab, spawnParent);
 
-            // Startposition auf dem Makro-Raster setzen
             float posX = config.bossSpawnCoordinate.x * config.cellOffset;
             float posY = config.bossSpawnCoordinate.y * config.cellOffset;
             activeBossInstance.transform.localPosition = new Vector3(posX, posY, 0f);
@@ -643,7 +1020,6 @@ public class GameManager : MonoBehaviour
         float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
         float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
 
-        // Lokale Koordinaten relativ zum Macro_Grid-Parent
         macroOverviewPosition = new Vector3(centerX, centerY, -10f);
         macroOverviewSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
 
@@ -656,6 +1032,7 @@ public class GameManager : MonoBehaviour
 
     private void Update()
     {
+        if (isResettingRun) return;
         HandleTransitionInputs();
     }
 
@@ -679,7 +1056,7 @@ public class GameManager : MonoBehaviour
 
             if (eventManager != null)
             {
-                eventManager.StartCoroutine("TurnSequenceRoutine");
+                eventManager.TriggerEndTurn(forcedByZeroFocus: false);
             }
             return;
         }
@@ -704,7 +1081,6 @@ public class GameManager : MonoBehaviour
             bool isGrounded = slimeController != null && slimeController.IsGrounded;
             bool isStandingStill = slimeController != null && slimeController.Velocity.sqrMagnitude < 0.1f;
 
-            // Karte toggeln (Touchpad / M) – nur wenn auf einer Fläche
             bool mapToggle = touchpadPressed || (keyboard != null && keyboard.mKey.wasPressedThisFrame);
             if (mapToggle)
             {
@@ -720,7 +1096,6 @@ public class GameManager : MonoBehaviour
                 }
             }
 
-            // In den Baumodus meditieren: Dreieck / Taste B halten
             bool isHoldingBuild = (gamepad != null && gamepad.buttonNorth.isPressed) ||
                                   (keyboard != null && keyboard.bKey.isPressed);
 
@@ -750,7 +1125,6 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                // Bei Loslassen oder Bewegung/Sprung sofort abbrechen
                 if (buildModeHoldTimer > 0f || (slimeController != null && slimeController.IsMeditating))
                 {
                     InterruptMeditation();
@@ -827,7 +1201,6 @@ public class GameManager : MonoBehaviour
         {
             if (state == GameState.MapView)
             {
-                // Karte: Slime bleibt physikalisch in der Welt, aber Steuerung gesperrt
                 if (slimeController != null)
                 {
                     slimeController.enabled = true;
@@ -840,7 +1213,6 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                // Baumodus (MacroPlan): Slime komplett einfrieren
                 SetSlimeActive(false);
             }
 
@@ -851,7 +1223,6 @@ public class GameManager : MonoBehaviour
         }
         else
         {
-            // Direkter Wechsel zwischen zwei Makro-Zuständen (z. B. MapView <-> MacroPlan)
             SetCameraActive(macro: true, micro: false);
 
             if (state == GameState.MapView)
@@ -978,6 +1349,11 @@ public class GameManager : MonoBehaviour
         SetCameraActive(macro: false, micro: true);
         SetSlimeActive(true);
 
+        if (MacroGridManager.Instance != null)
+        {
+            MacroGridManager.Instance.RefreshActiveRoomDoors();
+        }
+
         activeCameraTransition = null;
     }
 
@@ -1048,6 +1424,17 @@ public class GameManager : MonoBehaviour
             slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
         }
     }
+
+#if UNITY_EDITOR
+    private void OnValidate()
+    {
+        if (Application.isPlaying)
+        {
+            NotifyFocusChanged();
+            NotifyNightmareChanged();
+        }
+    }
+#endif
 }
 </file>
 
@@ -1066,6 +1453,18 @@ public class GridManager : MonoBehaviour
     public GridCell cellPrefab;
     public GridCell[,] grid;
 
+    [Header("Zonen-Farben (Leuchtend für gebaute Kacheln)")]
+    public Color hubColor = new Color(0.95f, 0.98f, 1f);            // Helles Weiß-Cyan
+    public Color forestColor = new Color(0.18f, 0.82f, 0.38f);      // Tier 1: Smaragdgrün (Wald)
+    public Color oceanColor = new Color(0.15f, 0.52f, 0.95f);       // Tier 1: Ozeanblau (Meer)
+    public Color ruinsColor = new Color(0.92f, 0.68f, 0.20f);       // Tier 1: Gold-Ocker (Ruinen)
+    public Color swampColor = new Color(0.45f, 0.85f, 0.65f);       // Tier 2: Gift-Türkis (Sumpf)
+    public Color nightmareColor = new Color(0.62f, 0.15f, 0.85f);   // Rand: Kräftiges Lila
+    public Color blackVoidColor = new Color(0.15f, 0.05f, 0.20f);   // Außenrand: Dunkles Violett-Schwarz
+
+    private Vector2Int hubCoordinate;
+    private float randomSeedAngleOffset;
+
     private void Awake()
     {
         if (Instance == null) Instance = this;
@@ -1079,14 +1478,19 @@ public class GridManager : MonoBehaviour
         width = config.gridWidth;
         height = config.gridHeight;
         offset = config.cellOffset;
+        hubCoordinate = config.startCoordinate;
+
+        // Zufällige Drehung der Zonen pro Run für Abwechslung
+        randomSeedAngleOffset = Random.Range(0f, 360f);
 
         GenerateGrid();
 
-        // Startkachel besetzen
-        if (config.startCoordinate.x >= 0 && config.startCoordinate.x < width &&
-            config.startCoordinate.y >= 0 && config.startCoordinate.y < height)
+        // Startkachel (Hub) direkt besetzen
+        if (hubCoordinate.x >= 0 && hubCoordinate.x < width &&
+            hubCoordinate.y >= 0 && hubCoordinate.y < height)
         {
-            grid[config.startCoordinate.x, config.startCoordinate.y].SetOccupied();
+            grid[hubCoordinate.x, hubCoordinate.y].SetZone(ZoneType.Hub, hubColor);
+            grid[hubCoordinate.x, hubCoordinate.y].SetOccupied();
         }
     }
 
@@ -1118,8 +1522,73 @@ public class GridManager : MonoBehaviour
                 GridCell newCell = Instantiate(cellPrefab, transform);
                 newCell.transform.localPosition = new Vector3(x * offset, y * offset, 0);
                 newCell.Initialize(x, y);
+
+                AssignZoneToCell(newCell, x, y);
+
                 grid[x, y] = newCell;
             }
+        }
+    }
+
+    /// <summary>
+    /// Teilt das Raster um den Hub herum organisch in Tier-1-Zonen, Tier-2-Zonen und den Albtraum-Rand ein.
+    /// </summary>
+    private void AssignZoneToCell(GridCell cell, int x, int y)
+    {
+        // 1. Abstand zum äußeren Rand des Grids prüfen (für lila & schwarze Felder)
+        int distToEdge = Mathf.Min(Mathf.Min(x, width - 1 - x), Mathf.Min(y, height - 1 - y));
+        float edgeNoise = Mathf.PerlinNoise(x * 0.25f, y * 0.25f) * 2.2f;
+
+        if (distToEdge <= 1 + Mathf.FloorToInt(edgeNoise * 0.5f))
+        {
+            cell.SetZone(ZoneType.BlackVoid, blackVoidColor);
+            return;
+        }
+        if (distToEdge <= 3 + Mathf.FloorToInt(edgeNoise))
+        {
+            cell.SetZone(ZoneType.PurpleNightmare, nightmareColor);
+            return;
+        }
+
+        // 2. Hub-Zentrum prüfen
+        Vector2 delta = new Vector2(x - hubCoordinate.x, y - hubCoordinate.y);
+        float distFromHub = delta.magnitude;
+
+        if (distFromHub < 0.5f)
+        {
+            cell.SetZone(ZoneType.Hub, hubColor);
+            return;
+        }
+
+        // 3. Winkel um den Hub berechnen (mit leichter Wellen-Verzerrung für organische Zonengrenzen)
+        float wobble = (Mathf.PerlinNoise(x * 0.15f + 10f, y * 0.15f + 10f) - 0.5f) * 35f;
+        float angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg + 180f + randomSeedAngleOffset + wobble;
+        angle = (angle % 360f + 360f) % 360f;
+
+        float maxPlayableRadius = Mathf.Min(width, height) * 0.5f - 4f;
+
+        // 3 Sektoren à 120 Grad (grenzen alle 3 direkt an den Hub!)
+        if (angle < 120f)
+        {
+            // Sektor 1: Wald (innen) -> Sumpf (Tier 2, liegt weiter außen am Wald, nie direkt am Hub)
+            if (distFromHub > maxPlayableRadius * 0.55f)
+            {
+                cell.SetZone(ZoneType.Swamp, swampColor);
+            }
+            else
+            {
+                cell.SetZone(ZoneType.Forest, forestColor);
+            }
+        }
+        else if (angle < 240f)
+        {
+            // Sektor 2: Meer
+            cell.SetZone(ZoneType.Ocean, oceanColor);
+        }
+        else
+        {
+            // Sektor 3: Ruinen
+            cell.SetZone(ZoneType.Ruins, ruinsColor);
         }
     }
 
@@ -1158,7 +1627,7 @@ public class GridManager : MonoBehaviour
         if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
         if (grid == null || grid[coord.x, coord.y] == null) return;
 
-        grid[coord.x, coord.y].SetWarning(true);
+        grid[coord.x, coord.y].SetWarning(true, highlightColor);
 
         var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
         if (renderer != null)
@@ -1168,7 +1637,7 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Schnittstelle für BossBase: Schaltet die Warnung ab und setzt die Farbe zurück
+    /// Schnittstelle für BossBase: Schaltet die Warnung ab und stellt die Zonenfarbe wieder her
     /// </summary>
     public void ResetCellHighlight(Vector2Int coord)
     {
@@ -1176,12 +1645,7 @@ public class GridManager : MonoBehaviour
         if (grid == null || grid[coord.x, coord.y] == null) return;
 
         grid[coord.x, coord.y].SetWarning(false);
-
-        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
-        if (renderer != null)
-        {
-            renderer.color = Color.white;
-        }
+        grid[coord.x, coord.y].UpdateBaseColor();
     }
 }
 </file>
@@ -1218,6 +1682,7 @@ public class InventoryManager : MonoBehaviour
         InitializeSlotPreviews();
 
         hotbarSlots = new ShapeData[8];
+        AddRandomShape();
         AddRandomShape();
         AddRandomShape();
         AddRandomShape();
@@ -1345,7 +1810,8 @@ public class InventoryManager : MonoBehaviour
         {
             if (i < slotPreviews.Length && slotPreviews[i] != null)
             {
-                slotPreviews[i].DisplayShape(hotbarSlots[i], blockSize: 16f, spacing: 2f);
+                // Etwas kleinere Blockgröße (13f), damit 6er-Würfelnetze sauber in die Slots passen
+                slotPreviews[i].DisplayShape(hotbarSlots[i], blockSize: 13f, spacing: 2f);
             }
         }
 
@@ -1358,7 +1824,7 @@ public class InventoryManager : MonoBehaviour
 
         if (currentSelectedIndex >= 0 && currentSelectedIndex < hotbarSlots.Length && hotbarSlots[currentSelectedIndex] != null)
         {
-            centerPreview.DisplayShape(hotbarSlots[currentSelectedIndex], blockSize: 48f, spacing: 4f);
+            centerPreview.DisplayShape(hotbarSlots[currentSelectedIndex], blockSize: 40f, spacing: 4f);
         }
         else
         {
@@ -1419,8 +1885,10 @@ public class InventoryManager : MonoBehaviour
         if (isEmpty)
         {
             AddRandomShape();
+            AddRandomShape();
+            AddRandomShape();
             RefreshAllPreviews();
-            Debug.Log("Inventar war leer: Eine neue Form wurde nachgefüllt.");
+            Debug.Log("Inventar war leer: Neue 6er-Würfel wurden nachgefüllt.");
         }
     }
 
@@ -1441,35 +1909,87 @@ public class InventoryManager : MonoBehaviour
         hotbarSlots[freeIndex] = GenerateRandomShape();
     }
 
+    /// <summary>
+    /// Erzeugt echte 6er-Würfelnetze (Hexominos) mit 6 zusammenhängenden Kacheln.
+    /// </summary>
     private ShapeData GenerateRandomShape()
     {
-        int roll = Random.Range(0, 3);
+        int roll = Random.Range(0, 6);
 
-        if (roll == 0)
+        switch (roll)
         {
-            ShapeData shape = new ShapeData("2x2 Block");
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(1, 1)));
-            return shape;
-        }
-        else if (roll == 1)
-        {
-            ShapeData shape = new ShapeData("L-Form");
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 2), BlockModifier.Ice));
-            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
-            return shape;
-        }
-        else
-        {
-            ShapeData shape = new ShapeData("3er Linie");
-            shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(1, 0)));
-            shape.cells.Add(new ShapeCell(new Vector2Int(2, 0), BlockModifier.Fire));
-            return shape;
+            case 0:
+            {
+                // 1. Klassisches Würfel-Kreuz
+                ShapeData shape = new ShapeData("Würfel: Kreuz");
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 3)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 2)));
+                return shape;
+            }
+            case 1:
+            {
+                // 2. T-Würfelnetz
+                ShapeData shape = new ShapeData("Würfel: T-Netz");
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 3), BlockModifier.Ice));
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 3)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 3)));
+                return shape;
+            }
+            case 2:
+            {
+                // 3. Verschobenes Kreuz (Offset Cross)
+                ShapeData shape = new ShapeData("Würfel: Versatz-Kreuz");
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 3)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 1), BlockModifier.Fire));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 2)));
+                return shape;
+            }
+            case 3:
+            {
+                // 4. Z-Treppe (2-2-2 Stufen)
+                ShapeData shape = new ShapeData("Würfel: Z-Treppe");
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 3), BlockModifier.Ice));
+                return shape;
+            }
+            case 4:
+            {
+                // 5. Flügel-L (Winged L)
+                ShapeData shape = new ShapeData("Würfel: Flügel-L");
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 3)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(-1, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 3), BlockModifier.Fire));
+                return shape;
+            }
+            default:
+            {
+                // 6. Wellen-Netz (Wave Net)
+                ShapeData shape = new ShapeData("Würfel: Welle");
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 1)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 2)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(1, 3)));
+                shape.cells.Add(new ShapeCell(new Vector2Int(2, 3)));
+                return shape;
+            }
         }
     }
 }
@@ -1581,31 +2101,49 @@ using UnityEngine;
 
 public enum CellState
 {
-    Empty,      // Weiß: Leeres Feld
-    Built,      // Grau: Gebauter Block (Slime kann laufen)
-    Blocked     // Dunkelblau: Boss / Hindernis (unpassierbar & unbaubar)
+    Empty,      // Im Nebel (bebaubar, Zone schimmert schwach durch)
+    Built,      // Gebauter Raum (leuchtet intensiv in der Zonenfarbe)
+    Blocked     // Hindernis (unpassierbar & unbaubar)
+}
+
+public enum ZoneType
+{
+    Hub,                // Sicheres Zentrum
+    Forest,             // Tier 1: Wald / Verstrickung (Grün)
+    Ocean,              // Tier 1: Meer / Bodenlose Tiefe (Blau)
+    Ruins,              // Tier 1: Ruinen / Einsturz (Ocker/Gold)
+    Swamp,              // Tier 2: Sumpf (Türkis/Giftgrün - grenzt an Wald)
+    PurpleNightmare,    // Äußerer Rand: Erschwerte Albtraum-Räume (Lila)
+    BlackVoid           // Ganz außen: Extrem harte / tödliche Räume (Schwarz)
 }
 
 public class GridCell : MonoBehaviour
 {
     public int x, y;
     public CellState currentState = CellState.Empty;
+    public ZoneType zoneType = ZoneType.Forest;
 
     [Header("Renderers")]
     [SerializeField] private SpriteRenderer baseRenderer;
     [SerializeField] private SpriteRenderer overlayRenderer;
 
-    public bool isTargeted = false; 
-    public bool isHovered = false; 
+    [Header("Nebel & Zonen-Optik")]
+    [Tooltip("Wie stark die Zonenfarbe durch den unentdeckten Nebel schimmert (0.15 - 0.30 empfohlen)")]
+    [SerializeField] private float fogTintStrength = 0.22f;
+
+    public bool isTargeted = false;
+    public bool isHovered = false;
     public float pulseSpeed = 4f;
 
-    // Grundfarben des Bodens
-    private static readonly Color ColorEmpty = Color.white;
-    private static readonly Color ColorBuilt = Color.gray;
-    private static readonly Color ColorBlocked = new Color(0.1f, 0.2f, 0.6f); // Dunkelblau
+    // Grundfarben für Nebel und Blockaden
+    private static readonly Color FogBaseColor = new Color(0.07f, 0.07f, 0.09f, 1f);
+    private static readonly Color ColorBlocked = new Color(0.1f, 0.15f, 0.3f, 1f);
 
-    // Aktuelle Warnfarbe für das Overlay
-    private Color currentWarningColor = new Color(1f, 0.5f, 0f); // Standard: Orange
+    // Zugewiesene Zonenfarbe dieser Kachel
+    private Color zoneColor = Color.white;
+
+    // Aktuelle Warnfarbe für das Overlay (Boss-Telegrafie)
+    private Color currentWarningColor = new Color(1f, 0.5f, 0f);
 
     // Hilfseigenschaften für andere Skripte
     public bool IsWalkableForSlime => currentState == CellState.Built;
@@ -1613,7 +2151,6 @@ public class GridCell : MonoBehaviour
 
     void Awake()
     {
-        // Falls im Inspector nicht zugewiesen, automatisch zuweisen
         if (baseRenderer == null)
             baseRenderer = GetComponent<SpriteRenderer>();
 
@@ -1627,6 +2164,16 @@ public class GridCell : MonoBehaviour
         y = gridY;
         gameObject.name = $"Feld_{x}_{y}";
         SetState(CellState.Empty);
+    }
+
+    /// <summary>
+    /// Weist der Kachel eine Zone und ihre Grundfarbe zu.
+    /// </summary>
+    public void SetZone(ZoneType type, Color color)
+    {
+        zoneType = type;
+        zoneColor = color;
+        UpdateBaseColor();
     }
 
     public void SetState(CellState newState)
@@ -1647,21 +2194,26 @@ public class GridCell : MonoBehaviour
         UpdateOverlay();
     }
 
-    // Maus-Vorschau beim Platzieren von Formen
+    // Vorschau beim Platzieren von Würfelnetzen
     public void SetPreview(bool isValid)
     {
         isHovered = true;
         if (overlayRenderer != null)
         {
             overlayRenderer.gameObject.SetActive(true);
-            // Halbtransparentes Grün oder Rot über die Kachel legen
-            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.45f) : new Color(1f, 0f, 0f, 0.45f);
+            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.55f) : new Color(1f, 0f, 0f, 0.55f);
+        }
+        else if (baseRenderer != null)
+        {
+            // Fallback, falls im Prefab kein separater OverlayRenderer zugewiesen ist
+            baseRenderer.color = isValid ? new Color(0.2f, 0.9f, 0.2f, 1f) : new Color(0.9f, 0.2f, 0.2f, 1f);
         }
     }
 
     public void RevertPreview()
     {
         isHovered = false;
+        UpdateBaseColor();
         UpdateOverlay();
     }
 
@@ -1669,9 +2221,33 @@ public class GridCell : MonoBehaviour
     {
         switch (currentState)
         {
-            case CellState.Built: return ColorBuilt;
-            case CellState.Blocked: return ColorBlocked;
-            default: return ColorEmpty;
+            case CellState.Built:
+                // Belegte Felder leuchten kräftig in der vollen Farbe ihrer Zone
+                return zoneColor;
+
+            case CellState.Blocked:
+                return ColorBlocked;
+
+            case CellState.Empty:
+            default:
+                // Hub ist immer klar sichtbar
+                if (zoneType == ZoneType.Hub)
+                {
+                    return zoneColor * 0.8f;
+                }
+                // Schwarzer Rand ist fast tiefschwarz
+                if (zoneType == ZoneType.BlackVoid)
+                {
+                    return new Color(0.03f, 0.02f, 0.04f, 1f);
+                }
+                // Lila Albtraum-Rand hebt sich bedrohlich ab
+                if (zoneType == ZoneType.PurpleNightmare)
+                {
+                    return Color.Lerp(FogBaseColor, zoneColor, 0.42f);
+                }
+
+                // Normale Zonen im Nebel: Dunkler Grundton mit durchschimmernder Zonenfarbe
+                return Color.Lerp(FogBaseColor, zoneColor, fogTintStrength);
         }
     }
 
@@ -1687,7 +2263,7 @@ public class GridCell : MonoBehaviour
     {
         if (overlayRenderer == null) return;
 
-        if (isHovered) return; // Hover hat Vorrang
+        if (isHovered) return;
 
         if (isTargeted)
         {
@@ -1703,8 +2279,7 @@ public class GridCell : MonoBehaviour
     {
         if (isHovered || !isTargeted || overlayRenderer == null) return;
 
-        // Lässt nur die Deckkraft (Alpha) des Overlays pulsieren
-        float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f; // Pendelt zwischen 0.2 und 0.7
+        float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f;
         Color pulsedColor = currentWarningColor;
         pulsedColor.a = alpha;
         overlayRenderer.color = pulsedColor;
@@ -1762,12 +2337,16 @@ public class MacroGridManager : MonoBehaviour
     // Vorlagen pro Koordinate für das spätere Instanziieren
     private readonly Dictionary<Vector2Int, Room> roomPrefabs = new Dictionary<Vector2Int, Room>();
 
+    // Speichert alle Koordinaten, die der Slime in diesem Run bereits betreten/gesäubert hat
+    private readonly HashSet<Vector2Int> visitedRooms = new HashSet<Vector2Int>();
+
     private Vector2Int currentCoordinate;
     private float lastTransitionTime = -1f;
     private const float TransitionCooldown = 0.25f;
 
     public Vector2Int CurrentCoordinate => currentCoordinate;
     public IReadOnlyDictionary<Vector2Int, Room> Grid => grid;
+    public int VisitedRoomCount => visitedRooms.Count;
 
     private void Awake()
     {
@@ -1792,12 +2371,35 @@ public class MacroGridManager : MonoBehaviour
         Room.OnExitTriggered -= HandleRoomExit;
     }
 
-    /// <summary>
-    /// Wird vom GameManager aufgerufen, um das Level datenbasiert aufzubauen.
-    /// </summary>
+    public bool IsRoomVisited(Vector2Int coord)
+    {
+        return visitedRooms.Contains(coord);
+    }
+
+    public int GetRoomEntryFocusCost(Vector2Int targetCoord)
+    {
+        if (GameManager.Instance == null) return 0;
+
+        return IsRoomVisited(targetCoord)
+            ? GameManager.Instance.EnterClearedRoomFocusCost
+            : GameManager.Instance.EnterNewRoomFocusCost;
+    }
+
+    public bool CanEnterRoomAt(Vector2Int targetCoord)
+    {
+        if (!HasRoom(targetCoord)) return false;
+
+        int requiredFocus = GetRoomEntryFocusCost(targetCoord);
+        if (GameManager.Instance != null)
+        {
+            return GameManager.Instance.CanAffordFocus(requiredFocus);
+        }
+
+        return true;
+    }
+
     public void Initialize(LevelConfiguration config)
     {
-        // 1. Werte aus der Config übernehmen
         if (config != null)
         {
             roomSpacing = config.roomSpacing;
@@ -1811,7 +2413,6 @@ public class MacroGridManager : MonoBehaviour
         FindPlayerIfNeeded();
         FindCameraIfNeeded();
 
-        // 2. Bestehende Räume aufräumen (falls vorher schon ein Level lief)
         foreach (var room in grid.Values)
         {
             if (room != null)
@@ -1821,27 +2422,25 @@ public class MacroGridManager : MonoBehaviour
         }
         grid.Clear();
         roomPrefabs.Clear();
+        visitedRooms.Clear();
 
-        // 3. Vorlagen aus Inspector-Liste neu registrieren
         InitializeGrid();
 
-        // 4. Startraum registrieren (falls noch nicht in roomEntries vorhanden)
         if (!roomPrefabs.ContainsKey(startCoordinate) && defaultRoomPrefab != null)
         {
             RegisterRoom(startCoordinate, defaultRoomPrefab);
         }
 
-        // 5. Startraum und Umfeld aktivieren
         currentCoordinate = startCoordinate;
+        visitedRooms.Add(startCoordinate);
+
         UpdateActiveRooms(currentCoordinate);
 
-        // 6. Makro-Marker auf der Karte synchronisieren
         if (MacroSlimeMarker.Instance != null)
         {
             MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
         }
 
-        // 7. Kamera initial auf den Startraum eichen
         if (grid.TryGetValue(currentCoordinate, out Room startRoom) && startRoom != null)
         {
             UpdateCameraConfiner(startRoom);
@@ -1869,15 +2468,11 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Aktualisiert das 5er-Fenster (aktueller Raum + 4 Nachbarn).
-    /// </summary>
     public void UpdateActiveRooms(Vector2Int center)
     {
         currentCoordinate = center;
         HashSet<Vector2Int> targetCoords = GetActiveWindowCoordinates(center);
 
-        // 1. Die 5 aktiven Räume instanziieren / aktivieren
         foreach (Vector2Int coord in targetCoords)
         {
             if (HasRoom(coord))
@@ -1892,7 +2487,6 @@ public class MacroGridManager : MonoBehaviour
             }
         }
 
-        // 2. Weiter entfernte Räume deaktivieren oder zerstören
         List<Vector2Int> loadedCoords = new List<Vector2Int>(grid.Keys);
         foreach (Vector2Int coord in loadedCoords)
         {
@@ -1914,7 +2508,12 @@ public class MacroGridManager : MonoBehaviour
             }
         }
 
-        // 3. Türen für alle aktiven Räume anpassen
+        RefreshActiveRoomDoors();
+    }
+
+    public void RefreshActiveRoomDoors()
+    {
+        HashSet<Vector2Int> targetCoords = GetActiveWindowCoordinates(currentCoordinate);
         foreach (Vector2Int coord in targetCoords)
         {
             if (grid.TryGetValue(coord, out Room room) && room != null && room.gameObject.activeSelf)
@@ -1929,10 +2528,10 @@ public class MacroGridManager : MonoBehaviour
         return new HashSet<Vector2Int>
         {
             center,
-            center + Vector2Int.up,    // Nord
-            center + Vector2Int.right, // Ost
-            center + Vector2Int.down,  // Süd
-            center + Vector2Int.left   // West
+            center + Vector2Int.up,
+            center + Vector2Int.right,
+            center + Vector2Int.down,
+            center + Vector2Int.left
         };
     }
 
@@ -1968,10 +2567,20 @@ public class MacroGridManager : MonoBehaviour
 
     private void UpdateRoomDoors(Room room, Vector2Int coord)
     {
-        room.SetDoorOpen(Direction.North, HasRoom(coord + Vector2Int.up));
-        room.SetDoorOpen(Direction.East, HasRoom(coord + Vector2Int.right));
-        room.SetDoorOpen(Direction.South, HasRoom(coord + Vector2Int.down));
-        room.SetDoorOpen(Direction.West, HasRoom(coord + Vector2Int.left));
+        if (coord == currentCoordinate)
+        {
+            room.SetDoorOpen(Direction.North, CanEnterRoomAt(coord + Vector2Int.up));
+            room.SetDoorOpen(Direction.East, CanEnterRoomAt(coord + Vector2Int.right));
+            room.SetDoorOpen(Direction.South, CanEnterRoomAt(coord + Vector2Int.down));
+            room.SetDoorOpen(Direction.West, CanEnterRoomAt(coord + Vector2Int.left));
+        }
+        else
+        {
+            room.SetDoorOpen(Direction.North, HasRoom(coord + Vector2Int.up));
+            room.SetDoorOpen(Direction.East, HasRoom(coord + Vector2Int.right));
+            room.SetDoorOpen(Direction.South, HasRoom(coord + Vector2Int.down));
+            room.SetDoorOpen(Direction.West, HasRoom(coord + Vector2Int.left));
+        }
     }
 
     private void HandleRoomExit(Room fromRoom, Direction exitDirection)
@@ -1990,12 +2599,24 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        lastTransitionTime = Time.time;
+        bool wasAlreadyVisited = IsRoomVisited(targetCoord);
+        int entryCost = GetRoomEntryFocusCost(targetCoord);
 
-        // 1. 5er-Fenster aktualisieren
+        if (GameManager.Instance != null)
+        {
+            string reason = wasAlreadyVisited ? $"Gesäuberten Raum {targetCoord} durchquert" : $"Neuen Raum {targetCoord} erschlossen";
+            if (!GameManager.Instance.TrySpendFocus(entryCost, reason))
+            {
+                RefreshActiveRoomDoors();
+                return;
+            }
+        }
+
+        lastTransitionTime = Time.time;
+        visitedRooms.Add(targetCoord);
+
         UpdateActiveRooms(targetCoord);
 
-        // 2. Makro-Marker auf der Karte nachziehen
         if (MacroSlimeMarker.Instance != null)
         {
             MacroSlimeMarker.Instance.SetGridPosition(targetCoord);
@@ -2007,17 +2628,14 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        // 3. Gegenüberliegende Tür als Einstiegspunkt wählen
         Direction enterFromDirection = GetOppositeDirection(exitDirection);
         Transform spawnPoint = targetRoom.GetSpawnPoint(enterFromDirection);
 
-        // 4. Teleportation des Spielers durchführen
         Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
         Vector3 targetPos = (spawnPoint != null) ? spawnPoint.position : GetWorldPosition(currentCoordinate);
-        
+
         TeleportPlayer(targetPos, exitDirection);
 
-        // 5. Cinemachine 3.x anpassen & warpen
         Vector3 deltaPosition = targetPos - previousPos;
         UpdateCameraForTransition(targetRoom, deltaPosition);
     }
@@ -2041,7 +2659,7 @@ public class MacroGridManager : MonoBehaviour
             Vector2 forwardDir = DirectionToOffset(exitDirection);
             if (Vector2.Dot(rb.linearVelocity, forwardDir) < 2f)
             {
-                rb.linearVelocity = forwardDir * 4f; 
+                rb.linearVelocity = forwardDir * 4f;
             }
         }
 
@@ -2094,11 +2712,20 @@ public class MacroGridManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Zerstört einen Raum an der angegebenen Koordinate und entfernt ihn aus dem Grid.
-    /// Wird unter anderem bei Boss-Angriffen aufgerufen.
+    /// Zerstört einen Raum an der angegebenen Koordinate.
+    /// Steht der Slime darauf, wird er unter Albtraum-Anstieg auf ein Nachbarfeld geschleudert.
     /// </summary>
     public void RemoveRoomAt(Vector2Int coord)
     {
+        // Der Hub darf niemals komplett gelöscht werden
+        if (coord == startCoordinate)
+        {
+            Debug.Log("[MacroGridManager] Der Hub-Raum ist unzerstörbar!");
+            return;
+        }
+
+        bool slimeWasInDestroyedRoom = (coord == currentCoordinate);
+
         if (grid.TryGetValue(coord, out Room roomInstance) && roomInstance != null)
         {
             Destroy(roomInstance.gameObject);
@@ -2106,9 +2733,92 @@ public class MacroGridManager : MonoBehaviour
 
         grid.Remove(coord);
         roomPrefabs.Remove(coord);
+        visitedRooms.Remove(coord);
 
-        // Türen der umgebenden Räume aktualisieren, damit geschlossene Wände entstehen
-        UpdateActiveRooms(currentCoordinate);
+        // Visuelle Kachel auf dem Makro-Grid wieder in den Nebel zurücksetzen
+        if (GridManager.Instance != null && GridManager.Instance.grid != null &&
+            coord.x >= 0 && coord.x < GridManager.Instance.width &&
+            coord.y >= 0 && coord.y < GridManager.Instance.height)
+        {
+            GridManager.Instance.grid[coord.x, coord.y].DestroyBlock();
+        }
+
+        // Falls der Slime auf der zerstörten Kachel stand -> Notfall-Schleudern auf Nachbarfeld!
+        if (slimeWasInDestroyedRoom)
+        {
+            Vector2Int fallbackCoord = FindNearestBuiltRoom(coord);
+            Debug.LogWarning($"[Boss-Treffer] Raum {coord} unter dem Slime zerstört! Slime wird nach {fallbackCoord} geschleudert.");
+
+            currentCoordinate = fallbackCoord;
+            visitedRooms.Add(fallbackCoord);
+            UpdateActiveRooms(currentCoordinate);
+
+            if (MacroSlimeMarker.Instance != null)
+            {
+                MacroSlimeMarker.Instance.SetGridPosition(currentCoordinate);
+            }
+
+            FindPlayerIfNeeded();
+            PlaceSlimeInRoom(currentCoordinate, playerTransform);
+
+            if (grid.TryGetValue(currentCoordinate, out Room fallbackRoom) && fallbackRoom != null)
+            {
+                UpdateCameraConfiner(fallbackRoom);
+            }
+
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.AddNightmare(GameManager.Instance.NightmareOnBossRoomDestroy, "Raum unter Slime vom Boss zerstört");
+            }
+        }
+        else
+        {
+            UpdateActiveRooms(currentCoordinate);
+        }
+    }
+
+    private Vector2Int FindNearestBuiltRoom(Vector2Int fromCoord)
+    {
+        // 1. Direkte Nachbarn prüfen
+        Vector2Int[] neighbors = new Vector2Int[]
+        {
+            fromCoord + Vector2Int.down,
+            fromCoord + Vector2Int.up,
+            fromCoord + Vector2Int.left,
+            fromCoord + Vector2Int.right
+        };
+
+        foreach (var n in neighbors)
+        {
+            if (HasRoom(n)) return n;
+        }
+
+        // 2. Nächstgelegenen existierenden Raum im gesamten Grid suchen
+        float bestDist = float.MaxValue;
+        Vector2Int bestCoord = startCoordinate;
+
+        foreach (var kvp in roomPrefabs)
+        {
+            float d = Vector2Int.Distance(fromCoord, kvp.Key);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                bestCoord = kvp.Key;
+            }
+        }
+
+        // 3. Sicherheits-Fallback: Hub garantieren
+        if (!HasRoom(bestCoord) && defaultRoomPrefab != null)
+        {
+            RegisterRoom(startCoordinate, defaultRoomPrefab);
+            if (GridManager.Instance != null)
+            {
+                GridManager.Instance.SetCellState(startCoordinate.x, startCoordinate.y, CellState.Built);
+            }
+            return startCoordinate;
+        }
+
+        return bestCoord;
     }
 
     public static Vector2Int DirectionToOffset(Direction dir)
@@ -2166,9 +2876,6 @@ public class MacroGridManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Teleportiert den Slime in den Startraum anhand der Grid-Koordinate.
-    /// </summary>
     public void PlaceSlimeInRoom(Vector2Int coord, Transform slimeTransform)
     {
         if (slimeTransform == null) return;
@@ -2266,8 +2973,10 @@ public class PlacementManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public GameManager gameManager;
 
-    // Runden-Begrenzung
-    public int maxPlacementsPerTurn = 2;
+    [Header("Fokus & Platzierungs-Regeln")]
+    [Tooltip("Wenn aktiv, wird das Platzieren über Fokus-Punkte (GameManager) begrenzt statt über ein starres Rundenlimit.")]
+    public bool useFocusCost = true;
+    public int maxPlacementsPerTurn = 99;
     public int placementsThisTurn = 0;
 
     private ShapeData currentShape = null;
@@ -2291,6 +3000,15 @@ public class PlacementManager : MonoBehaviour
 
     public bool CanPlaceMoreThisTurn()
     {
+        if (useFocusCost)
+        {
+            if (gameManager == null) gameManager = GameManager.Instance;
+            if (gameManager != null)
+            {
+                return gameManager.CanAffordFocus(gameManager.PlaceCubeFocusCost);
+            }
+        }
+
         return placementsThisTurn < maxPlacementsPerTurn;
     }
 
@@ -2303,7 +3021,8 @@ public class PlacementManager : MonoBehaviour
     {
         if (!CanPlaceMoreThisTurn())
         {
-            Debug.Log("Platzierungslimit für diese Runde bereits erreicht!");
+            int needed = (gameManager != null) ? gameManager.PlaceCubeFocusCost : 1;
+            Debug.Log($"[PlacementManager] Nicht genug Fokus zum Bauen! (Benötigt: {needed})");
             return;
         }
 
@@ -2386,7 +3105,6 @@ public class PlacementManager : MonoBehaviour
         }
         else if (rotateCCW)
         {
-            // 3x im Uhrzeigersinn = 1x gegen den Uhrzeigersinn
             currentShape.RotateClockwise();
             currentShape.RotateClockwise();
             currentShape.RotateClockwise();
@@ -2436,7 +3154,6 @@ public class PlacementManager : MonoBehaviour
         {
             moveRepeatTimer = 0f;
 
-            // Optionaler Fallback: Wenn Maus bewegt wird, Mausposition nutzen
             if (mouse != null && mouse.delta.ReadValue().sqrMagnitude > 4f)
             {
                 Vector2Int mouseCell = GetCellUnderMouse();
@@ -2465,7 +3182,7 @@ public class PlacementManager : MonoBehaviour
 
         if (gridManager == null || currentShape == null) return;
 
-        bool isValid = CanPlaceShape(startX, startY);
+        bool isValid = CanPlaceShape(startX, startY) && CanPlaceMoreThisTurn();
 
         foreach (ShapeCell cell in currentShape.cells)
         {
@@ -2494,8 +3211,23 @@ public class PlacementManager : MonoBehaviour
     {
         if (gridManager == null || currentShape == null) return;
 
+        if (!CanPlaceMoreThisTurn())
+        {
+            Debug.Log("[PlacementManager] Nicht genug Fokus für diese Platzierung!");
+            return;
+        }
+
         if (CanPlaceShape(startX, startY))
         {
+            if (useFocusCost)
+            {
+                if (gameManager == null) gameManager = GameManager.Instance;
+                if (gameManager != null && !gameManager.TrySpendFocus(gameManager.PlaceCubeFocusCost, $"Würfel '{currentShape.shapeName}' gelegt"))
+                {
+                    return;
+                }
+            }
+
             foreach (ShapeCell cell in currentShape.cells)
             {
                 int x = startX + cell.localPosition.x;
@@ -2520,8 +3252,6 @@ public class PlacementManager : MonoBehaviour
             }
 
             placementsThisTurn++;
-            Debug.Log($"Form platziert ({placementsThisTurn}/{maxPlacementsPerTurn} in dieser Runde).");
-
             CancelSelection();
         }
         else
@@ -2982,26 +3712,61 @@ using UnityEngine;
 
 public class PlatformerAirborneState : PlatformerSlimeState
 {
+    private bool jumpCutApplied = false;
+
     public PlatformerAirborneState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data) 
         : base(controller, stateMachine, data) { }
 
     public override void Enter()
     {
-        // Kein hartes Überschreiben im ersten Frame, damit keine Fehlausrichtung entsteht
+        jumpCutApplied = false;
     }
 
     public override void FrameUpdate()
     {
-        // Das Anheften wird nun direkt in MoveAndResolveCollisions präzise und race-condition-frei ausgelöst.
+        // 1. Coyote-Time-Sprung: Falls man gerade erst von einer Kante gefallen ist und noch innerhalb von 0.1s springt
+        if (controller.HasBufferedJump && controller.HasCoyoteTime)
+        {
+            controller.ConsumeJumpBuffer();
+            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f
+                ? controller.MoveInput.x * data.moveSpeed
+                : controller.Velocity.x;
+
+            controller.Velocity = new Vector2(moveX, data.jumpVelocity);
+            jumpCutApplied = false;
+            return;
+        }
+
+        // 2. Variable Sprunghöhe (Jump Cut): Lässt der Spieler die Sprungtaste im Aufstieg los, wird der Sprung kürzer
+        if (!jumpCutApplied && !controller.JumpHeld && controller.Velocity.y > 1.5f)
+        {
+            float cutMultiplier = (data != null && data.jumpCutMultiplier > 0.1f) ? data.jumpCutMultiplier : 0.5f;
+            controller.Velocity = new Vector2(controller.Velocity.x, controller.Velocity.y * cutMultiplier);
+            jumpCutApplied = true;
+        }
     }
 
     public override void PhysicsUpdate()
     {
-        // Reale Welt-Schwerkraft zieht nach unten
-        ApplyGravity();
+        float apexThreshold = (data != null && data.apexVelocityThreshold > 0.1f) ? data.apexVelocityThreshold : 2.8f;
+        bool isNearApex = Mathf.Abs(controller.Velocity.y) <= apexThreshold;
 
-        // Horizontale Luftsteuerung in Welt-X
-        ApplyHorizontalMovement(data.airAcceleration, data.airAcceleration);
+        // 1. Schwerkraft mit sanfter Apex-Hang-Time am höchsten Punkt
+        float gravMult = isNearApex && data != null && data.apexGravityMultiplier > 0.1f
+            ? data.apexGravityMultiplier
+            : 1f;
+
+        Vector2 vel = controller.Velocity;
+        vel.y += (data.gravity * gravMult) * Time.fixedDeltaTime;
+        vel.y = Mathf.Max(vel.y, -data.maxFallSpeed);
+        controller.Velocity = vel;
+
+        // 2. Horizontale Luftsteuerung (etwas präziser am Scheitelpunkt, um Ecken leichter zu treffen)
+        float airBoost = isNearApex && data != null && data.apexAirAccelerationMultiplier > 0.5f
+            ? data.apexAirAccelerationMultiplier
+            : 1f;
+
+        ApplyHorizontalMovement(data.airAcceleration * airBoost, data.airAcceleration * airBoost);
     }
 }
 </file>
@@ -3029,9 +3794,15 @@ public class PlatformerGroundedState : PlatformerSlimeState
         justEntered = true;
         controller.IsGrounded = true;
 
-        Vector2 normal = controller.CurrentSurfaceNormal;
+        Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = new Vector2(normal.y, -normal.x);
         float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
+
+        // Landet man direkt auf einer äußeren Ecke, stoppt der Slime dort kontrolliert
+        if (controller.IsOnOuterCorner)
+        {
+            preservedSpeed = 0f;
+        }
 
         controller.Velocity = new Vector2(preservedSpeed, 0f);
 
@@ -3054,18 +3825,17 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
-        bool isCeiling = surfaceNormal.y < -0.5f;
-        bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+        Vector2 surfaceNormal = controller.EffectiveSurfaceNormal;
+        bool isOuterCorner = controller.IsOnOuterCorner;
+        bool isCeiling = !isOuterCorner && surfaceNormal.y < -0.5f;
+        bool isWall = !isOuterCorner && Mathf.Abs(surfaceNormal.x) > 0.5f;
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel
+        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel (nicht auf äußeren Ecken)
         if (isCeiling && !isHoldingDownFromWall)
         {
             Vector2 input = controller.MoveInput;
-
-            // Muss fast rein nach unten sein (Y <= -0.80 und X maximal 0.25)
             bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
             if (isStrictlyDown)
@@ -3090,7 +3860,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             }
             else
             {
-                // Jede Abweichung setzt den Timer sofort zurück
                 downHoldTimer = 0f;
             }
         }
@@ -3099,39 +3868,86 @@ public class PlatformerGroundedState : PlatformerSlimeState
             downHoldTimer = 0f;
         }
 
-        // 2. Sprung von der Fläche (Boden, Wand oder Decke)
+        // 2. Sprung von der Fläche (Boden, Wand, Decke, Äußere Ecke oder Innere Ecke)
         if (controller.HasBufferedJump)
         {
-            controller.ConsumeJumpBuffer();
-            controller.TriggerDetach(surfaceNormal);
-
-            if (isCeiling)
-            {
-                float airMoveX = controller.MoveInput.x * data.moveSpeed;
-                float verticalDrop = -data.jumpVelocity * 0.6f;
-                controller.Velocity = new Vector2(airMoveX, verticalDrop);
-            }
-            else if (isWall)
-            {
-                Vector2 jumpDir = (surfaceNormal * 1.0f + Vector2.up * 1.1f).normalized;
-                controller.Velocity = jumpDir * data.jumpVelocity;
-            }
-            else
-            {
-                float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
-                    ? controller.MoveInput.x * data.moveSpeed 
-                    : controller.Velocity.x;
-
-                controller.Velocity = new Vector2(moveX, data.jumpVelocity);
-            }
-
-            stateMachine.ChangeState(controller.AirborneState);
+            ExecuteJump(surfaceNormal, isOuterCorner, isCeiling, isWall);
         }
+    }
+
+    private void ExecuteJump(Vector2 surfaceNormal, bool isOuterCorner, bool isCeiling, bool isWall)
+    {
+        controller.ConsumeJumpBuffer();
+
+        float stretch = (data != null) ? data.jumpStretchAmount : 0.16f;
+        controller.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+
+        // FALL A: Absprung direkt von einer äußeren Ecke (270°)
+        if (isOuterCorner)
+        {
+            Vector2 cornerNormal = controller.EffectiveSurfaceNormal;
+            controller.TriggerCornerDetach(controller.OuterCornerNormalA, controller.OuterCornerNormalB);
+
+            // Wenn der Spieler in eine Richtung drückt, leicht mit einbeziehen, sonst entlang der Eck-Normale + Auftrieb
+            Vector2 launchDir = (cornerNormal * 1.05f + Vector2.up * 0.55f).normalized;
+            if (controller.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(controller.MoveInput.normalized, cornerNormal) > -0.2f)
+            {
+                launchDir = (launchDir + controller.MoveInput.normalized * 0.35f).normalized;
+            }
+
+            controller.Velocity = launchDir * data.jumpVelocity;
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // FALL B: Absprung direkt aus einer 90°-Innenecken-Nische
+        if (controller.IsInInnerCornerPocket && controller.InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
+        {
+            Vector2 bisector = (surfaceNormal + controller.InnerCornerAdjacentNormal).normalized;
+            controller.TriggerCornerDetach(surfaceNormal, controller.InnerCornerAdjacentNormal);
+
+            Vector2 launchDir = (bisector + Vector2.up * 0.4f).normalized;
+            controller.Velocity = launchDir * data.jumpVelocity;
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // FALL C: Regulärer Absprung (Decke, Wand, Boden)
+        controller.TriggerDetach(surfaceNormal);
+
+        if (isCeiling)
+        {
+            float airMoveX = controller.MoveInput.x * data.moveSpeed;
+            float verticalDrop = -data.jumpVelocity * 0.6f;
+            controller.Velocity = new Vector2(airMoveX, verticalDrop);
+        }
+        else if (isWall)
+        {
+            // Richtungsabhängiger Wandsprung:
+            // Drückt man von der Wand weg -> weiter Bogen; hält man nach oben/neutral -> höherer Sprung
+            float awayInput = Vector2.Dot(controller.MoveInput, surfaceNormal);
+            float horizontalWeight = awayInput > 0.25f ? 1.05f : 0.80f;
+            float verticalWeight = controller.MoveInput.y < -0.4f ? 0.55f : 1.15f;
+
+            Vector2 jumpDir = (surfaceNormal * horizontalWeight + Vector2.up * verticalWeight).normalized;
+            controller.Velocity = jumpDir * data.jumpVelocity;
+        }
+        else
+        {
+            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
+                ? controller.MoveInput.x * data.moveSpeed 
+                : controller.Velocity.x;
+
+            controller.Velocity = new Vector2(moveX, data.jumpVelocity);
+        }
+
+        stateMachine.ChangeState(controller.AirborneState);
     }
 
     public override void PhysicsUpdate()
     {
-        Vector2 normal = controller.CurrentSurfaceNormal;
+        // Auf äußeren Ecken nutzen wir die effektive Ecken-Normale, damit man jederzeit vor und zurück rollen kann
+        Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = new Vector2(normal.y, -normal.x);
         Vector2 input = controller.MoveInput;
         float inputSqrMag = input.sqrMagnitude;
@@ -3152,7 +3968,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             {
                 float proj = Vector2.Dot(input, tangent);
 
-                if (Mathf.Abs(proj) > 0.15f)
+                if (Mathf.Abs(proj) > 0.12f)
                 {
                     isTraversing = true;
                     currentTraverseSign = Mathf.Sign(proj);
@@ -3170,7 +3986,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
                     initialInputVector = Vector2.zero;
 
                     float proj = Vector2.Dot(input, tangent);
-                    if (Mathf.Abs(proj) > 0.15f)
+                    if (Mathf.Abs(proj) > 0.12f)
                     {
                         isTraversing = true;
                         currentTraverseSign = Mathf.Sign(proj);
@@ -3190,7 +4006,8 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isTraversing)
             {
-                targetSpeed = currentTraverseSign * data.moveSpeed;
+                // An Innen- und Außenecken wird die Geschwindigkeit sanft über CornerSpeedMultiplier gedämpft
+                targetSpeed = currentTraverseSign * data.moveSpeed * controller.CornerSpeedMultiplier;
             }
         }
 
@@ -3214,23 +4031,58 @@ public class PlatformerPhysicsData : ScriptableObject
     public float gravity = -35f;
     public float maxFallSpeed = 20f;
 
+    [Tooltip("Ab welcher vertikalen Geschwindigkeit nahe 0 der Scheitelpunkt (Apex) aktiv wird")]
+    public float apexVelocityThreshold = 2.8f;
+    [Tooltip("Schwerkraft-Faktor am höchsten Punkt des Sprungs (kleiner = mehr Kontrolle bei Kantenlandungen)")]
+    [Range(0.3f, 1f)] public float apexGravityMultiplier = 0.62f;
+    [Tooltip("Zusätzliche Luftbeschleunigung am Scheitelpunkt des Sprungs")]
+    public float apexAirAccelerationMultiplier = 1.35f;
+
     [Header("Movement")]
     public float moveSpeed = 8f;
     public float groundAcceleration = 70f;
-    public float groundDeceleration = 60f;
-    public float airAcceleration = 35f;
+    public float groundDeceleration = 65f;
+    public float airAcceleration = 38f;
 
-    [Header("Jumping")]
+    [Header("Jumping & Coyote Time")]
     public float jumpVelocity = 14f;
+    [Tooltip("Faktor, mit dem die Aufwärtsgeschwindigkeit beim vorzeitigen Loslassen der Sprungtaste gedämpft wird (Variable Jump)")]
+    [Range(0.2f, 0.9f)] public float jumpCutMultiplier = 0.5f;
+    [Tooltip("Kulanzzeit in Sekunden, in der man kurz nach dem Verlassen einer Kante noch abspringen kann")]
+    public float coyoteTimeDuration = 0.1f;
+
+    [Header("Äußere Ecken (270° Wrapping & Stehenbleiben)")]
+    [Tooltip("Geschwindigkeits-Faktor beim Umrunden einer äußeren Ecke (kleiner = langsamer & kontrollierter)")]
+    [Range(0.3f, 1.2f)] public float outerCornerSpeedMultiplier = 0.70f;
+    [Tooltip("Länge des Bogens um eine äußere Ecke (größer = sanfterer, längerer Übergang)")]
+    [Range(0.25f, 1.0f)] public float outerCornerArcLength = 0.48f;
+    [Tooltip("Wie eng sich der Slime an die äußere Kante schmiegt (0.7 = eng anliegend, 1.0 = weiter Kreisbogen)")]
+    [Range(0.55f, 1.0f)] public float outerCornerCurvePower = 0.75f;
+    [Tooltip("Erlaubt dem Slime, mitten auf äußeren Ecken (z. B. im 45°-Winkel) stehenzubleiben oder dort zu landen")]
+    public bool allowStoppingOnOuterCorners = true;
+
+    [Header("Innere Ecken (90° Übergang)")]
+    [Tooltip("Geschwindigkeits-Faktor direkt beim Wechsel durch eine 90°-Innenecke")]
+    [Range(0.3f, 1.0f)] public float innerCornerSpeedMultiplier = 0.75f;
+    [Tooltip("Dauer der leichten Abbremsung in einer Innenecke in Sekunden")]
+    public float innerCornerSlowdownDuration = 0.08f;
+    [Tooltip("Abstand vor einer Innenecke, ab dem sich der Slime optisch schon sanft in die Ecke neigt")]
+    public float innerCornerBlendDistance = 0.35f;
 
     [Header("Sensors & Collision")]
     public LayerMask groundLayer;
     public float skinWidth = 0.015f;
-    public float alignRotationSpeed = 720f; // Grad pro Sekunde für sanftes Ausrichten
+    public float alignRotationSpeed = 620f;
 
     [Header("Ceiling Detach")]
     [Tooltip("Dauer in Sekunden, die der Stick/Taste stur nach unten gehalten werden muss, um von der Decke zu fallen.")]
     public float ceilingDetachHoldDuration = 0.25f;
+
+    [Header("Juice (Squash & Stretch)")]
+    public bool enableSquashAndStretch = true;
+    [Range(0f, 0.4f)] public float jumpStretchAmount = 0.16f;
+    [Range(0f, 0.4f)] public float landSquashAmount = 0.18f;
+    public float squashRecoverySpeed = 12f;
 }
 </file>
 
@@ -3247,6 +4099,11 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
+    private SpriteRenderer visualRenderer;
+    private Color defaultSpriteColor = Color.white;
+    private Vector3 defaultVisualScale = Vector3.one;
+    private Vector2 currentScaleDeform = Vector2.one;
+
     private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
 
@@ -3267,33 +4124,104 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
     public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+
+    // --- Äußere & Innere Ecken Status ---
+    public bool IsOnOuterCorner { get; private set; }
+    public Vector2 OuterCornerVertex { get; private set; }
+    public Vector2 OuterCornerNormalA { get; private set; } = Vector2.up;
+    public Vector2 OuterCornerNormalB { get; private set; } = Vector2.right;
+    [Range(0f, 1f)] public float OuterCornerProgress { get; private set; } // 0 = Fläche A, 0.5 = 45° Eckspitze, 1 = Fläche B
+
+    public bool IsInInnerCornerPocket { get; private set; }
+    public Vector2 InnerCornerAdjacentNormal { get; private set; } = Vector2.zero;
+    private float innerCornerSlowdownTimer = 0f;
+
+    /// <summary>
+    /// Gibt die aktuelle effektive Oberflächennormale zurück (auf äußeren Ecken stufenlos z.B. 45°).
+    /// </summary>
+    public Vector2 EffectiveSurfaceNormal
+    {
+        get
+        {
+            if (IsOnOuterCorner)
+            {
+                float angleRad = OuterCornerProgress * Mathf.PI * 0.5f;
+                return (OuterCornerNormalA * Mathf.Cos(angleRad) + OuterCornerNormalB * Mathf.Sin(angleRad)).normalized;
+            }
+            return CurrentSurfaceNormal;
+        }
+    }
+
+    /// <summary>
+    /// Aktueller Geschwindigkeits-Multiplikator für sanfteres Tempo an Innen- und Außenecken.
+    /// </summary>
+    public float CornerSpeedMultiplier
+    {
+        get
+        {
+            if (IsOnOuterCorner)
+            {
+                return (data != null && data.outerCornerSpeedMultiplier > 0.1f) ? data.outerCornerSpeedMultiplier : 0.70f;
+            }
+            if (innerCornerSlowdownTimer > 0f)
+            {
+                return (data != null && data.innerCornerSpeedMultiplier > 0.1f) ? data.innerCornerSpeedMultiplier : 0.75f;
+            }
+            return 1f;
+        }
+    }
+
     // --- Meditations- & Interaktionsstatus ---
     public bool IsViewingMap { get; set; }
+    public bool IsMeditating { get; set; }
 
     private float detachCooldownTimer;
     private Vector2 lastDetachedNormal = Vector2.zero;
+    private Vector2 secondaryDetachedNormal = Vector2.zero;
 
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
     private float jumpBufferTimer;
+    private float coyoteTimer;
+
+    [Header("Treffer & Unverwundbarkeit (Schritt 3)")]
+    [Tooltip("Kurze Schutzzeit nach einem Treffer, damit ein Hindernis nicht mehrfach pro Sekunde Fokus abzieht")]
+    [SerializeField] private float damageInvincibilityDuration = 0.75f;
+    [Tooltip("Erlaubt das Simulieren eines Treffers über die Taste K auf der Tastatur")]
+    [SerializeField] private bool enableDebugDamageKeyK = true;
+    private float invincibilityTimer = 0f;
 
     [Header("Controller Settings")]
     [SerializeField] private float stickDeadzone = 0.2f;
 
     public bool HasBufferedJump => jumpBufferTimer > 0f;
-
-    // --- Meditations- & Interaktionsstatus ---
-    public bool IsMeditating { get; set; }
+    public bool HasCoyoteTime => coyoteTimer > 0f;
+    public bool IsInvincible => invincibilityTimer > 0f;
 
     public void ConsumeJumpBuffer()
     {
         jumpBufferTimer = 0f;
+        coyoteTimer = 0f;
     }
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
         boxCollider = GetComponent<BoxCollider2D>();
+
+        if (visualTransform != null)
+        {
+            defaultVisualScale = visualTransform.localScale;
+            visualRenderer = visualTransform.GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer == null)
+        {
+            visualRenderer = GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer != null)
+        {
+            defaultSpriteColor = visualRenderer.color;
+        }
 
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
 
@@ -3311,7 +4239,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void Start()
     {
-        // Ohne deprecated Parameter -> Warnung weg
         Tilemap[] allTilemaps = FindObjectsByType<Tilemap>(FindObjectsInactive.Exclude);
         foreach (var tm in allTilemaps)
         {
@@ -3321,16 +4248,52 @@ public class PlatformerSlimeController : MonoBehaviour
         StateMachine.Initialize(AirborneState);
     }
 
+    private void OnDisable()
+    {
+        if (visualRenderer != null)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
+        if (visualTransform != null)
+        {
+            visualTransform.localScale = defaultVisualScale;
+        }
+    }
+
     private void Update()
     {
+        // Debug-Taste K zum jederzeitigen Testen von Treffer & Zwangsstopp
+        if (enableDebugDamageKeyK && Keyboard.current != null && Keyboard.current.kKey.wasPressedThisFrame)
+        {
+            TakeDamage();
+            if (!enabled) return;
+        }
+
         ReadInput();
+
+        if (IsGrounded)
+        {
+            coyoteTimer = (data != null && data.coyoteTimeDuration > 0f) ? data.coyoteTimeDuration : 0.1f;
+        }
+        else if (coyoteTimer > 0f)
+        {
+            coyoteTimer -= Time.deltaTime;
+        }
+
+        if (innerCornerSlowdownTimer > 0f)
+        {
+            innerCornerSlowdownTimer -= Time.deltaTime;
+        }
+
         StateMachine.Update();
-        UpdateSurfaceRotation();
+        UpdateSurfaceRotationAndSquash();
 
         if (detachCooldownTimer > 0f)
         {
             detachCooldownTimer -= Time.deltaTime;
         }
+
+        UpdateInvincibilityVisuals();
     }
 
     private void FixedUpdate()
@@ -3339,21 +4302,100 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
     }
 
+    private void UpdateInvincibilityVisuals()
+    {
+        if (invincibilityTimer > 0f)
+        {
+            invincibilityTimer -= Time.deltaTime;
+
+            if (visualRenderer != null)
+            {
+                if (invincibilityTimer <= 0f)
+                {
+                    visualRenderer.color = defaultSpriteColor;
+                }
+                else
+                {
+                    float blink = Mathf.PingPong(Time.time * 18f, 1f);
+                    visualRenderer.color = Color.Lerp(defaultSpriteColor, new Color(1f, 0.2f, 0.2f, 0.45f), blink);
+                }
+            }
+        }
+    }
+
+    public void ApplySquashAndStretch(float scaleX, float scaleY)
+    {
+        if (data != null && !data.enableSquashAndStretch) return;
+        currentScaleDeform = new Vector2(scaleX, scaleY);
+    }
+
+    /// <summary>
+    /// Stoppt jede Bewegung sofort (wird beim Zwangsstopp aufgerufen).
+    /// </summary>
+    public void ZeroOutMomentum()
+    {
+        Velocity = Vector2.zero;
+        MoveInput = Vector2.zero;
+        jumpBufferTimer = 0f;
+
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector2.zero;
+        }
+
+        if (visualRenderer != null)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
+    }
+
+    public void ClearCornerState()
+    {
+        IsOnOuterCorner = false;
+        OuterCornerProgress = 0f;
+        IsInInnerCornerPocket = false;
+        InnerCornerAdjacentNormal = Vector2.zero;
+    }
+
     public void TriggerDetach(float duration = 0.15f)
     {
-        TriggerDetach(CurrentSurfaceNormal, duration);
+        if (IsOnOuterCorner)
+        {
+            TriggerCornerDetach(OuterCornerNormalA, OuterCornerNormalB, duration);
+        }
+        else
+        {
+            TriggerDetach(CurrentSurfaceNormal, duration);
+        }
     }
 
     public void TriggerDetach(Vector2 fromSurfaceNormal, float duration = 0.15f)
     {
         detachCooldownTimer = duration;
         lastDetachedNormal = SnapToCardinal(fromSurfaceNormal);
+        secondaryDetachedNormal = IsInInnerCornerPocket ? InnerCornerAdjacentNormal : Vector2.zero;
 
+        ClearCornerState();
         IsGrounded = false;
         TargetSurfaceNormal = Vector2.up;
         CurrentSurfaceNormal = Vector2.up;
 
-        rb.position += lastDetachedNormal * (data.skinWidth * 3f + 0.03f);
+        rb.position += fromSurfaceNormal.normalized * (data.skinWidth * 3f + 0.035f);
+    }
+
+    public void TriggerCornerDetach(Vector2 normalA, Vector2 normalB, float duration = 0.16f)
+    {
+        detachCooldownTimer = duration;
+        lastDetachedNormal = SnapToCardinal(normalA);
+        secondaryDetachedNormal = SnapToCardinal(normalB);
+
+        Vector2 pushDir = EffectiveSurfaceNormal;
+        ClearCornerState();
+        IsGrounded = false;
+        TargetSurfaceNormal = Vector2.up;
+        CurrentSurfaceNormal = Vector2.up;
+
+        rb.position += pushDir * (data.skinWidth * 4f + 0.045f);
     }
 
     public bool CanAttach() => detachCooldownTimer <= 0f;
@@ -3363,7 +4405,10 @@ public class PlatformerSlimeController : MonoBehaviour
         if (detachCooldownTimer <= 0f) return true;
 
         Vector2 snappedCandidate = SnapToCardinal(candidateNormal);
-        return Vector2.Dot(snappedCandidate, lastDetachedNormal) < 0.5f;
+        if (Vector2.Dot(snappedCandidate, lastDetachedNormal) > 0.5f) return false;
+        if (secondaryDetachedNormal.sqrMagnitude > 0.1f && Vector2.Dot(snappedCandidate, secondaryDetachedNormal) > 0.5f) return false;
+
+        return true;
     }
 
     public float GetColliderExtent(Vector2 direction)
@@ -3372,13 +4417,28 @@ public class PlatformerSlimeController : MonoBehaviour
         return Mathf.Abs(direction.x) * halfSize.x + Mathf.Abs(direction.y) * halfSize.y;
     }
 
-    private Vector2 SnapToCardinal(Vector2 rawNormal)
+    public Vector2 SnapToCardinal(Vector2 rawNormal)
     {
         if (Mathf.Abs(rawNormal.x) > Mathf.Abs(rawNormal.y))
         {
             return new Vector2(Mathf.Sign(rawNormal.x), 0f);
         }
         return new Vector2(0f, Mathf.Sign(rawNormal.y));
+    }
+
+    private Vector2 CalculateOuterCornerCenterPosition(Vector2 vertex, Vector2 normalA, Vector2 normalB, float progress)
+    {
+        float clampedT = Mathf.Clamp01(progress);
+        float angleRad = clampedT * Mathf.PI * 0.5f;
+
+        float curvePower = (data != null && data.outerCornerCurvePower > 0.3f) ? data.outerCornerCurvePower : 0.75f;
+        float weightA = Mathf.Pow(Mathf.Cos(angleRad), curvePower);
+        float weightB = Mathf.Pow(Mathf.Sin(angleRad), curvePower);
+
+        float extentA = GetColliderExtent(-normalA) + data.skinWidth;
+        float extentB = GetColliderExtent(-normalB) + data.skinWidth;
+
+        return vertex + normalA * (weightA * extentA) + normalB * (weightB * extentB);
     }
 
     private bool FindFrontalWallHit(
@@ -3454,9 +4514,68 @@ public class PlatformerSlimeController : MonoBehaviour
         return found;
     }
 
+    /// <summary>
+    /// Prüft, ob die Mitte des Slimes knapp über eine äußere Kante hinausragt (z. B. nach einer Sprung-Landung auf der Ecke).
+    /// </summary>
+    private bool TryDetectOuterCornerUnderneath(
+        Vector2 center,
+        Vector2 surfaceNormal,
+        out Vector2 cornerVertex,
+        out Vector2 adjacentWallNormal,
+        out float initialProgress)
+    {
+        cornerVertex = Vector2.zero;
+        adjacentWallNormal = Vector2.zero;
+        initialProgress = 0f;
+
+        float extentNormal = GetColliderExtent(-surfaceNormal);
+        float floorDist = extentNormal + Mathf.Max(0.22f, data.skinWidth * 8f);
+
+        // Wenn direkt unter dem Zentrum Boden ist, steht der Slime stabil auf der Fläche (nicht auf der Eckspitze)
+        RaycastHit2D centerFloorHit = Physics2D.Raycast(center, -surfaceNormal, floorDist, data.groundLayer);
+        if (centerFloorHit.collider != null && Vector2.Dot(SnapToCardinal(centerFloorHit.normal), surfaceNormal) > 0.6f)
+        {
+            return false;
+        }
+
+        Vector2 tangentCW = new Vector2(surfaceNormal.y, -surfaceNormal.x);
+        float extentTangent = GetColliderExtent(tangentCW);
+
+        // Prüfe beide Tangenten-Richtungen (+1 und -1), auf welcher Seite die Stützkante liegt
+        int[] signs = new int[] { 1, -1 };
+        foreach (int sign in signs)
+        {
+            Vector2 overhangDir = tangentCW * sign; // Richtung ins Freie
+            Vector2 supportSideOrigin = center - overhangDir * (extentTangent * 0.85f);
+
+            RaycastHit2D supportHit = Physics2D.Raycast(supportSideOrigin, -surfaceNormal, floorDist, data.groundLayer);
+            if (supportHit.collider != null && Vector2.Dot(SnapToCardinal(supportHit.normal), surfaceNormal) > 0.6f)
+            {
+                // Wir hängen in Richtung overhangDir über die Kante! Suche die Seitenwand der Ecke:
+                float probeDepth = Mathf.Min(0.22f, extentNormal * 0.55f);
+                Vector2 probeOrigin = center + overhangDir * (extentTangent * 0.5f) - surfaceNormal * (extentNormal + probeDepth);
+                RaycastHit2D wallHit = Physics2D.Raycast(probeOrigin, -overhangDir, extentTangent * 1.8f, data.groundLayer);
+
+                if (wallHit.collider != null && Vector2.Dot(SnapToCardinal(wallHit.normal), overhangDir) > 0.5f)
+                {
+                    adjacentWallNormal = SnapToCardinal(wallHit.normal);
+                    float cornerAlongNormal = Vector2.Dot(supportHit.point, surfaceNormal);
+                    float cornerAlongWall = Vector2.Dot(wallHit.point, adjacentWallNormal);
+
+                    cornerVertex = surfaceNormal * cornerAlongNormal + adjacentWallNormal * cornerAlongWall;
+
+                    float overhangAmount = Mathf.Max(0f, Vector2.Dot(center - cornerVertex, overhangDir));
+                    initialProgress = Mathf.Clamp(overhangAmount / Mathf.Max(0.1f, extentTangent), 0.12f, 0.48f);
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private void ReadInput()
     {
-        // Wenn meditiert wird oder die Karte offen ist: Keine Bewegungs-/Sprungeingaben
         if (IsMeditating || IsViewingMap)
         {
             MoveInput = Vector2.zero;
@@ -3494,7 +4613,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 stickDir = rawStick.normalized;
                 float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
 
-                // Achsen-Snapping gegen Schräglauf-Rauschen
                 if (Mathf.Abs(stickDir.x) > 0.7f)
                 {
                     stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
@@ -3511,7 +4629,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
             Vector2 dpad = gamepad.dpad.ReadValue();
 
-            // Gamepad-Eingaben zur Tastatur addieren statt überschreiben
             if (dpad.sqrMagnitude > 0.1f)
             {
                 input += dpad;
@@ -3525,11 +4642,9 @@ public class PlatformerSlimeController : MonoBehaviour
             if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
         }
 
-        // Maximale Eingabe begrenzen
         input.x = Mathf.Clamp(input.x, -1f, 1f);
         input.y = Mathf.Clamp(input.y, -1f, 1f);
 
-        // Sprung-Puffer aktualisieren
         if (jumpPressedThisFrame)
         {
             jumpBufferTimer = jumpBufferDuration;
@@ -3543,21 +4658,41 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveInput = input;
     }
 
-    private void UpdateSurfaceRotation()
+    private void UpdateSurfaceRotationAndSquash()
     {
         transform.rotation = Quaternion.identity;
 
         if (visualTransform != null)
         {
-            float targetAngle = Mathf.Atan2(TargetSurfaceNormal.y, TargetSurfaceNormal.x) * Mathf.Rad2Deg - 90f;
+            // Auf äußeren Ecken oder in Innenecken dreht sich das Visual sanft in den exakten Zwischenwinkel
+            Vector2 desiredVisualNormal = TargetSurfaceNormal;
+            if (IsOnOuterCorner)
+            {
+                desiredVisualNormal = EffectiveSurfaceNormal;
+            }
+            else if (IsInInnerCornerPocket && InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
+            {
+                desiredVisualNormal = (CurrentSurfaceNormal + InnerCornerAdjacentNormal * 0.65f).normalized;
+            }
+
+            float targetAngle = Mathf.Atan2(desiredVisualNormal.y, desiredVisualNormal.x) * Mathf.Rad2Deg - 90f;
             Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
 
-            float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 720f;
+            float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 620f;
             visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
 
             float halfColHeight = boxCollider.size.y * 0.5f;
-            Vector2 targetOffset = (Vector2)boxCollider.offset - TargetSurfaceNormal * (halfColHeight - 0.26f);
-            visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 15f * Time.deltaTime);
+            Vector2 targetOffset = (Vector2)boxCollider.offset - desiredVisualNormal * (halfColHeight - 0.26f);
+            visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 18f * Time.deltaTime);
+
+            // Squash & Stretch sanft zurückfedern
+            float recovery = (data != null && data.squashRecoverySpeed > 0f) ? data.squashRecoverySpeed : 12f;
+            currentScaleDeform = Vector2.MoveTowards(currentScaleDeform, Vector2.one, recovery * Time.deltaTime);
+            visualTransform.localScale = new Vector3(
+                defaultVisualScale.x * currentScaleDeform.x,
+                defaultVisualScale.y * currentScaleDeform.y,
+                defaultVisualScale.z
+            );
         }
     }
 
@@ -3566,6 +4701,8 @@ public class PlatformerSlimeController : MonoBehaviour
         IsGrounded = false;
         HitCeiling = false;
         HitWall = false;
+        IsInInnerCornerPocket = false;
+        InnerCornerAdjacentNormal = Vector2.zero;
 
         Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
         Vector2 position = rb.position;
@@ -3578,11 +4715,73 @@ public class PlatformerSlimeController : MonoBehaviour
             float remainingMove = Mathf.Abs(moveAmount);
             float moveSign = Mathf.Sign(moveAmount);
 
-            int maxIterations = 3;
+            int maxIterations = 4;
             while (remainingMove > 0.0001f && maxIterations > 0)
             {
                 maxIterations--;
 
+                // =========================================================
+                // MODUS A: SLIME ROLLT GERADE UM EINE ÄUSSERE 270°-ECKE
+                // =========================================================
+                if (IsOnOuterCorner)
+                {
+                    Vector2 tangentA = new Vector2(OuterCornerNormalA.y, -OuterCornerNormalA.x);
+                    // Prüfen, ob die Bewegung von Fläche A nach B (+1) oder zurück von B nach A (-1) zeigt
+                    float dirFromAToB = Mathf.Sign(Vector2.Dot(tangentA, OuterCornerNormalB));
+                    float progressDir = moveSign * dirFromAToB;
+
+                    float arcLength = (data != null && data.outerCornerArcLength > 0.1f) ? data.outerCornerArcLength : 0.48f;
+                    float deltaProgress = (remainingMove / arcLength) * progressDir;
+                    float nextProgress = OuterCornerProgress + deltaProgress;
+
+                    if (nextProgress >= 1f)
+                    {
+                        // Ecke fertig umrundet -> Übergang auf Fläche B
+                        float usedRatio = (1f - OuterCornerProgress) / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
+                        remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
+
+                        CurrentSurfaceNormal = OuterCornerNormalB;
+                        TargetSurfaceNormal = OuterCornerNormalB;
+                        Vector2 exitCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, 1f);
+                        position = exitCenter - boxCollider.offset;
+
+                        IsOnOuterCorner = false;
+                        OuterCornerProgress = 0f;
+                        IsGrounded = true;
+                        continue;
+                    }
+                    else if (nextProgress <= 0f)
+                    {
+                        // Zurückgerollt auf Fläche A
+                        float usedRatio = OuterCornerProgress / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
+                        remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
+
+                        CurrentSurfaceNormal = OuterCornerNormalA;
+                        TargetSurfaceNormal = OuterCornerNormalA;
+                        Vector2 exitCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, 0f);
+                        position = exitCenter - boxCollider.offset;
+
+                        IsOnOuterCorner = false;
+                        OuterCornerProgress = 0f;
+                        IsGrounded = true;
+                        continue;
+                    }
+                    else
+                    {
+                        // Mitten auf dem Ecken-Bogen -> sanft weiterrollen
+                        OuterCornerProgress = nextProgress;
+                        Vector2 arcCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
+                        position = arcCenter - boxCollider.offset;
+                        TargetSurfaceNormal = EffectiveSurfaceNormal;
+                        IsGrounded = true;
+                        remainingMove = 0f;
+                        break;
+                    }
+                }
+
+                // =========================================================
+                // MODUS B: REGULÄRE BEWEGUNG AUF FLÄCHE (INKL. ECKEN-CHECKS)
+                // =========================================================
                 Vector2 currentNormal = SnapToCardinal(CurrentSurfaceNormal);
                 Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
                 Vector2 moveDir = currentTangent * moveSign;
@@ -3591,8 +4790,9 @@ public class PlatformerSlimeController : MonoBehaviour
                 float extentNormal = GetColliderExtent(-currentNormal);
                 float extentTangent = GetColliderExtent(moveDir);
 
-                // 1. INNENECKEN- & WAND-CHECK
-                float lookAheadDist = remainingMove + extentTangent + data.skinWidth * 2f;
+                // 1. INNENECKEN- & WAND-CHECK (90°)
+                float innerPreviewDist = (data != null && data.innerCornerBlendDistance > 0.05f) ? data.innerCornerBlendDistance : 0.35f;
+                float lookAheadDist = Mathf.Max(remainingMove, innerPreviewDist) + extentTangent + data.skinWidth * 2f;
 
                 if (FindFrontalWallHit(
                     currentCenter,
@@ -3606,10 +4806,16 @@ public class PlatformerSlimeController : MonoBehaviour
                 {
                     float actualDistToWall = Mathf.Max(0f, hitDist - data.skinWidth);
 
+                    // Sanftes Vorab-Neigen in die Innenecke kurz vor Kontakt
+                    if (actualDistToWall <= innerPreviewDist && Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f)
+                    {
+                        float blendT = 1f - Mathf.Clamp01(actualDistToWall / innerPreviewDist);
+                        TargetSurfaceNormal = Vector2.Lerp(currentNormal, hitWallNormal, blendT * 0.45f).normalized;
+                    }
+
                     if (actualDistToWall <= remainingMove + 0.005f)
                     {
                         position += moveDir * actualDistToWall;
-                        remainingMove = Mathf.Max(0f, remainingMove - actualDistToWall);
 
                         bool isInnerCorner = Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f;
 
@@ -3618,6 +4824,14 @@ public class PlatformerSlimeController : MonoBehaviour
                             TargetSurfaceNormal = hitWallNormal;
                             CurrentSurfaceNormal = hitWallNormal;
                             HitWall = true;
+                            IsInInnerCornerPocket = true;
+                            InnerCornerAdjacentNormal = currentNormal;
+
+                            // Kurze, weiche Dämpfung beim Wechsel durch die 90°-Innenecke statt hartem Durchschießen
+                            innerCornerSlowdownTimer = (data != null && data.innerCornerSlowdownDuration > 0f)
+                                ? data.innerCornerSlowdownDuration
+                                : 0.08f;
+                            remainingMove = 0f;
                         }
                         else
                         {
@@ -3625,35 +4839,32 @@ public class PlatformerSlimeController : MonoBehaviour
                             Velocity = Vector2.zero;
                             remainingMove = 0f;
                         }
-                    }
-                    else
-                    {
-                        position += moveDir * remainingMove;
-                        remainingMove = 0f;
-                    }
 
-                    continue;
+                        break;
+                    }
                 }
 
-                // 2. AUSSENECKEN-CHECK
+                // 2. ÄUSSERE ECKEN-CHECK (270°) – ERST WENN DAS ZENTRUM DIE KANTE ERREICHT!
                 float stepDist = remainingMove;
                 Vector2 tentativePos = position + moveDir * stepDist;
                 Vector2 tentativeCenter = tentativePos + boxCollider.offset;
 
-                Vector2 leadingEdge = tentativeCenter + moveDir * extentTangent;
                 float floorCheckDist = extentNormal + Mathf.Max(0.25f, data.skinWidth * 8f);
 
-                RaycastHit2D floorCheck = Physics2D.Raycast(leadingEdge, -currentNormal, floorCheckDist, data.groundLayer);
+                // Wichtig: Wir prüfen am ZENTRUM (tentativeCenter) statt an der vordersten Nase!
+                // Dadurch kann der Slime bis zur Kante vorlaufen und auch mit halbem Körper über der Kante stehenbleiben.
+                RaycastHit2D centerFloorCheck = Physics2D.Raycast(tentativeCenter, -currentNormal, floorCheckDist, data.groundLayer);
 
-                if (floorCheck.collider != null && Vector2.Dot(SnapToCardinal(floorCheck.normal), currentNormal) > 0.6f)
+                if (centerFloorCheck.collider != null && Vector2.Dot(SnapToCardinal(centerFloorCheck.normal), currentNormal) > 0.6f)
                 {
                     position = tentativePos;
                     remainingMove = 0f;
                 }
                 else
                 {
-                    float probeDepth = Mathf.Min(0.2f, extentNormal * 0.5f);
-                    Vector2 probeOrigin = leadingEdge - currentNormal * (extentNormal + probeDepth);
+                    // Das Zentrum hat die Kante überschritten -> Prüfe die angrenzende 270°-Wand für den Ecken-Bogen
+                    float probeDepth = Mathf.Min(0.22f, extentNormal * 0.55f);
+                    Vector2 probeOrigin = tentativeCenter + moveDir * (extentTangent * 0.35f) - currentNormal * (extentNormal + probeDepth);
                     float probeDist = extentTangent + stepDist + 0.6f;
 
                     RaycastHit2D wallHit = Physics2D.Raycast(probeOrigin, -moveDir, probeDist, data.groundLayer);
@@ -3662,118 +4873,143 @@ public class PlatformerSlimeController : MonoBehaviour
                     {
                         Vector2 newNormal = SnapToCardinal(wallHit.normal);
 
-                        RaycastHit2D safeFloorHit = Physics2D.Raycast(currentCenter - moveDir * (extentTangent * 0.5f), -currentNormal, floorCheckDist, data.groundLayer);
+                        RaycastHit2D safeFloorHit = Physics2D.Raycast(currentCenter - moveDir * (extentTangent * 0.6f), -currentNormal, floorCheckDist, data.groundLayer);
 
-                        float cornerAlongNormal;
-                        if (safeFloorHit.collider != null)
-                        {
-                            cornerAlongNormal = Vector2.Dot(safeFloorHit.point, currentNormal);
-                        }
-                        else
-                        {
-                            cornerAlongNormal = Vector2.Dot(currentCenter - currentNormal * extentNormal, currentNormal);
-                        }
+                        float cornerAlongNormal = (safeFloorHit.collider != null)
+                            ? Vector2.Dot(safeFloorHit.point, currentNormal)
+                            : Vector2.Dot(currentCenter - currentNormal * extentNormal, currentNormal);
 
                         float cornerAlongWall = Vector2.Dot(wallHit.point, newNormal);
                         Vector2 cornerPoint = currentNormal * cornerAlongNormal + newNormal * cornerAlongWall;
 
-                        float distToCorner = Vector2.Dot(cornerPoint - currentCenter, moveDir);
+                        float distToCornerVertex = Vector2.Dot(cornerPoint - currentCenter, moveDir);
 
-                        if (distToCorner > stepDist)
+                        if (distToCornerVertex > stepDist)
                         {
                             position += moveDir * stepDist;
                             remainingMove = 0f;
                         }
                         else
                         {
-                            float distOnOldSurface = Mathf.Max(0f, distToCorner);
-                            float pastCornerDist = stepDist - distOnOldSurface;
+                            float distToReachVertex = Mathf.Max(0f, distToCornerVertex);
+                            float pastVertexDist = Mathf.Max(0f, stepDist - distToReachVertex);
 
-                            Vector2 newTangent = new Vector2(newNormal.y, -newNormal.x);
-                            Vector2 newMoveDir = newTangent * moveSign;
+                            // Starte den sanften Ecken-Bogen (Outer Corner Pivot) am Eckpunkt!
+                            IsOnOuterCorner = true;
+                            OuterCornerVertex = cornerPoint;
+                            OuterCornerNormalA = currentNormal;
+                            OuterCornerNormalB = newNormal;
+                            OuterCornerProgress = 0.02f;
 
-                            float newExtentNormal = GetColliderExtent(-newNormal);
-                            float newExtentTangent = GetColliderExtent(newMoveDir);
-
-                            Vector2 targetCenter = cornerPoint 
-                                + newNormal * (newExtentNormal + data.skinWidth) 
-                                + newMoveDir * (newExtentTangent + pastCornerDist);
-
-                            position = targetCenter - boxCollider.offset;
-
-                            TargetSurfaceNormal = newNormal;
-                            CurrentSurfaceNormal = newNormal;
+                            Vector2 entryCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
+                            position = entryCenter - boxCollider.offset;
                             IsGrounded = true;
-                            remainingMove = 0f;
+
+                            remainingMove = pastVertexDist;
+                            continue;
                         }
                     }
                     else
                     {
-                        position += moveDir * stepDist;
+                        // Echte freie Kante ohne angrenzende Wand (z. B. extrem dünne Plattform)
+                        position = tentativePos;
                         remainingMove = 0f;
                     }
                 }
             }
 
-            // 3. HAFTUNG ZUR FLÄCHE (Surface Snap)
-            Vector2 finalNormal = SnapToCardinal(CurrentSurfaceNormal);
-            Vector2 snapDir = -finalNormal;
-            Vector2 snapOrigin = position + boxCollider.offset;
-            float snapDist = Mathf.Max(0.18f, data.skinWidth * 8f);
-
-            int groundHits = Physics2D.BoxCast(
-                snapOrigin,
-                boxSize,
-                0f,
-                snapDir,
-                contactFilter,
-                hitBuffer,
-                snapDist
-            );
-
-            if (groundHits > 0)
+            // 3. HAFTUNG ZUR FLÄCHE ODER ECKE (Surface & Corner Snap)
+            if (IsOnOuterCorner)
             {
-                int bestIndex = -1;
-                for (int i = 0; i < groundHits; i++)
+                // Falls das Stehenbleiben auf äußeren Ecken deaktiviert wurde und kein Input anliegt, sanft zu Ende abrollen
+                if (data != null && !data.allowStoppingOnOuterCorners && MoveInput.sqrMagnitude < 0.04f)
                 {
-                    if (hitBuffer[i].distance > 0.0001f && Vector2.Dot(SnapToCardinal(hitBuffer[i].normal), finalNormal) > 0.7f)
+                    float autoTarget = OuterCornerProgress >= 0.5f ? 1f : 0f;
+                    OuterCornerProgress = Mathf.MoveTowards(OuterCornerProgress, autoTarget, 4f * Time.fixedDeltaTime);
+                    if (OuterCornerProgress >= 0.99f)
                     {
-                        bestIndex = i;
-                        break;
+                        CurrentSurfaceNormal = OuterCornerNormalB;
+                        TargetSurfaceNormal = OuterCornerNormalB;
+                        IsOnOuterCorner = false;
+                    }
+                    else if (OuterCornerProgress <= 0.01f)
+                    {
+                        CurrentSurfaceNormal = OuterCornerNormalA;
+                        TargetSurfaceNormal = OuterCornerNormalA;
+                        IsOnOuterCorner = false;
                     }
                 }
 
-                if (bestIndex >= 0)
+                if (IsOnOuterCorner)
                 {
-                    RaycastHit2D bestGroundHit = hitBuffer[bestIndex];
-                    float actualSnapDist = Mathf.Max(0f, bestGroundHit.distance - data.skinWidth);
-                    position += snapDir * actualSnapDist;
-
+                    Vector2 arcCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
+                    position = arcCenter - boxCollider.offset;
+                    TargetSurfaceNormal = EffectiveSurfaceNormal;
                     IsGrounded = true;
-                    TargetSurfaceNormal = finalNormal;
-                    CurrentSurfaceNormal = finalNormal;
-                }
-                else
-                {
-                    IsGrounded = true;
-                    TargetSurfaceNormal = finalNormal;
-                    CurrentSurfaceNormal = finalNormal;
                 }
             }
-            else
+
+            if (!IsOnOuterCorner)
             {
-                RaycastHit2D centerGroundHit = Physics2D.Raycast(snapOrigin, snapDir, GetColliderExtent(snapDir) + snapDist, data.groundLayer);
-                if (centerGroundHit.collider != null && Vector2.Dot(SnapToCardinal(centerGroundHit.normal), finalNormal) > 0.7f)
+                Vector2 finalNormal = SnapToCardinal(CurrentSurfaceNormal);
+                Vector2 snapDir = -finalNormal;
+                Vector2 snapOrigin = position + boxCollider.offset;
+                float snapDist = Mathf.Max(0.18f, data.skinWidth * 8f);
+
+                int groundHits = Physics2D.BoxCast(
+                    snapOrigin,
+                    boxSize,
+                    0f,
+                    snapDir,
+                    contactFilter,
+                    hitBuffer,
+                    snapDist
+                );
+
+                if (groundHits > 0)
                 {
-                    float dist = Mathf.Max(0f, centerGroundHit.distance - GetColliderExtent(snapDir) - data.skinWidth);
-                    position += snapDir * dist;
+                    int bestIndex = -1;
+                    for (int i = 0; i < groundHits; i++)
+                    {
+                        if (hitBuffer[i].distance > 0.0001f && Vector2.Dot(SnapToCardinal(hitBuffer[i].normal), finalNormal) > 0.7f)
+                        {
+                            bestIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (bestIndex >= 0)
+                    {
+                        RaycastHit2D bestGroundHit = hitBuffer[bestIndex];
+                        float actualSnapDist = Mathf.Max(0f, bestGroundHit.distance - data.skinWidth);
+                        position += snapDir * actualSnapDist;
+                    }
+
                     IsGrounded = true;
-                    TargetSurfaceNormal = finalNormal;
                     CurrentSurfaceNormal = finalNormal;
+
+                    // Prüfen, ob wir im Stillstand direkt in einer 90°-Innenecke sitzen
+                    CheckInnerCornerPocket(position + boxCollider.offset, finalNormal);
+                    if (!IsInInnerCornerPocket && MoveInput.sqrMagnitude < 0.04f)
+                    {
+                        TargetSurfaceNormal = finalNormal;
+                    }
                 }
                 else
                 {
-                    IsGrounded = false;
+                    RaycastHit2D centerGroundHit = Physics2D.Raycast(snapOrigin, snapDir, GetColliderExtent(snapDir) + snapDist, data.groundLayer);
+                    if (centerGroundHit.collider != null && Vector2.Dot(SnapToCardinal(centerGroundHit.normal), finalNormal) > 0.7f)
+                    {
+                        float dist = Mathf.Max(0f, centerGroundHit.distance - GetColliderExtent(snapDir) - data.skinWidth);
+                        position += snapDir * dist;
+                        IsGrounded = true;
+                        TargetSurfaceNormal = finalNormal;
+                        CurrentSurfaceNormal = finalNormal;
+                    }
+                    else
+                    {
+                        IsGrounded = false;
+                    }
                 }
             }
         }
@@ -3819,11 +5055,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
                     if (CanAttachTo(snappedNormal))
                     {
-                        TargetSurfaceNormal = snappedNormal;
-                        CurrentSurfaceNormal = snappedNormal;
-                        Velocity = Vector2.zero;
-                        IsGrounded = true;
-                        StateMachine.ChangeState(GroundedState);
+                        AttachToSurfaceFromAir(ref position, snappedNormal);
                     }
                     else
                     {
@@ -3836,59 +5068,58 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // X-Achse
-            Vector2 castOriginX = position + boxCollider.offset;
-            if (Mathf.Abs(deltaMovement.x) > 0.0001f)
+            // X-Achse (nur falls nicht schon bei Y-Achse gelandet)
+            if (!IsGrounded)
             {
-                float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
-                float xDir = Mathf.Sign(deltaMovement.x);
-                Vector2 moveDirX = Vector2.right * xDir;
-
-                int xHits = Physics2D.BoxCast(
-                    castOriginX,
-                    boxSize,
-                    0f,
-                    moveDirX,
-                    contactFilter,
-                    hitBuffer,
-                    xDist
-                );
-
-                int validHitIndex = -1;
-                for (int i = 0; i < xHits; i++)
+                Vector2 castOriginX = position + boxCollider.offset;
+                if (Mathf.Abs(deltaMovement.x) > 0.0001f)
                 {
-                    if (Vector2.Dot(hitBuffer[i].normal, moveDirX) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                    float xDist = Mathf.Abs(deltaMovement.x) + data.skinWidth;
+                    float xDir = Mathf.Sign(deltaMovement.x);
+                    Vector2 moveDirX = Vector2.right * xDir;
+
+                    int xHits = Physics2D.BoxCast(
+                        castOriginX,
+                        boxSize,
+                        0f,
+                        moveDirX,
+                        contactFilter,
+                        hitBuffer,
+                        xDist
+                    );
+
+                    int validHitIndex = -1;
+                    for (int i = 0; i < xHits; i++)
                     {
-                        validHitIndex = i;
-                        break;
+                        if (Vector2.Dot(hitBuffer[i].normal, moveDirX) < -0.3f && hitBuffer[i].distance > 0.0005f)
+                        {
+                            validHitIndex = i;
+                            break;
+                        }
                     }
-                }
 
-                if (validHitIndex >= 0)
-                {
-                    RaycastHit2D hit = hitBuffer[validHitIndex];
-                    float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
-                    position.x += xDir * actualDist;
-
-                    Vector2 snappedNormal = SnapToCardinal(hit.normal);
-
-                    if (CanAttachTo(snappedNormal))
+                    if (validHitIndex >= 0)
                     {
-                        HitWall = true;
-                        TargetSurfaceNormal = snappedNormal;
-                        CurrentSurfaceNormal = snappedNormal;
-                        Velocity = Vector2.zero;
-                        IsGrounded = true;
-                        StateMachine.ChangeState(GroundedState);
+                        RaycastHit2D hit = hitBuffer[validHitIndex];
+                        float actualDist = Mathf.Max(0f, hit.distance - data.skinWidth);
+                        position.x += xDir * actualDist;
+
+                        Vector2 snappedNormal = SnapToCardinal(hit.normal);
+
+                        if (CanAttachTo(snappedNormal))
+                        {
+                            HitWall = true;
+                            AttachToSurfaceFromAir(ref position, snappedNormal);
+                        }
+                        else
+                        {
+                            Velocity = new Vector2(0f, Velocity.y);
+                        }
                     }
                     else
                     {
-                        Velocity = new Vector2(0f, Velocity.y);
+                        position.x += deltaMovement.x;
                     }
-                }
-                else
-                {
-                    position.x += deltaMovement.x;
                 }
             }
         }
@@ -3896,33 +5127,105 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.MovePosition(position);
     }
 
+    /// <summary>
+    /// Landet aus dem Sprung auf einer Fläche – und erkennt automatisch, wenn der Slime direkt auf einer äußeren Ecke landet!
+    /// </summary>
+    private void AttachToSurfaceFromAir(ref Vector2 position, Vector2 landedNormal)
+    {
+        TargetSurfaceNormal = landedNormal;
+        CurrentSurfaceNormal = landedNormal;
+        IsGrounded = true;
+
+        float squash = (data != null) ? data.landSquashAmount : 0.18f;
+        ApplySquashAndStretch(1f + squash, 1f - squash);
+
+        // Prüfen, ob wir direkt auf der Kante einer äußeren Ecke gelandet sind
+        if (data == null || data.allowStoppingOnOuterCorners)
+        {
+            Vector2 center = position + boxCollider.offset;
+            if (TryDetectOuterCornerUnderneath(center, landedNormal, out Vector2 cornerVert, out Vector2 adjWallNormal, out float initProg))
+            {
+                IsOnOuterCorner = true;
+                OuterCornerVertex = cornerVert;
+                OuterCornerNormalA = landedNormal;
+                OuterCornerNormalB = adjWallNormal;
+                OuterCornerProgress = initProg;
+
+                Vector2 cornerCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
+                position = cornerCenter - boxCollider.offset;
+                TargetSurfaceNormal = EffectiveSurfaceNormal;
+            }
+        }
+
+        Velocity = Vector2.zero;
+        StateMachine.ChangeState(GroundedState);
+    }
+
+    private void CheckInnerCornerPocket(Vector2 center, Vector2 surfaceNormal)
+    {
+        Vector2 tangent = new Vector2(surfaceNormal.y, -surfaceNormal.x);
+        float extentTangent = GetColliderExtent(tangent);
+        float pocketCheckDist = extentTangent + data.skinWidth * 4f + 0.04f;
+
+        RaycastHit2D hitCW = Physics2D.Raycast(center, tangent, pocketCheckDist, data.groundLayer);
+        if (hitCW.collider != null && Mathf.Abs(Vector2.Dot(SnapToCardinal(hitCW.normal), surfaceNormal)) < 0.25f)
+        {
+            IsInInnerCornerPocket = true;
+            InnerCornerAdjacentNormal = SnapToCardinal(hitCW.normal);
+            return;
+        }
+
+        RaycastHit2D hitCCW = Physics2D.Raycast(center, -tangent, pocketCheckDist, data.groundLayer);
+        if (hitCCW.collider != null && Mathf.Abs(Vector2.Dot(SnapToCardinal(hitCCW.normal), surfaceNormal)) < 0.25f)
+        {
+            IsInInnerCornerPocket = true;
+            InnerCornerAdjacentNormal = SnapToCardinal(hitCCW.normal);
+        }
+    }
+
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other.CompareTag("Hazard"))
+        {
+            TakeDamage();
+        }
+    }
+
+    private void OnCollisionEnter2D(Collision2D collision)
+    {
+        if (collision.collider.CompareTag("Hazard"))
+        {
+            TakeDamage();
+        }
+    }
+
     private void OnDrawGizmos()
     {
         BoxCollider2D col = GetComponent<BoxCollider2D>();
         if (col == null) return;
 
-        Gizmos.color = IsGrounded ? Color.green : Color.cyan;
+        Gizmos.color = IsOnOuterCorner ? Color.yellow : (IsGrounded ? Color.green : Color.cyan);
         Vector2 center = (Vector2)transform.position + col.offset;
         Gizmos.DrawWireCube(center, col.size);
+
+        if (IsOnOuterCorner)
+        {
+            Gizmos.color = Color.magenta;
+            Gizmos.DrawSphere(OuterCornerVertex, 0.08f);
+            Gizmos.DrawLine(center, center + EffectiveSurfaceNormal * 0.6f);
+        }
     }
 
-/// <summary>
-    /// Schnittstelle für Fallen/Gegner: Bricht Meditation oder Karte sofort ab.
-    /// </summary>
     public void TakeDamage()
     {
+        if (IsInvincible) return;
+
+        invincibilityTimer = damageInvincibilityDuration;
+
         if (GameManager.Instance != null)
         {
-            GameManager.Instance.InterruptMeditation();
-
-            // Falls die Karte offen ist: Sofort schließen und zurück zum Slime
-            if (GameManager.Instance.currentState == GameState.MapView)
-            {
-                GameManager.Instance.ChangeState(GameState.FreeRoam);
-            }
+            GameManager.Instance.OnSlimeDamaged();
         }
-
-        // Hier folgen später Lebenspunkte-Abzug oder Respawn
     }
 }
 </file>
@@ -4093,7 +5396,7 @@ public class TurnBannerUI : MonoBehaviour
 # tmp/
 </file>
 
-<file path="PROJEKT_KONTEXT.md">
+<file path="PROJEKT_KONTEXT_OLD.md">
 # Projekt-Kontext: Slimily
 
 ## 1. High-Level Spielkonzept & Genre
@@ -4197,6 +5500,121 @@ public class TurnBannerUI : MonoBehaviour
    * Dash / Sprint auf R2, Schweben/Aufblähen auf $\times$.
 6. **Visuelles Feedback & UI-Polish:**
    * 9-Sliced Panels, dezente Farben und universelles Grid-Feedback (Hologramm-/Blueprint-Look).
+</file>
+
+<file path="PROJEKT_KONTEXT.md">
+# Slimily (Puls-Edition) – Spieldesign-Konzept & Technische Roadmap
+
+Das überarbeitete Konzept von **Slimily** vereint die taktische Tiefe eines Grid-Deckbuilders mit dem unterbrechungsfreien Spielfluss eines präzisen 2D-Platformers. Durch den Wechsel vom starren „Zug beenden“-Rundenmodell auf das 4-Puls-Rhythmus-System entfallen künstliche Zwangspausen, geschlossene Türen vor der Nase und hektische Kamerawechsel.
+
+---
+
+## 1. Das Gesamtkonzept
+
+### 1.1 Grundprinzip & 360°-Raum-Parcours (Dual-Layer ohne Waffen)
+
+* **Einheitliche Perspektive:** Makro-Übersichtskarte und Mikro-Platformer-Räume nutzen dieselbe orthogonale 2D-Ausrichtung (Norden auf dem Grid entspricht der oberen Tür im Raum).
+* **360°-Movement & Ecken-Kontrolle:** Der Slime klettert nahtlos an Böden, Wänden und Decken entlang, rollt kontrolliert um $90^\circ$-Innen- sowie $270^\circ$-Außenecken und kann direkt auf Kanten landen, dort im $45^\circ$-Winkel anhalten oder diagonal abspringen.
+* **Räume als 360°-Herausforderung:** Da Decken und Wände jederzeit begehbar sind, sind auch die oberen und seitlichen Raumflächen vollwertige Hindernis-Parcours (mit Decken-Gefahren, Non-Stick-Oberflächen und Engstellen), die präzises Ablösen und Springen verlangen.
+* **Waffenloses Gameplay:** Es gibt keine Angriffe oder Schadenswerte. Der Spieler überwindet Gefahren durch Bewegung und besiegt Bosse über Überlebensphasen, Raum-Mechanismen und kluge Grid-Verbindungen.
+
+---
+
+### 1.2 Das 4-Puls-Rhythmus-System (Statt „Zug beenden“ & Kamera-Unterbrechung)
+
+Das Spiel verzichtet komplett auf einen manuellen „Zug beenden“-Button im Platformer. Stattdessen reagiert die Albtraumwelt im Takt deiner Aktionen über einen Puls-Zähler (Standard: 4 Pulse):
+
+#### Was kostet Pulse?
+* **1 Puls:** Einen 6er-Würfel auf das Makro-Grid legen.
+* **1 Puls:** Einen neuen (noch ungesäuberten) Raum zum ersten Mal betreten.
+* **1 Straf-Puls (+ Albtraum-Anstieg):** Im Platformer von einem Hindernis oder Gegner getroffen werden (`TakeDamage`).
+
+#### Was kostet 0 Pulse (Kostenlos)?
+* Freies Klettern, Springen und Interagieren innerhalb des aktuellen Raums.
+* Das Durchqueren von bereits gesäuberten/besuchten Räumen.
+
+#### Was passiert beim 4. Puls (Der Boss-Schlag)?
+* Sobald der 4. Puls verbraucht wird (egal ob durch Bauen, das Betreten eines neuen Raums oder einen Treffer im Platformer), setzt sich der Zähler sofort wieder auf 4/4 zurück und löst im Hintergrund automatisch genau 1 Boss-/Welt-Aktion aus (`ExecuteTurn`).
+* **Kein Einfrieren, kein Kamera-Zwang:** Der Slime läuft im Raum flüssig weiter; alle Türen zu gebauten Nachbarräumen bleiben jederzeit offen.
+
+#### Warum Stehenbleiben unmöglich / sinnlos ist:
+Da es kein passives „Zug beenden“ mit Gratis-Boni gibt, passiert beim Stehenbleiben im Raum nichts. Fortschritt entsteht nur durch Vorrücken, und jeder Boss-Puls erhöht zusätzlich den Grunddruck der globalen Albtraumleiste (0 % – 100 %). Erreicht die Albtraumleiste 100 %, scheitert der Run und der Slime wacht im Hub auf.
+
+---
+
+### 1.3 Die Welt & Die visuelle 4-Ebenen-Hierarchie
+
+Um ein „RGB-Disco-Chaos“ bei gleichzeitigen Zonenfarben, Raum-Modifikatoren und Boss-Effekten zu verhindern, nutzt das Grid eine düstere, handgezeichnete Ästhetik (verwitterter Stein, Tusche, Moos, Pergament) mit strikter Trennung in 4 visuelle Ebenen:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Ebene 3: Boss-Gefahren      -> Rote Riss-Schraffur, Fadenkreuz, Ketten  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Ebene 2: Akteure            -> Plastischer Slime-Marker & Boss-Monster  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Ebene 1: Raum-Eigenschaften -> Weiße/Kreideartige Gravur-Glyphen        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Ebene 0: Zone & Status      -> Erdfarbene Steinplatten (Nebel vs Gebaut)│
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Ebene 0 – Zone & Bauzustand (Farbe & Helligkeit):**
+   * Im Zentrum liegt der helle, sichere Hub. Darum gruppieren sich 3 Tier-1-Zonen (z. B. Wald = Moosgrün, Meer = Tiefsee-Blau, Ruinen = Ocker-Sandstein) sowie weiter außen bedingte Tier-2-Zonen (z. B. Sumpf am Wald) und der lila/schwarze Albtraum-Rand.
+   * Im Nebel schimmern die Zonenfarben dunkel durch den Rauch; gebaute Kacheln sind voll ausgeleuchtete, strukturierte Steinplatten in der jeweiligen Zonenfarbe.
+2. **Ebene 1 – Kachel-Modifikatoren (Monochrome Gravuren):**
+   * Eigenschaften wie Eis-Physik (Schneeflocke), Schalter-Räume (Zahnrad), Teleporter (Ringe) oder Schreine werden als einfarbige, helle Kreide-/Stein-Symbole auf der Kachel dargestellt und verändern niemals die Grundfarbe der Zone.
+3. **Ebene 2 – Akteure:**
+   * Der leuchtende Slime-Tropfen und die plastische $2\times 2$-Silhouette des Bosses heben sich durch klare Konturen und Schattenwurf vom Untergrund ab.
+4. **Ebene 3 – Boss-Gefahren & Manipulationen (Rahmen, Risse & Kanten):**
+   * **Angriffszonen:** Keine deckende rote Fläche, sondern ein rot glühender Rahmen mit diagonaler Schraffur und glimmenden Rissen, durch die Zone und Symbol voll sichtbar bleiben.
+   * **Entschärfungs-Epizentrum:** Ein pulsierendes rotes Fadenkreuz markiert das Feld, in dem der Angriff im Raum abgebrochen werden kann.
+   * **Verschiebungen & Sperren:** Kleine Doppelpfeile (`>>`) zeigen Kachel-Verschiebungen an; Ketten und Dornenrahmen auf der Kachel-Grenze markieren verriegelte Türen.
+
+---
+
+### 1.4 Bausystem: 6er-Faltwürfel, Bau-Reichweite & Raum-Boni
+
+* **11 echte 6er-Würfelnetze (Hexominos):** Karten falten sich beim Platzieren in 6 zusammenhängende Räume auf und nehmen jeweils die Zone des darunterliegenden Feldes an.
+* **Bau-Reichweite (Tether-Regel gegen den Hub-Autobahn-Exploit):** Ein neuer Würfel darf nur platziert werden, wenn mindestens eine seiner 6 Kacheln im Umkreis von maximal 2 Feldern um die aktuelle Position des Slimes (`MacroSlimeMarker`) liegt und an ein gebautes Feld andockt. Der Spieler muss im Platformer vorrücken, um weiter vorne neue Wege anzubauen.
+* **Aktive Kachel-Boni im Raum:** Legt man eine Kachel mit einem positiven Effekt (z. B. Schrein zur Albtraum-Senkung oder Teleporter), befindet sich dieser im Platformer-Raum an einer riskanten Position abseits des direkten Durchgangswegs.
+
+---
+
+### 1.5 Umwelt-Telegrafie im Raum & Die 4 Boss-Archetypen
+
+#### Wie der Spieler Boss-Aktionen spürt, OHNE dass die Kamera rauszoomt:
+* **Boss agiert in der Ferne:** Kurzes Raum-Beben, dumpfes Grollen und ein Partikel-/Schatten-Schauer aus der Himmelsrichtung des Bosses. Der Spieler läuft ohne Unterbrechung weiter und kann bei Bedarf selbst kurz die Schnellkarte (`MapView` per Touchpad / `M`) antippen.
+* **Nachbarraum ist rot markiert:** Die Tür (`RoomDoor`) in diese Himmelsrichtung glüht und raucht im aktuellen Raum rot.
+* **Aktueller Raum ist rot markiert:** Glühende Risse überziehen den Raumhintergrund, und oben im HUD warnt ein Countdown („Einschlag hier in X Pulsen!“).
+* **Aktives Entschärfen statt Weglaufen:** Da das bloße Zurückweichen in gesäuberte Räume 0 Pulse kostet, bestraft ein nicht verhinderter Boss-Einschlag deine Infrastruktur (zerstört gebaute Kacheln via `RemoveRoomAt` oder korrumpiert sie lila). Dringt der Spieler jedoch rechtzeitig in das Fadenkreuz-Epizentrum vor und betätigt den Unterbrecher im Raum, bricht er den Cast ab (`CancelCast`) und schwächt den Boss.
+
+#### Die 4 Boss-Archetypen (Kein stupides 1:1-Hinterherlaufen)
+1. **Die Festung / Der Belagerer (z. B. Ruinen):** Stationärer $2\times 2$-Turm. Nimmt alle 4 Pulse deine gebauten Straßen unter Beschuss, dreht Kacheln oder verriegelt Türen (`LockDoors`), bis du ihn erreichst und im Arena-Raum überlebst.
+2. **Der Saboteur / Jäger (z. B. Wald):** Bewegt sich auf deinen gebauten Kacheln gezielt zu deinen Knotenpunkten/Schreinen, um deine Route zu kappen – oder bricht bei Kontakt direkt in deinen aktuellen Platformer-Raum ein.
+3. **Das Myzel / Netzwerk (z. B. Sumpf):** Reiner Grid-Boss ohne Monster-Token. Besitzt 3 verteilte Herzkammern im Nebel, die der Spieler über eine durchgehende Kette aus 6er-Würfeln miteinander verbinden („kurzschließen“) und im Raum kappen muss.
+4. **Der Mahlstrom (z. B. Meer):** Zieht alle 4 Pulse die unterste Reihe deiner gebauten Kacheln (samt Slime) um 1 Feld Richtung Abgrund.
+
+---
+
+### 1.6 Deckbuilding (Dual-Use-Karten) & Run-Struktur
+
+* **Dual-Use-Karten (Kein „Dead Draw“):** Jede Karte im Deck (Start: 8, Ausbau auf 14–18) kann entweder oben auf dem Grid als 6er-Würfel gebaut werden (1 Puls) oder unten im Platformer für 0 Pulse geopfert werden, um sofort einen Überlebens-Effekt im Raum auszulösen (z. B. Schild gegen nächsten Treffer/Straf-Puls, Türen knacken, Schwerkraft-Impuls).
+* **Run-Struktur & Adaptiver Endboss:** Ein Run dauert ca. 20–30 Minuten und führt durch 2–3 Zonen zum Endboss, der die Fähigkeiten genau jener Zonen-Bosse übernimmt, die der Spieler auf seiner Route besiegt hat.
+
+---
+
+## 2. Abgleich: Was ist bereits umgesetzt vs. Was muss geändert werden?
+
+Durch die Vorarbeit in Schritt 1–3 und das Ecken-Update steht bereits ein Großteil der Technik. Der Umbau auf das 4-Puls-System erfordert vor allem das Entfernen der alten Runden-Stopps in drei bestehenden Skripten:
+
+| System / Skript | Aktueller Stand im Code (inkl. Schritt 1–3) | Was jetzt geändert / noch umgesetzt werden muss |
+| :--- | :--- | :--- |
+| **Steuerung & Ecken**<br>`PlatformerSlimeController.cs`<br>`GroundedState.cs`<br>`AirborneState.cs`<br>`PhysicsData.cs` | **Fertig umgesetzt:** 360°-Klettern, sanftes Rollen & Stehenbleiben auf $270^\circ$-Außenecken, $90^\circ$-Innenecken-Bremse, Variable Jump, Coyote Time, Apex Control, Squash & Stretch sowie `TakeDamage()` mit Blink-Unverwundbarkeit. | **Keine Änderung an der Physik nötig!**<br>Lediglich `TakeDamage()` friert den Slime bei 0 Fokus nicht mehr ein, sondern zieht einfach 1 Puls ab. |
+| **Puls-Zähler & Rundenfluss**<br>`GameManager.cs`<br>`EventManager.cs` | **Noch auf altem Stand (Zwangsstopp):** Zählt `currentFocus` von 4 auf 0 herunter. Bei 0 Fokus durch Treffer friert der Slime ein (`SetSlimeActive(false)`), die Kamera fährt zwangsweise hoch in `EnemyTurn` und zeigt `TurnBannerUI`-Banner (ZWANGSSTOPP / GEGNERPHASE / DEIN ZUG). | **Umbau auf 4-Puls-System (Wichtigste Änderung):**<br>1. Zwangsstopp, Slime-Einfrieren und Kamera-Rauszoomen aus dem `FreeRoam` entfernen.<br>2. Sobald `currentFocus` (Pulse) 0 erreicht, füllt er sich sofort wieder auf 4 auf und triggert im Hintergrund `ExecuteBossPulse()`.<br>3. Bist du im Platformer, läuft ein kurzes Kamera-Rumpeln ab statt des Kamerawechsels; bist du im Baumodus (`MacroPlan`), siehst du den Boss-Zug direkt auf dem Grid. |
+| **Raumübergänge & Türen**<br>`MacroGridManager.cs`<br>`Room.cs` | **Teilweise umgesetzt:** Merkt sich besuchte Räume in `visitedRooms` (neue Räume kosten 1, besuchte 0). Aber: Aktuell sperrt `UpdateRoomDoors()` alle Türen zu neuen Räumen physisch zu, sobald `currentFocus == 0` ist. | **Kleine Anpassung:**<br>1. Tür-Sperre bei 0 Fokus entfernen (`HasRoom` statt `CanEnterRoomAt`), da sich der Puls-Zähler bei 0 sofort wieder auf 4 zurücksetzt und den Boss-Tick auslöst.<br>2. Wenn ein Nachbarraum auf dem Grid `isTargeted` ist, Tür im Raum optisch rot einfärben (Umwelt-Telegrafie). |
+| **Bau-Regeln**<br>`PlacementManager.cs` | **Noch auf altem Stand:** Prüft in `CanPlaceShape()` nur, ob der Würfel irgendwo an ein bereits gebautes Feld (`CellState.Built`) angrenzt $\rightarrow$ erlaubt noch den „Hub-Autobahn-Exploit“. | **Kleine Ergänzung (ca. 10 Zeilen):**<br>Prüfung `maxBuildDistanceFromSlime = 2` in `CanPlaceShape()` einbauen: Mindestens eine Kachel des neuen 6er-Würfels muss $\le 2$ Felder vom aktuellen Raum des Slimes entfernt sein. |
+| **Grid, Zonen & 6er-Würfel**<br>`GridManager.cs`<br>`GridCell.cs`<br>`InventoryManager.cs` | **Grundfunktion umgesetzt:** Hub, Tier-1/Tier-2-Zonen, farbiger Nebel, lila/schwarzer Rand und die 6er-Würfelnetze (Hexominos) laufen bereits. | **Späteres Polish (für den ersten Test noch nicht zwingend):**<br>Weiße Modifikator-Icons auf `GridCell` anzeigen und das rote Warn-Overlay als Schraffur/Rahmen statt Vollfarbe darstellen. |
+| **Boss-Verhalten & Konter**<br>`BossBase.cs`<br>`BossController.cs` | **Noch auf altem Stand:** Boss läuft in `MoveTowardsSlimeRoutine()` 1 Feld auf den Slime zu und zerstört 1 Feld vor sich (`DestroyRoom`). Notfall-Schleudern bei Raumzerstörung unter dem Slime ist bereits drin. | **Mittelfristiger Ausbau:**<br>Boss markiert $3\times 3$-Gefahrenzonen mit 1 Epizentrum-Feld (Fadenkreuz). Betritt der Slime das Epizentrum vor Ablauf der Pulse, wird der Angriff abgebrochen (`CancelCast`) und der Boss geschwächt. |
 </file>
 
 <file path="repomix.config.json">

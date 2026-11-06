@@ -20,9 +20,18 @@ public class PlatformerGroundedState : PlatformerSlimeState
         justEntered = true;
         controller.IsGrounded = true;
 
-        Vector2 normal = controller.CurrentSurfaceNormal;
-        Vector2 tangent = new Vector2(normal.y, -normal.x);
+        Vector2 normal = controller.EffectiveSurfaceNormal;
+        Vector2 tangent = controller.IsOnOuterCorner
+            ? controller.OuterCornerDiagonalTangent
+            : new Vector2(normal.y, -normal.x);
+
         float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
+
+        // Landet man ohne aktive Richtungseingabe direkt auf einer äußeren Ecke, bleibt der Slime dort kontrolliert stehen
+        if (controller.IsOnOuterCorner && controller.MoveInput.sqrMagnitude < 0.04f)
+        {
+            preservedSpeed = 0f;
+        }
 
         controller.Velocity = new Vector2(preservedSpeed, 0f);
 
@@ -45,18 +54,17 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        Vector2 surfaceNormal = controller.CurrentSurfaceNormal;
-        bool isCeiling = surfaceNormal.y < -0.5f;
-        bool isWall = Mathf.Abs(surfaceNormal.x) > 0.5f;
+        Vector2 surfaceNormal = controller.EffectiveSurfaceNormal;
+        bool isOuterCorner = controller.IsOnOuterCorner;
+        bool isCeiling = !isOuterCorner && surfaceNormal.y < -0.5f;
+        bool isWall = !isOuterCorner && Mathf.Abs(surfaceNormal.x) > 0.5f;
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel
+        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel (nicht auf äußeren Ecken)
         if (isCeiling && !isHoldingDownFromWall)
         {
             Vector2 input = controller.MoveInput;
-
-            // Muss fast rein nach unten sein (Y <= -0.80 und X maximal 0.25)
             bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
             if (isStrictlyDown)
@@ -81,7 +89,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             }
             else
             {
-                // Jede Abweichung setzt den Timer sofort zurück
                 downHoldTimer = 0f;
             }
         }
@@ -90,40 +97,91 @@ public class PlatformerGroundedState : PlatformerSlimeState
             downHoldTimer = 0f;
         }
 
-        // 2. Sprung von der Fläche (Boden, Wand oder Decke)
+        // 2. Sprung von der Fläche (Boden, Wand, Decke, Äußere Ecke oder Innere Ecke)
         if (controller.HasBufferedJump)
         {
-            controller.ConsumeJumpBuffer();
-            controller.TriggerDetach(surfaceNormal);
-
-            if (isCeiling)
-            {
-                float airMoveX = controller.MoveInput.x * data.moveSpeed;
-                float verticalDrop = -data.jumpVelocity * 0.6f;
-                controller.Velocity = new Vector2(airMoveX, verticalDrop);
-            }
-            else if (isWall)
-            {
-                Vector2 jumpDir = (surfaceNormal * 1.0f + Vector2.up * 1.1f).normalized;
-                controller.Velocity = jumpDir * data.jumpVelocity;
-            }
-            else
-            {
-                float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
-                    ? controller.MoveInput.x * data.moveSpeed 
-                    : controller.Velocity.x;
-
-                controller.Velocity = new Vector2(moveX, data.jumpVelocity);
-            }
-
-            stateMachine.ChangeState(controller.AirborneState);
+            ExecuteJump(surfaceNormal, isOuterCorner, isCeiling, isWall);
         }
+    }
+
+    private void ExecuteJump(Vector2 surfaceNormal, bool isOuterCorner, bool isCeiling, bool isWall)
+    {
+        controller.ConsumeJumpBuffer();
+
+        float stretch = (data != null) ? data.jumpStretchAmount : 0.16f;
+        controller.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+
+        // FALL A: Absprung direkt von einer äußeren Ecke (270°)
+        if (isOuterCorner)
+        {
+            Vector2 cornerNormal = controller.OuterCornerDiagonalNormal;
+            controller.TriggerCornerDetach(controller.OuterCornerNormalA, controller.OuterCornerNormalB);
+
+            Vector2 launchDir = (cornerNormal * 1.0f + Vector2.up * 0.55f).normalized;
+            if (controller.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(controller.MoveInput.normalized, cornerNormal) > -0.25f)
+            {
+                launchDir = (launchDir + controller.MoveInput.normalized * 0.45f).normalized;
+            }
+
+            controller.Velocity = launchDir * data.jumpVelocity;
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // FALL B: Absprung direkt aus einer 90°-Innenecken-Nische
+        if (controller.IsInInnerCornerPocket && controller.InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
+        {
+            Vector2 bisector = (surfaceNormal + controller.InnerCornerAdjacentNormal).normalized;
+            controller.TriggerCornerDetach(surfaceNormal, controller.InnerCornerAdjacentNormal);
+
+            Vector2 launchDir = (bisector + Vector2.up * 0.4f).normalized;
+            controller.Velocity = launchDir * data.jumpVelocity;
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        // FALL C: Regulärer Absprung (Decke, Wand, Boden)
+        controller.TriggerDetach(surfaceNormal);
+
+        if (isCeiling)
+        {
+            float airMoveX = Mathf.Abs(controller.MoveInput.x) > 0.1f
+                ? controller.MoveInput.x * data.moveSpeed
+                : controller.Velocity.x;
+            float verticalDrop = -data.jumpVelocity * 0.55f;
+            controller.Velocity = new Vector2(airMoveX, verticalDrop);
+        }
+        else if (isWall)
+        {
+            float awayInput = Vector2.Dot(controller.MoveInput, surfaceNormal);
+            float horizontalWeight = awayInput > 0.25f ? 0.95f : 0.72f;
+            float verticalWeight = controller.MoveInput.y < -0.4f ? 0.55f : 1.15f;
+
+            Vector2 jumpDir = (surfaceNormal * horizontalWeight + Vector2.up * verticalWeight).normalized;
+            controller.Velocity = jumpDir * data.jumpVelocity;
+        }
+        else
+        {
+            float currentTangentSpeed = controller.Velocity.x * surfaceNormal.y;
+            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
+                ? controller.MoveInput.x * data.moveSpeed 
+                : currentTangentSpeed;
+
+            controller.Velocity = new Vector2(moveX, data.jumpVelocity);
+        }
+
+        stateMachine.ChangeState(controller.AirborneState);
     }
 
     public override void PhysicsUpdate()
     {
-        Vector2 normal = controller.CurrentSurfaceNormal;
-        Vector2 tangent = new Vector2(normal.y, -normal.x);
+        // Auf äußeren Ecken nutzen wir die 45°-Diagonaltangente der Ecke,
+        // damit man an jeder Stelle der Ecke (0% bis 100%) sofort in beide Richtungen anfahren kann.
+        Vector2 normal = controller.EffectiveSurfaceNormal;
+        Vector2 tangent = controller.IsOnOuterCorner
+            ? controller.OuterCornerDiagonalTangent
+            : new Vector2(normal.y, -normal.x);
+
         Vector2 input = controller.MoveInput;
         float inputSqrMag = input.sqrMagnitude;
 
@@ -143,7 +201,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             {
                 float proj = Vector2.Dot(input, tangent);
 
-                if (Mathf.Abs(proj) > 0.15f)
+                if (Mathf.Abs(proj) > 0.10f)
                 {
                     isTraversing = true;
                     currentTraverseSign = Mathf.Sign(proj);
@@ -161,7 +219,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
                     initialInputVector = Vector2.zero;
 
                     float proj = Vector2.Dot(input, tangent);
-                    if (Mathf.Abs(proj) > 0.15f)
+                    if (Mathf.Abs(proj) > 0.10f)
                     {
                         isTraversing = true;
                         currentTraverseSign = Mathf.Sign(proj);
@@ -181,7 +239,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isTraversing)
             {
-                targetSpeed = currentTraverseSign * data.moveSpeed;
+                targetSpeed = currentTraverseSign * data.moveSpeed * controller.CornerSpeedMultiplier;
             }
         }
 

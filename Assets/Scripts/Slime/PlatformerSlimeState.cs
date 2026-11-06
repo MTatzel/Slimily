@@ -18,19 +18,29 @@ public abstract class PlatformerSlimeState
     public virtual void FrameUpdate() { }
     public virtual void PhysicsUpdate() { }
 
-    // --- Zentrale Hilfsmethoden für alle abgeleiteten Zustände ---
-
     /// <summary>
-    /// Berechnet die horizontale Bewegung basierend auf dem Input und der übergebenen Beschleunigung.
+    /// Berechnet die horizontale Bewegung und erhält bestehenden Sprung-Schwung in Flugrichtung.
     /// </summary>
     protected void ApplyHorizontalMovement(float accel, float decel)
     {
-        float targetSpeed = controller.MoveInput.x * data.moveSpeed;
+        float inputX = controller.MoveInput.x;
+        float targetSpeed = inputX * data.moveSpeed;
         Vector2 vel = controller.Velocity;
 
-        float rate = (Mathf.Abs(targetSpeed) > 0.01f) ? accel : decel;
-        vel.x = Mathf.MoveTowards(vel.x, targetSpeed, rate * Time.fixedDeltaTime);
+        float rate;
+        if (Mathf.Abs(inputX) > 0.05f)
+        {
+            // Bewegt sich der Slime durch einen Wand-/Ecksprung bereits schneller in Eingaberichtung,
+            // bremsen wir ihn nicht hart auf moveSpeed ab, sondern lassen den Schwung sanft auslaufen.
+            bool movingFasterInSameDir = (vel.x * inputX > 0f) && (Mathf.Abs(vel.x) > Mathf.Abs(targetSpeed));
+            rate = movingFasterInSameDir ? decel : accel;
+        }
+        else
+        {
+            rate = decel;
+        }
 
+        vel.x = Mathf.MoveTowards(vel.x, targetSpeed, rate * Time.fixedDeltaTime);
         controller.Velocity = vel;
     }
 
