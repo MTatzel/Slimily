@@ -4,8 +4,9 @@ using UnityEngine;
 
 public enum TimelineEventType
 {
-    AmbientNightmareRipple, // Kleines Umwelt-Event zwischen den Boss-Zügen
-    BossMajorPulse          // Großer Boss-Zug (Einschlag + Bewegung + neue Telegrafie)
+    MinionSlabTriggered,    // Gelbes Schergen-Symbol erreicht 0
+    AmbientNightmareRipple, // Violettes Umwelt-Symbol erreicht 0
+    BossMajorPulse          // Rotes Boss-Symbol erreicht 0
 }
 
 public class EventManager : MonoBehaviour
@@ -20,9 +21,6 @@ public class EventManager : MonoBehaviour
     private bool isPulseRunning = false;
     private readonly Queue<TimelineEventType> pendingEvents = new Queue<TimelineEventType>();
 
-    /// <summary>
-    /// Reiht ein spezifisches Timeline-Event in die Hintergrund-Warteschlange ein.
-    /// </summary>
     public void EnqueueTimelineEvent(TimelineEventType eventType)
     {
         pendingEvents.Enqueue(eventType);
@@ -32,16 +30,8 @@ public class EventManager : MonoBehaviour
         }
     }
 
-    // Abwärtskompatible Aufrufe
-    public void EnqueueTimelinePulse()
-    {
-        EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
-    }
-
-    public void TriggerEndTurn(bool forcedByZeroFocus = false)
-    {
-        EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
-    }
+    public void EnqueueTimelinePulse() => EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
+    public void TriggerEndTurn(bool forcedByZeroFocus = false) => EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
 
     private IEnumerator ProcessEventQueueRoutine()
     {
@@ -50,41 +40,56 @@ public class EventManager : MonoBehaviour
         while (pendingEvents.Count > 0)
         {
             TimelineEventType nextEvent = pendingEvents.Dequeue();
-            if (nextEvent == TimelineEventType.AmbientNightmareRipple)
+
+            switch (nextEvent)
             {
-                yield return StartCoroutine(ExecuteAmbientRippleRoutine());
-            }
-            else
-            {
-                yield return StartCoroutine(ExecuteBossPulseRoutine());
+                case TimelineEventType.MinionSlabTriggered:
+                    yield return StartCoroutine(ExecuteMinionThreatRoutine());
+                    break;
+
+                case TimelineEventType.AmbientNightmareRipple:
+                    yield return StartCoroutine(ExecuteAmbientRippleRoutine());
+                    break;
+
+                case TimelineEventType.BossMajorPulse:
+                    yield return StartCoroutine(ExecuteBossPulseRoutine());
+                    break;
             }
         }
 
         isPulseRunning = false;
     }
 
-    private IEnumerator ExecuteAmbientRippleRoutine()
+    private IEnumerator ExecuteMinionThreatRoutine()
     {
         if (gameManager == null) gameManager = GameManager.Instance;
-        if (gridManager == null) gridManager = GridManager.Instance;
 
-        Debug.Log("--- [TIMELINE-EVENT] UMWELT-BEBEN (ALBTRAUM-SCHAUER) ---");
+        Debug.Log("--- [SYMBOL = 0] 🕷️ SCHERGEN-HINTERHALT AUSGELÖST! ---");
 
-        // Dezentes Raum-Rumpeln im Platformer
         if (gameManager != null)
         {
-            gameManager.TriggerMicroCameraRumble(intensity: 0.14f, duration: 0.22f);
-            float rippleAmount = Mathf.Max(1f, gameManager.NightmarePerTurn * 0.5f);
-            gameManager.AddNightmare(rippleAmount, "Albtraum-Schauer (Timeline)");
+            gameManager.TriggerMicroCameraRumble(intensity: 0.22f, duration: 0.25f);
+            gameManager.AddNightmare(4f, "Schergen-Symbol bei 0");
         }
 
         CheckHazardousStandingTile();
+        yield return new WaitForSeconds(0.1f);
+    }
 
-        if (MacroGridManager.Instance != null)
+    private IEnumerator ExecuteAmbientRippleRoutine()
+    {
+        if (gameManager == null) gameManager = GameManager.Instance;
+
+        Debug.Log("--- [SYMBOL = 0] 🌫️ ALBTRAUM-FLUT AUSGELÖST! ---");
+
+        if (gameManager != null)
         {
-            MacroGridManager.Instance.RefreshActiveRoomDoors();
+            gameManager.TriggerMicroCameraRumble(intensity: 0.16f, duration: 0.22f);
+            float rippleAmount = Mathf.Max(2f, gameManager.NightmarePerTurn * 0.6f);
+            gameManager.AddNightmare(rippleAmount, "Umwelt-Symbol bei 0");
         }
 
+        CheckHazardousStandingTile();
         yield return new WaitForSeconds(0.1f);
     }
 
@@ -93,24 +98,21 @@ public class EventManager : MonoBehaviour
         if (gameManager == null) gameManager = GameManager.Instance;
         if (gridManager == null) gridManager = GridManager.Instance;
 
-        Debug.Log("--- [TIMELINE-EVENT] ⚡ GROSSER BOSS-PULS IM HINTERGRUND ---");
+        Debug.Log("--- [SYMBOL = 0] 💀 BOSS-AKTION AUSGELÖST (LIVE-PIP AKTIV)! ---");
 
-        // Kräftigeres Raum-Beben im Platformer, wenn der Boss zieht
         if (gameManager != null)
         {
-            gameManager.TriggerMicroCameraRumble(intensity: 0.32f, duration: 0.38f);
+            gameManager.TriggerMicroCameraRumble(intensity: 0.35f, duration: 0.38f);
         }
 
-        // 1. Boss-Aktion im Hintergrund ausführen (Einschläge + Bewegung + neue Warnung)
         if (boss != null)
         {
             yield return StartCoroutine(boss.ExecuteTurn());
         }
 
-        // 2. Regulärer Albtraum-Anstieg beim Boss-Zug
         if (gameManager != null && gameManager.NightmarePerTurn > 0f)
         {
-            gameManager.AddNightmare(gameManager.NightmarePerTurn, "Boss-Puls auf Timeline");
+            gameManager.AddNightmare(gameManager.NightmarePerTurn, "Boss-Symbol bei 0");
         }
 
         CheckHazardousStandingTile();
@@ -121,21 +123,9 @@ public class EventManager : MonoBehaviour
             yield break;
         }
 
-        // 3. Platzierungszähler & Raumtüren (inkl. roter Warn-Telegrafie!) aktualisieren
-        if (placementManager != null)
-        {
-            placementManager.ResetTurnPlacements();
-        }
-
-        if (inventoryManager != null)
-        {
-            inventoryManager.CheckAndRefillIfEmpty();
-        }
-
-        if (MacroGridManager.Instance != null)
-        {
-            MacroGridManager.Instance.RefreshActiveRoomDoors();
-        }
+        if (placementManager != null) placementManager.ResetTurnPlacements();
+        if (inventoryManager != null) inventoryManager.CheckAndRefillIfEmpty();
+        if (MacroGridManager.Instance != null) MacroGridManager.Instance.RefreshActiveRoomDoors();
     }
 
     private void CheckHazardousStandingTile()
@@ -151,13 +141,9 @@ public class EventManager : MonoBehaviour
             if (cell != null)
             {
                 if (cell.zoneType == ZoneType.PurpleNightmare)
-                {
                     gameManager.AddNightmare(gameManager.NightmareOnPurpleTile, "Aufenthalt im lila Albtraum-Rand");
-                }
                 else if (cell.zoneType == ZoneType.BlackVoid)
-                {
                     gameManager.AddNightmare(gameManager.NightmareOnBlackVoidTile, "Aufenthalt im schwarzen Rand");
-                }
             }
         }
     }
