@@ -14,11 +14,8 @@ public class PlacementManager : MonoBehaviour
     public int maxPlacementsPerTurn = 99;
     public int placementsThisTurn = 0;
 
-    [Tooltip("Wenn aktiv, muss mindestens 1 Block des neuen Würfels in Reichweite der aktuellen Slime-Position liegen.")]
     public bool enforceSlimeBuildRange = true;
-    [Tooltip("Maximale Distanz (in Feldern) zwischen Slime und dem nächsten Block des neuen Würfels.")]
     public int maxBuildDistanceFromSlime = 2;
-    [Tooltip("Wie viel % Albtraum ein gebauter Schrein-Block sofort senkt.")]
     public float nightmareReductionPerShrine = 8f;
 
     private ShapeData currentShape = null;
@@ -119,7 +116,6 @@ public class PlacementManager : MonoBehaviour
         var keyboard = Keyboard.current;
         var mouse = Mouse.current;
 
-        // 1. ABBRUCH (Kreis auf PS5 oder Escape)
         bool cancelPressed = (gamepad != null && gamepad.buttonEast.wasPressedThisFrame) ||
                              (keyboard != null && keyboard.escapeKey.wasPressedThisFrame);
         if (cancelPressed)
@@ -128,7 +124,6 @@ public class PlacementManager : MonoBehaviour
             return;
         }
 
-        // 2. ROTATION (L1 / R1 oder Q / E / Rechtsklick)
         bool rotateCW = (gamepad != null && gamepad.rightShoulder.wasPressedThisFrame) ||
                         (keyboard != null && keyboard.eKey.wasPressedThisFrame) ||
                         (mouse != null && mouse.rightButton.wasPressedThisFrame);
@@ -149,7 +144,6 @@ public class PlacementManager : MonoBehaviour
             UpdatePreviewAt(cursorCoord.x, cursorCoord.y);
         }
 
-        // 3. CURSOR-STEUERUNG
         Vector2Int moveInput = Vector2Int.zero;
 
         if (gamepad != null)
@@ -203,7 +197,6 @@ public class PlacementManager : MonoBehaviour
             }
         }
 
-        // 4. PLATZIEREN (Kreuz auf PS5, Enter oder Linksklick)
         bool placePressed = (gamepad != null && gamepad.buttonSouth.wasPressedThisFrame) ||
                             (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame)) ||
                             (mouse != null && mouse.leftButton.wasPressedThisFrame);
@@ -259,7 +252,14 @@ public class PlacementManager : MonoBehaviour
             {
                 int x = startX + cell.localPosition.x;
                 int y = startY + cell.localPosition.y;
-                gridManager.grid[x, y].SetOccupied();
+
+                ZoneType blockBiome = cell.hasAssignedZone ? cell.assignedZone : ZoneType.Forest;
+                gridManager.PlaceBiomeBlockAt(x, y, blockBiome);
+
+                if (BiomeResonanceManager.Instance != null)
+                {
+                    BiomeResonanceManager.Instance.RegisterBuiltTile(gridManager.grid[x, y].zoneType);
+                }
 
                 if (MacroGridManager.Instance != null)
                 {
@@ -283,26 +283,16 @@ public class PlacementManager : MonoBehaviour
 
             if (gameManager == null) gameManager = GameManager.Instance;
 
-            // Schrein-Bonus direkt beim Platzieren gutschreiben
             if (shrineCount > 0 && gameManager != null)
             {
                 float heal = shrineCount * nightmareReductionPerShrine;
                 gameManager.AddNightmare(-heal, $"Schrein gebaut ({placedName})");
             }
 
-            // Individuelle Tick-Kosten der Karte (0, 1 oder 2 Ticks) auf der Timeline abrechnen
             if (useFocusCost && gameManager != null && cardTickCost > 0)
             {
                 gameManager.AdvanceTicks(cardTickCost, $"Karte '{placedName}' ({cardTickCost} Tick)");
             }
-            else if (cardTickCost == 0)
-            {
-                Debug.Log($"[PlacementManager] '{placedName}' für 0 Ticks gebaut – Boss-Timeline bewegt sich nicht!");
-            }
-        }
-        else
-        {
-            Debug.Log("[PlacementManager] Ungültige Platzierung (Muss an Gebautes angrenzen & max. 2 Felder vom Slime entfernt sein)!");
         }
     }
 

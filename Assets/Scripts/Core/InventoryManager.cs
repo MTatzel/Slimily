@@ -15,10 +15,28 @@ public class InventoryManager : MonoBehaviour
     public ShapePreviewUI centerPreview;
     public GameObject uiBlockPrefab;
 
-    [Header("Erinnerungs-Strom (Deckbuilding)")]
+    [Header("Filter zum Testen (Code bleibt erhalten!)")]
+    [Tooltip("Wenn AUS, werden keine Fähigkeiten/Skills (wie Zeit-Anker oder Sternenschauer) ins Deck gemischt.")]
+    public bool includeSkillCards = false;
+
+    [Tooltip("Wenn AUS, werden Feuer/Eis/Gift/Schrein-Mods auf den Würfeln ignoriert (nur reine Biom-Farben).")]
+    public bool includeBlockModifiers = false;
+
+    [Header("Deck-Konfiguration (Im Inspector anpassbar!)")]
+    [Tooltip("Ziehe hier deine erstellten CardAsset-ScriptableObjects hinein.")]
+    public List<CardAsset> startingDeckAssets = new List<CardAsset>();
+
+    [Tooltip("Oder bearbeite Karten direkt hier in der Liste ohne eigene Asset-Datei.")]
+    public List<ShapeData> inlineStartingDeck = new List<ShapeData>();
+
+    [Tooltip("Wenn beide Listen oben leer sind, werden automatisch die Standard-Würfel geladen.")]
+    public bool useFallbackIfEmpty = true;
+
+    [Header("Hand-Größe")]
     public int maxHandSize = 5;
     public int startingHandSize = 5;
 
+    [HideInInspector]
     public ShapeData[] hotbarSlots = new ShapeData[8];
 
     private readonly List<ShapeData> masterDeck = new List<ShapeData>();
@@ -40,21 +58,88 @@ public class InventoryManager : MonoBehaviour
     public ShapeData CurrentlySelectedCard =>
         (currentSelectedIndex >= 0 && currentSelectedIndex < hand.Count) ? hand[currentSelectedIndex] : null;
 
+    [ContextMenu("Fülle Inline-Deck mit Standard-Formen (Zum Bearbeiten im Inspector)")]
+    private void PopulateInlineDeckWithDefaults()
+    {
+        inlineStartingDeck = MemoryCardCatalog.CreateStarterDeck();
+    }
+
     void Awake()
     {
         InitializeSlotPreviews();
         hotbarSlots = new ShapeData[8];
-        masterDeck.Clear();
-        masterDeck.AddRange(MemoryCardCatalog.CreateStarterDeck());
-        ResetDeckAndDrawStartingHand();
     }
 
     void Start()
     {
         if (gameManager == null) gameManager = GameManager.Instance;
         if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
+
+        // Wichtig: Erst in Start() ziehen, damit BiomeResonanceManager & GridManager garantiert wach sind!
+        RebuildMasterDeckFromInspector();
+        ResetDeckAndDrawStartingHand();
+
         RefreshAllPreviews();
         UpdateCursorPosition();
+    }
+
+    /// <summary>
+    /// Liest die Karten ein und berücksichtigt dabei die beiden Inspector-Schalter (includeSkillCards / includeBlockModifiers).
+    /// </summary>
+    public void RebuildMasterDeckFromInspector()
+    {
+        masterDeck.Clear();
+
+        List<ShapeData> rawCandidates = new List<ShapeData>();
+
+        if (startingDeckAssets != null)
+        {
+            foreach (CardAsset asset in startingDeckAssets)
+            {
+                if (asset != null && asset.cardData != null && asset.cardData.cells.Count > 0)
+                {
+                    rawCandidates.Add(asset.cardData);
+                }
+            }
+        }
+
+        if (inlineStartingDeck != null)
+        {
+            foreach (ShapeData shape in inlineStartingDeck)
+            {
+                if (shape != null && shape.cells.Count > 0)
+                {
+                    rawCandidates.Add(shape);
+                }
+            }
+        }
+
+        if (rawCandidates.Count == 0 && useFallbackIfEmpty)
+        {
+            rawCandidates.AddRange(MemoryCardCatalog.CreateStarterDeck());
+        }
+
+        foreach (ShapeData candidate in rawCandidates)
+        {
+            // 1. Fähigkeiten überspringen, solange includeSkillCards im Inspector deaktiviert ist
+            if (!includeSkillCards && candidate.category == CardCategory.TacticalSkill)
+            {
+                continue;
+            }
+
+            ShapeData copy = candidate.Clone();
+
+            // 2. Modifikatoren (Feuer/Eis/Gift/Schrein) ausblenden, solange includeBlockModifiers deaktiviert ist
+            if (!includeBlockModifiers && copy.category == CardCategory.CubeShape)
+            {
+                foreach (ShapeCell cell in copy.cells)
+                {
+                    cell.modifiers.Clear();
+                }
+            }
+
+            masterDeck.Add(copy);
+        }
     }
 
     public void InitializeSlotPreviews()
@@ -83,9 +168,17 @@ public class InventoryManager : MonoBehaviour
         hand.Clear();
         discardPile.Clear();
 
+        RebuildMasterDeckFromInspector();
+
         foreach (ShapeData card in masterDeck)
         {
-            drawPile.Add(card.Clone());
+            ShapeData freshCard = card.Clone();
+            // Beim Mischen noch kein Biom festlegen – erst beim tatsächlichen Ziehen!
+            foreach (ShapeCell cell in freshCard.cells)
+            {
+                cell.hasAssignedZone = false;
+            }
+            drawPile.Add(freshCard);
         }
 
         ShuffleList(drawPile);
@@ -96,6 +189,15 @@ public class InventoryManager : MonoBehaviour
     {
         int effectiveMaxHand = Mathf.Min(maxHandSize, hotbarSlots.Length);
 
+        // Sicherstellen, dass der BiomeResonanceManager existiert
+        if (BiomeResonanceManager.Instance == null && GameManager.Instance != null)
+        {
+            if (GameManager.Instance.GetComponent<BiomeResonanceManager>() == null)
+            {
+                GameManager.Instance.gameObject.AddComponent<BiomeResonanceManager>();
+            }
+        }
+
         for (int i = 0; i < amount; i++)
         {
             if (hand.Count >= effectiveMaxHand) break;
@@ -103,13 +205,31 @@ public class InventoryManager : MonoBehaviour
             if (drawPile.Count == 0)
             {
                 if (discardPile.Count == 0) break;
-                drawPile.AddRange(discardPile);
+
+                // Beim Zurückmischen des Ablagestapels die alten Biom-Farben löschen,
+                // damit sie beim erneuten Ziehen die NEUE Resonanz annehmen!
+                foreach (ShapeData discardedCard in discardPile)
+                {
+                    foreach (ShapeCell cell in discardedCard.cells)
+                    {
+                        cell.hasAssignedZone = false;
+                    }
+                    drawPile.Add(discardedCard);
+                }
+
                 discardPile.Clear();
                 ShuffleList(drawPile);
             }
 
             ShapeData drawn = drawPile[0];
             drawPile.RemoveAt(0);
+
+            // HIER PASSIERT DIE FARB-ZUWEISUNG ANHAND DER AKTUELLEN RESONANZ OBEN LINKS:
+            if (BiomeResonanceManager.Instance != null)
+            {
+                BiomeResonanceManager.Instance.AssignBiomesToShape(drawn);
+            }
+
             hand.Add(drawn);
         }
 

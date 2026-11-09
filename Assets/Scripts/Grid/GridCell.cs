@@ -2,20 +2,20 @@ using UnityEngine;
 
 public enum CellState
 {
-    Empty,      // Im Nebel (bebaubar, Zone schimmert schwach durch)
-    Built,      // Gebauter Raum (leuchtet intensiv in der Zonenfarbe)
-    Blocked     // Hindernis (unpassierbar & unbaubar)
+    Empty,      // Im Nebel (einheitlich dunkel & ruhig)
+    Built,      // Gebauter Raum (leuchtet in der Biom-Farbe des gelegten Würfels)
+    Blocked     // Hindernis
 }
 
 public enum ZoneType
 {
-    Hub,                // Sicheres Zentrum
-    Forest,             // Tier 1: Wald / Verstrickung (Grün)
-    Ocean,              // Tier 1: Meer / Bodenlose Tiefe (Blau)
-    Ruins,              // Tier 1: Ruinen / Einsturz (Ocker/Gold)
-    Swamp,              // Tier 2: Sumpf (Türkis/Giftgrün - grenzt an Wald)
-    PurpleNightmare,    // Äußerer Rand: Erschwerte Albtraum-Räume (Lila)
-    BlackVoid           // Ganz außen: Extrem harte / tödliche Räume (Schwarz)
+    Hub,
+    Forest,
+    Ocean,
+    Ruins,
+    Swamp,
+    PurpleNightmare,
+    BlackVoid
 }
 
 public class GridCell : MonoBehaviour
@@ -28,25 +28,17 @@ public class GridCell : MonoBehaviour
     [SerializeField] private SpriteRenderer baseRenderer;
     [SerializeField] private SpriteRenderer overlayRenderer;
 
-    [Header("Nebel & Zonen-Optik")]
-    [Tooltip("Wie stark die Zonenfarbe durch den unentdeckten Nebel schimmert (0.15 - 0.30 empfohlen)")]
-    [SerializeField] private float fogTintStrength = 0.22f;
-
     public bool isTargeted = false;
     public bool isHovered = false;
     public float pulseSpeed = 4f;
 
-    // Grundfarben für Nebel und Blockaden
-    private static readonly Color FogBaseColor = new Color(0.07f, 0.07f, 0.09f, 1f);
+    // Ruhiger, einheitlicher Schieferton für unbebaute Nebel-Felder
+    private static readonly Color FogBaseColor = new Color(0.08f, 0.08f, 0.11f, 1f);
     private static readonly Color ColorBlocked = new Color(0.1f, 0.15f, 0.3f, 1f);
 
-    // Zugewiesene Zonenfarbe dieser Kachel
     private Color zoneColor = Color.white;
-
-    // Aktuelle Warnfarbe für das Overlay (Boss-Telegrafie)
     private Color currentWarningColor = new Color(1f, 0.5f, 0f);
 
-    // Hilfseigenschaften für andere Skripte
     public bool IsWalkableForSlime => currentState == CellState.Built;
     public bool IsBuildable => currentState == CellState.Empty;
 
@@ -67,9 +59,6 @@ public class GridCell : MonoBehaviour
         SetState(CellState.Empty);
     }
 
-    /// <summary>
-    /// Weist der Kachel eine Zone und ihre Grundfarbe zu.
-    /// </summary>
     public void SetZone(ZoneType type, Color color)
     {
         zoneType = type;
@@ -87,7 +76,6 @@ public class GridCell : MonoBehaviour
     public void DestroyBlock() => SetState(CellState.Empty);
     public void SetBlocked() => SetState(CellState.Blocked);
 
-    // Telegrafie mit flexibler Warnfarbe
     public void SetWarning(bool warn, Color warningColor = default)
     {
         isTargeted = warn;
@@ -95,7 +83,6 @@ public class GridCell : MonoBehaviour
         UpdateOverlay();
     }
 
-    // Vorschau beim Platzieren von Würfelnetzen
     public void SetPreview(bool isValid)
     {
         isHovered = true;
@@ -106,7 +93,6 @@ public class GridCell : MonoBehaviour
         }
         else if (baseRenderer != null)
         {
-            // Fallback, falls im Prefab kein separater OverlayRenderer zugewiesen ist
             baseRenderer.color = isValid ? new Color(0.2f, 0.9f, 0.2f, 1f) : new Color(0.9f, 0.2f, 0.2f, 1f);
         }
     }
@@ -123,7 +109,6 @@ public class GridCell : MonoBehaviour
         switch (currentState)
         {
             case CellState.Built:
-                // Belegte Felder leuchten kräftig in der vollen Farbe ihrer Zone
                 return zoneColor;
 
             case CellState.Blocked:
@@ -131,24 +116,21 @@ public class GridCell : MonoBehaviour
 
             case CellState.Empty:
             default:
-                // Hub ist immer klar sichtbar
                 if (zoneType == ZoneType.Hub)
                 {
                     return zoneColor * 0.8f;
                 }
-                // Schwarzer Rand ist fast tiefschwarz
                 if (zoneType == ZoneType.BlackVoid)
                 {
                     return new Color(0.03f, 0.02f, 0.04f, 1f);
                 }
-                // Lila Albtraum-Rand hebt sich bedrohlich ab
                 if (zoneType == ZoneType.PurpleNightmare)
                 {
-                    return Color.Lerp(FogBaseColor, zoneColor, 0.42f);
+                    return Color.Lerp(FogBaseColor, zoneColor, 0.25f);
                 }
 
-                // Normale Zonen im Nebel: Dunkler Grundton mit durchschimmernder Zonenfarbe
-                return Color.Lerp(FogBaseColor, zoneColor, fogTintStrength);
+                // Unbebautes Grid ist komplett einheitlich dunkel (keine bunten Zonen mehr im Nebel!)
+                return FogBaseColor;
         }
     }
 
@@ -163,17 +145,9 @@ public class GridCell : MonoBehaviour
     private void UpdateOverlay()
     {
         if (overlayRenderer == null) return;
-
         if (isHovered) return;
 
-        if (isTargeted)
-        {
-            overlayRenderer.gameObject.SetActive(true);
-        }
-        else
-        {
-            overlayRenderer.gameObject.SetActive(false);
-        }
+        overlayRenderer.gameObject.SetActive(isTargeted);
     }
 
     void Update()

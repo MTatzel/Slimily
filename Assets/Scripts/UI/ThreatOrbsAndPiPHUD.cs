@@ -3,25 +3,29 @@ using UnityEngine;
 
 public class ThreatOrbsAndPiPHUD : MonoBehaviour
 {
+    [Header("HUD-Elemente Ein-/Ausschalten (Inspector)")]
+    public bool showTopLeftResonanceAndNightmare = true;
+    public bool showTopRightThreatOrbs = true;
+    public bool showSmallCostBadgeOnSlots = true;
+
+    [Header("Optionale Custom-Sprites")]
+    public Texture2D customOrbFrameTexture;
+    public Texture2D customDefaultActionIcon;
+
     private GameManager gameManager;
     private ThreatTrackerManager tracker;
+    private BiomeResonanceManager resonanceManager;
     private InventoryManager inventoryManager;
 
-    // Prozedurale Kreis-Textur für die runden Symbole oben rechts
     private static Texture2D circleTex;
-
-    // Live-Picture-in-Picture (PiP) Kamera & RenderTexture für den Grid-Ausschnitt
     private Camera pipCamera;
     private RenderTexture pipRenderTexture;
-
-    // Sternschnuppen-Animation beim Ziehen neuer Erinnerungen
-    private float shootingStarTimer = 0f;
-    private int lastHandCount = 0;
 
     private void Awake()
     {
         gameManager = GetComponent<GameManager>();
         tracker = GetComponent<ThreatTrackerManager>();
+        resonanceManager = GetComponent<BiomeResonanceManager>();
         EnsureCircleTexture();
     }
 
@@ -42,29 +46,11 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
     {
         if (gameManager == null) gameManager = GameManager.Instance;
         if (tracker == null) tracker = ThreatTrackerManager.Instance;
-
-        if (gameManager != null && gameManager.inventoryManager != null)
-        {
-            int currentHand = gameManager.inventoryManager.HandCount;
-            if (currentHand > lastHandCount)
-            {
-                shootingStarTimer = 0.65f;
-            }
-            lastHandCount = currentHand;
-        }
-
-        if (shootingStarTimer > 0f)
-        {
-            shootingStarTimer -= Time.deltaTime;
-        }
+        if (resonanceManager == null) resonanceManager = BiomeResonanceManager.Instance;
 
         UpdatePiPCameraPosition();
     }
 
-    /// <summary>
-    /// Erzeugt automatisch eine kleine Live-Kamera über dem Makro-Grid,
-    /// die immer genau den Ort des ausgelösten (oder per R2 inspizierten) Symbols filmt!
-    /// </summary>
     private void EnsurePiPCameraReady()
     {
         if (pipRenderTexture == null)
@@ -80,7 +66,7 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
             pipCamera = camObj.AddComponent<Camera>();
             pipCamera.orthographic = true;
-            pipCamera.orthographicSize = 4.2f; // Schöner Nah-Ausschnitt (ca. 7x7 Grid-Felder)
+            pipCamera.orthographicSize = 4.2f;
             pipCamera.clearFlags = CameraClearFlags.SolidColor;
             pipCamera.backgroundColor = new Color(0.04f, 0.04f, 0.06f, 1f);
             pipCamera.targetTexture = pipRenderTexture;
@@ -105,7 +91,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
         pipCamera.enabled = true;
 
-        // Zielkoordinate bestimmen: Entweder das gerade bei 0 ausgelöste Event oder das per R2 gewählte Symbol
         Vector2Int targetCoord = tracker.PipActiveTimer > 0.01f
             ? tracker.PipFocusCoord
             : tracker.SelectedOrb.targetGridCoord;
@@ -120,37 +105,110 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
     {
         if (gameManager == null) gameManager = GameManager.Instance;
         if (tracker == null) tracker = ThreatTrackerManager.Instance;
+        if (resonanceManager == null) resonanceManager = BiomeResonanceManager.Instance;
         if (gameManager == null || !gameManager.ShowFallbackHUD) return;
 
         if (inventoryManager == null) inventoryManager = gameManager.inventoryManager;
 
         Color prevColor = GUI.color;
 
-        // 1. OBEN LINKS: Kompakte Albtraumleiste & Raum-Warnung
-        DrawTopLeftNightmareAndStatus();
+        // 1. Oben links: Biom-Resonanzen + Albtraumleiste darunter
+        if (showTopLeftResonanceAndNightmare)
+        {
+            DrawTopLeftResonanceAndNightmare();
+        }
 
-        // 2. OBEN RECHTS: Die runden, farbcodierten Gefahren-Symbole + R2-Inspektor + Live-PiP-Fenster
-        if (tracker != null)
+        // 2. Oben rechts: Aktions-Symbole + Live-PiP-Fenster (mit sanftem Ausblenden)
+        if (showTopRightThreatOrbs && tracker != null)
         {
             DrawTopRightThreatOrbsAndPiP();
         }
 
-        // 3. UNTEN (im Baumodus): Sternschnuppen-Erinnerungen
-        if (gameManager.currentState == GameState.MacroPlan && inventoryManager != null)
+        // 3. Unten: Kleine Kosten-Perle an den Formen
+        if (showSmallCostBadgeOnSlots && gameManager.currentState == GameState.MacroPlan && inventoryManager != null)
         {
-            DrawBottomMemoryStreamBar();
-        }
-
-        if (shootingStarTimer > 0f)
-        {
-            DrawShootingStarFlight();
+            DrawMinimalSlotCostBadges();
         }
 
         GUI.color = prevColor;
     }
 
     // =====================================================================
-    // 1. OBEN RECHTS: RUNDE GEFAHREN-SYMBOLE + R2-INFO + LIVE-GRID-FENSTER
+    // 1. OBEN LINKS: BIOM-RESONANZEN (OBEN) + ALBTRAUMLEISTE (DARUNTER)
+    // =====================================================================
+
+    private void DrawTopLeftResonanceAndNightmare()
+    {
+        float panelX = 16f;
+        float panelY = 16f;
+        float panelWidth = 310f;
+
+        int biomeCount = (resonanceManager != null && resonanceManager.resonances != null) ? resonanceManager.resonances.Count : 0;
+        float resonanceSectionHeight = biomeCount > 0 ? 34f : 0f;
+        float totalHeight = resonanceSectionHeight + 36f;
+
+        // Hintergrund-Box oben links
+        GUI.color = new Color(0.06f, 0.07f, 0.10f, 0.92f);
+        GUI.Box(new Rect(panelX, panelY, panelWidth, totalHeight), GUIContent.none);
+
+        float currentY = panelY + 6f;
+
+        // A. BIOM-RESONANZ-SYMBOLE & PROZENTE
+        if (biomeCount > 0)
+        {
+            EnsureCircleTexture();
+            float slotWidth = (panelWidth - 16f) / biomeCount;
+
+            GUIStyle resStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 11,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleLeft
+            };
+
+            for (int i = 0; i < biomeCount; i++)
+            {
+                BiomeWeightEntry entry = resonanceManager.resonances[i];
+                float itemX = panelX + 8f + i * slotWidth;
+
+                // Farbiger Biom-Punkt (gleiche Farbe wie auf den Hand-Würfeln & dem Grid!)
+                Color biomeCol = GridManager.Instance != null ? GridManager.Instance.GetZoneColor(entry.zoneType) : Color.green;
+                GUI.color = biomeCol;
+                GUI.DrawTexture(new Rect(itemX, currentY + 4f, 16f, 16f), circleTex);
+
+                // Prozentzahl + in Klammern die Anzahl bereits gebauter Felder dieses Bioms
+                GUI.color = Color.white;
+                string text = $"{entry.displayName} {entry.percentage:0}% [{entry.builtTilesOnGrid}]";
+                GUI.Label(new Rect(itemX + 20f, currentY, slotWidth - 20f, 24f), text, resStyle);
+            }
+
+            currentY += 30f;
+        }
+
+        // B. ALBTRAUMLEISTE DIREKT UNTER DEN RESONANZEN
+        Rect barBgRect = new Rect(panelX + 8f, currentY, panelWidth - 16f, 22f);
+        GUI.color = new Color(0.14f, 0.05f, 0.20f, 0.98f);
+        GUI.Box(barBgRect, GUIContent.none);
+
+        float fillWidth = (barBgRect.width - 4f) * gameManager.NightmareRatio;
+        if (fillWidth > 1f)
+        {
+            GUI.color = Color.Lerp(new Color(0.55f, 0.15f, 0.85f), new Color(0.95f, 0.15f, 0.25f), gameManager.NightmareRatio);
+            GUI.Box(new Rect(barBgRect.x + 2f, barBgRect.y + 2f, fillWidth, barBgRect.height - 4f), GUIContent.none);
+        }
+
+        GUI.color = Color.white;
+        GUIStyle barLabelStyle = new GUIStyle(GUI.skin.label)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            fontStyle = FontStyle.Bold,
+            fontSize = 11
+        };
+        GUI.Label(barBgRect, $"Albtraum: {gameManager.CurrentNightmare:0}%", barLabelStyle);
+    }
+
+    // =====================================================================
+    // 2. OBEN RECHTS: GEFAHREN-SYMBOLE + LIVE-AUSSCHNITT MIT FADE-OUT
     // =====================================================================
 
     private void DrawTopRightThreatOrbsAndPiP()
@@ -160,307 +218,148 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
         EnsureCircleTexture();
 
-        float orbSize = 66f;
-        float spacing = 16f;
-        float rightMargin = 22f;
-        float topY = 20f;
+        float orbSize = 62f;
+        float spacing = 12f;
+        float rightMargin = 20f;
+        float topY = 16f;
 
         float totalWidth = orbs.Count * orbSize + (orbs.Count - 1) * spacing;
         float startX = Screen.width - totalWidth - rightMargin;
-
-        // Dezente Hint-Zeile über/neben den Symbolen für R2
-        GUI.color = new Color(0.8f, 0.88f, 1f, 0.9f);
-        GUIStyle r2HintStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 11,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleRight
-        };
-        string r2Text = tracker.SelectedOrbIndex >= 0
-            ? "[R2 / Tab]: Nächstes Symbol  (Auswahl aktiv)"
-            : "[R2 / Tab]: Symbole inspizieren";
-        GUI.Label(new Rect(startX - 110f, topY + orbSize + 4f, totalWidth + 110f, 20f), r2Text, r2HintStyle);
 
         for (int i = 0; i < orbs.Count; i++)
         {
             ThreatOrbEntry orb = orbs[i];
             bool isSelected = (tracker.SelectedOrbIndex == i);
 
-            // Scale-Bounce bei Zähler-Tick oder R2-Selektion
-            float scaleBoost = orb.pulseAnimTimer * 10f + (isSelected ? 8f : 0f);
+            float scaleBoost = orb.pulseAnimTimer * 8f + (isSelected ? 6f : 0f);
             float currentSize = orbSize + scaleBoost;
 
             float cx = startX + i * (orbSize + spacing) - scaleBoost * 0.5f;
             float cy = topY - scaleBoost * 0.5f;
             Rect orbRect = new Rect(cx, cy, currentSize, currentSize);
 
-            // Äußerer Selektions- oder Warnring (falls Countdown == 1 oder per R2 selektiert)
-            if (isSelected || orb.countdown <= 1)
+            if (isSelected)
             {
-                float ringPulse = isSelected ? 1f : (Mathf.PingPong(Time.time * 5f, 0.5f) + 0.5f);
-                GUI.color = isSelected ? Color.white : new Color(1f, 0.9f, 0.2f, ringPulse);
-                GUI.DrawTexture(new Rect(orbRect.x - 5f, orbRect.y - 5f, orbRect.width + 10f, orbRect.height + 10f), circleTex);
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(orbRect.x - 4f, orbRect.y - 4f, orbRect.width + 8f, orbRect.height + 8f), circleTex);
             }
 
-            // Dunkler Schatten-Kreis dahinter
-            GUI.color = new Color(0.05f, 0.05f, 0.08f, 0.95f);
-            GUI.DrawTexture(new Rect(orbRect.x - 2f, orbRect.y - 2f, orbRect.width + 4f, orbRect.height + 4f), circleTex);
-
-            // Farbiger Hauptkreis (entspricht exakt der Farbe auf dem Grid!)
             GUI.color = orb.orbColor;
-            GUI.DrawTexture(orbRect, circleTex);
+            GUI.DrawTexture(new Rect(orbRect.x + 4f, orbRect.y + 4f, orbRect.width - 8f, orbRect.height - 8f), circleTex);
 
-            // Innerer dunklerer Kern für perfekten Text-Kontrast
-            GUI.color = new Color(0.08f, 0.08f, 0.12f, 0.72f);
-            GUI.DrawTexture(new Rect(orbRect.x + 7f, orbRect.y + 7f, orbRect.width - 14f, orbRect.height - 14f), circleTex);
-
-            // Oben im Kreis: Das Symbol (💀 / 🕷️ / 🌫️)
-            GUI.color = Color.white;
-            GUIStyle iconStyle = new GUIStyle(GUI.skin.label)
+            if (customOrbFrameTexture != null)
             {
-                fontSize = 18,
-                alignment = TextAnchor.UpperCenter,
-                fontStyle = FontStyle.Bold
-            };
-            GUI.Label(new Rect(orbRect.x, orbRect.y + 7f, orbRect.width, 28f), orb.iconSymbol, iconStyle);
+                GUI.color = Color.white;
+                GUI.DrawTexture(orbRect, customOrbFrameTexture, ScaleMode.ScaleToFit, true);
+            }
+            else
+            {
+                GUI.color = new Color(0.08f, 0.08f, 0.12f, 0.75f);
+                GUI.DrawTexture(new Rect(orbRect.x + 7f, orbRect.y + 7f, orbRect.width - 14f, orbRect.height - 14f), circleTex);
+            }
 
-            // Unten im Kreis: Die große Countdown-Zahl
+            if (customDefaultActionIcon != null)
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(orbRect.x + 14f, orbRect.y + 10f, orbRect.width - 28f, orbRect.height - 28f), customDefaultActionIcon, ScaleMode.ScaleToFit, true);
+            }
+            else
+            {
+                GUI.color = Color.white;
+                GUIStyle iconStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = 17,
+                    alignment = TextAnchor.UpperCenter,
+                    fontStyle = FontStyle.Bold
+                };
+                GUI.Label(new Rect(orbRect.x, orbRect.y + 6f, orbRect.width, 26f), orb.iconSymbol, iconStyle);
+            }
+
             GUIStyle countStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 22,
+                fontSize = 20,
                 alignment = TextAnchor.LowerCenter,
                 fontStyle = FontStyle.Bold
             };
-            GUI.color = orb.countdown <= 1 ? new Color(1f, 0.95f, 0.3f) : Color.white;
-            GUI.Label(new Rect(orbRect.x, orbRect.y + 24f, orbRect.width, 34f), orb.countdown.ToString(), countStyle);
+            GUI.color = orb.countdown <= 1 ? new Color(1f, 0.9f, 0.2f) : Color.white;
+            GUI.Label(new Rect(orbRect.x, orbRect.y + 22f, orbRect.width, 34f), orb.countdown.ToString(), countStyle);
         }
 
-        // =========================================================
-        // R2-INSPEKTOR ODER LIVE-PIP-AUSSCHNITT BEI COUNTDOWN = 0
-        // =========================================================
-        bool showPiPTrigger = tracker.PipActiveTimer > 0.01f;
+        // LIVE-KAMERA-AUSSCHNITT (Bleibt länger stehen und verblasst dann sanft über CurrentPipAlpha)
+        float alpha = tracker.CurrentPipAlpha;
         ThreatOrbEntry inspectedOrb = tracker.SelectedOrb;
 
-        if (showPiPTrigger || inspectedOrb != null)
+        if (alpha > 0.01f)
         {
-            float frameWidth = 240f;
-            float frameHeight = 250f;
+            bool isAutoTrigger = tracker.PipActiveTimer > 0.01f;
+            float frameWidth = 216f;
+            float frameHeight = 206f;
             float frameX = Screen.width - frameWidth - rightMargin;
-            float frameY = topY + orbSize + 28f;
+            float frameY = topY + orbSize + 14f;
 
-            Color borderColor = showPiPTrigger ? tracker.PipFrameColor : inspectedOrb.orbColor;
-            string headerText = showPiPTrigger
+            Color baseBorderColor = isAutoTrigger ? tracker.PipFrameColor : (inspectedOrb != null ? inspectedOrb.orbColor : Color.red);
+            string headerText = isAutoTrigger
                 ? tracker.PipEventTitle
-                : $"{inspectedOrb.iconSymbol} {inspectedOrb.title} (in {inspectedOrb.countdown})";
+                : (inspectedOrb != null ? $"{inspectedOrb.title} (in {inspectedOrb.countdown})" : "");
 
-            string detailText = showPiPTrigger
-                ? $"Live-Übertragung vom Grid [{tracker.PipFocusCoord.x}, {tracker.PipFocusCoord.y}]"
-                : $"{inspectedOrb.description}\nZiel-Sektor: [{inspectedOrb.targetGridCoord.x}, {inspectedOrb.targetGridCoord.y}]";
+            GUI.color = new Color(baseBorderColor.r, baseBorderColor.g, baseBorderColor.b, alpha);
+            GUI.Box(new Rect(frameX - 2f, frameY - 2f, frameWidth + 4f, frameHeight + 4f), GUIContent.none);
 
-            // Farbiger Außenrahmen (passend zur Symbolfarbe)
-            GUI.color = borderColor;
-            GUI.Box(new Rect(frameX - 3f, frameY - 3f, frameWidth + 6f, frameHeight + 6f), GUIContent.none);
-
-            // Dunkler Hintergrund des Frames
-            GUI.color = new Color(0.06f, 0.07f, 0.10f, 0.96f);
+            GUI.color = new Color(0.06f, 0.07f, 0.10f, 0.95f * alpha);
             GUI.Box(new Rect(frameX, frameY, frameWidth, frameHeight), GUIContent.none);
 
-            // Titel-Balken
-            GUI.color = borderColor;
-            GUIStyle headerStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 12,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleCenter
-            };
-            GUI.Label(new Rect(frameX + 6f, frameY + 4f, frameWidth - 12f, 22f), headerText, headerStyle);
+            GUI.color = new Color(1f, 1f, 1f, alpha);
+            GUIStyle headerStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            GUI.Label(new Rect(frameX + 4f, frameY + 4f, frameWidth - 8f, 20f), headerText, headerStyle);
 
-            // LIVE-KAMERA-AUSSCHNITT VOM GRID (RenderTexture)
             if (pipRenderTexture != null)
             {
-                Rect texRect = new Rect(frameX + 12f, frameY + 28f, frameWidth - 24f, 156f);
-                GUI.color = Color.white;
+                Rect texRect = new Rect(frameX + 10f, frameY + 26f, frameWidth - 20f, 170f);
+                GUI.color = new Color(1f, 1f, 1f, alpha);
                 GUI.DrawTexture(texRect, pipRenderTexture, ScaleMode.ScaleToFit, false);
-
-                // Fadenkreuz-Markierung in der Mitte des Kamera-Ausschnitts
-                GUI.color = new Color(borderColor.r, borderColor.g, borderColor.b, 0.85f);
-                GUIStyle crossStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
-                GUI.Label(texRect, "⌖", crossStyle);
             }
-
-            // Erklärtext unter dem Kamera-Ausschnitt
-            GUI.color = new Color(0.9f, 0.92f, 0.96f);
-            GUIStyle descStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 11,
-                wordWrap = true,
-                alignment = TextAnchor.UpperLeft
-            };
-            GUI.Label(new Rect(frameX + 10f, frameY + 188f, frameWidth - 20f, 58f), detailText, descStyle);
         }
     }
 
     // =====================================================================
-    // 2. OBEN LINKS: ALBTRAUMLEISTE & RAUM-WARNUNG
+    // 3. UNTEN: KLEINE KOSTEN-ZAHL UNTER DEN SLOTS
     // =====================================================================
 
-    private void DrawTopLeftNightmareAndStatus()
+    private void DrawMinimalSlotCostBadges()
     {
-        bool currentRoomInDanger;
-        string threatWarning = BuildRoomThreatWarning(out currentRoomInDanger);
+        if (inventoryManager.uiSlotTransforms == null) return;
 
-        GUI.color = new Color(0.07f, 0.07f, 0.11f, 0.94f);
-        GUI.Box(new Rect(16f, 16f, 440f, 78f), GUIContent.none);
+        EnsureCircleTexture();
 
-        GUIStyle infoStyle = new GUIStyle(GUI.skin.label)
+        GUIStyle badgeTextStyle = new GUIStyle(GUI.skin.label)
         {
             fontSize = 12,
             fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleLeft
+            alignment = TextAnchor.MiddleCenter
         };
 
-        string roomInfo = "Raum: Hub";
-        if (MacroGridManager.Instance != null)
+        for (int i = 0; i < inventoryManager.uiSlotTransforms.Length; i++)
         {
-            Vector2Int c = MacroGridManager.Instance.CurrentCoordinate;
-            roomInfo = $"Raum [{c.x},{c.y}] (Erschlossen: {MacroGridManager.Instance.VisitedRoomCount})  |  [E/R3]: Neue Hand (-{gameManager.MulliganTickCost})";
-        }
+            if (i >= inventoryManager.hotbarSlots.Length) break;
+            ShapeData card = inventoryManager.hotbarSlots[i];
+            RectTransform slotRect = inventoryManager.uiSlotTransforms[i];
 
-        GUI.color = new Color(0.8f, 0.92f, 1f);
-        GUI.Label(new Rect(26f, 20f, 420f, 22f), roomInfo, infoStyle);
+            if (card == null || slotRect == null || !slotRect.gameObject.activeInHierarchy) continue;
 
-        // Albtraum-Füllbalken
-        Rect barBgRect = new Rect(26f, 46f, 420f, 22f);
-        GUI.color = new Color(0.14f, 0.05f, 0.2f, 0.98f);
-        GUI.Box(barBgRect, GUIContent.none);
+            Vector3 screenPos = slotRect.position;
+            float guiX = screenPos.x;
+            float guiY = Screen.height - screenPos.y + 34f;
 
-        float fillWidth = 416f * gameManager.NightmareRatio;
-        if (fillWidth > 1f)
-        {
-            GUI.color = Color.Lerp(new Color(0.55f, 0.15f, 0.85f), new Color(0.95f, 0.1f, 0.25f), gameManager.NightmareRatio);
-            GUI.Box(new Rect(28f, 48f, fillWidth, 18f), GUIContent.none);
-        }
+            float badgeSize = 22f;
+            Rect badgeRect = new Rect(guiX - badgeSize * 0.5f, guiY - badgeSize * 0.5f, badgeSize, badgeSize);
 
-        GUI.color = Color.white;
-        GUIStyle barLabel = new GUIStyle(GUI.skin.label)
-        {
-            alignment = TextAnchor.MiddleCenter,
-            fontStyle = FontStyle.Bold,
-            fontSize = 11
-        };
-        GUI.Label(barBgRect, $"ALBTRAUM: {gameManager.CurrentNightmare:0}% / {gameManager.MaxNightmare:0}%", barLabel);
-
-        if (!string.IsNullOrEmpty(threatWarning))
-        {
-            GUI.color = currentRoomInDanger ? new Color(0.78f, 0.08f, 0.08f, 0.95f) : new Color(0.55f, 0.22f, 0.05f, 0.95f);
-            Rect warnRect = new Rect(16f, 100f, 440f, 30f);
-            GUI.Box(warnRect, GUIContent.none);
+            bool isSelected = (i == inventoryManager.CurrentSelectedIndex);
+            GUI.color = isSelected ? new Color(0.2f, 0.75f, 0.95f, 0.95f) : new Color(0.18f, 0.2f, 0.25f, 0.9f);
+            GUI.DrawTexture(badgeRect, circleTex);
 
             GUI.color = Color.white;
-            GUI.Label(warnRect, threatWarning, barLabel);
+            GUI.Label(badgeRect, card.tickCost.ToString(), badgeTextStyle);
         }
-    }
-
-    // =====================================================================
-    // 3. UNTEN: ERINNERUNGS-STROM & STERNSCHNUPPEN
-    // =====================================================================
-
-    private void DrawBottomMemoryStreamBar()
-    {
-        ShapeData selected = inventoryManager.CurrentlySelectedCard;
-
-        float boxWidth = 760f;
-        float boxHeight = 62f;
-        float boxX = (Screen.width - boxWidth) * 0.5f;
-        float boxY = Screen.height - 235f;
-
-        GUI.color = new Color(0.06f, 0.09f, 0.15f, 0.94f);
-        Rect infoRect = new Rect(boxX, boxY, boxWidth, boxHeight);
-        GUI.Box(infoRect, GUIContent.none);
-
-        GUIStyle poolStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 12,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter
-        };
-
-        GUI.color = new Color(0.45f, 0.85f, 1f);
-        GUI.Label(new Rect(boxX + 10f, boxY + 6f, 160f, 50f), $"☄️ ERINNERUNGS-QUELLE\n[{inventoryManager.DrawPileCount}] Sternschnuppen", poolStyle);
-
-        GUI.color = new Color(0.75f, 0.5f, 0.95f);
-        GUI.Label(new Rect(boxX + boxWidth - 170f, boxY + 6f, 160f, 50f), $"🌀 VERGESSENS-STRUDEL\n[{inventoryManager.DiscardPileCount}] Verblasst", poolStyle);
-
-        if (selected != null)
-        {
-            GUI.color = selected.category == CardCategory.TacticalSkill
-                ? new Color(1f, 0.85f, 0.35f)
-                : new Color(0.55f, 1f, 0.8f);
-
-            GUIStyle centerStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 13,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleCenter,
-                wordWrap = true
-            };
-
-            string costLabel = selected.tickCost == 0
-                ? "0 Zähler (Gratis)"
-                : $"-{selected.tickCost} Zähler oben rechts";
-
-            GUI.Label(
-                new Rect(boxX + 175f, boxY + 6f, boxWidth - 350f, 50f),
-                $"✦ {selected.shapeName} ({costLabel})\n{selected.description}",
-                centerStyle
-            );
-        }
-    }
-
-    private void DrawShootingStarFlight()
-    {
-        float t = 1f - (shootingStarTimer / 0.65f);
-        float startX = 80f;
-        float targetX = Screen.width * 0.5f;
-        float currentX = Mathf.Lerp(startX, targetX, Mathf.SmoothStep(0f, 1f, t));
-        float currentY = Screen.height - 150f - Mathf.Sin(t * Mathf.PI) * 55f;
-
-        GUI.color = new Color(0.5f, 0.95f, 1f, 1f - t * 0.5f);
-        GUIStyle starStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 18,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter
-        };
-        GUI.Label(new Rect(currentX - 110f, currentY, 220f, 36f), "━══✦☄️ +1 ERINNERUNG", starStyle);
-    }
-
-    private string BuildRoomThreatWarning(out bool currentRoomInDanger)
-    {
-        currentRoomInDanger = false;
-        if (MacroGridManager.Instance == null) return "";
-
-        Vector2Int current = MacroGridManager.Instance.CurrentCoordinate;
-        currentRoomInDanger = MacroGridManager.Instance.IsCellTargetedByBoss(current);
-
-        List<string> dirs = new List<string>();
-        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.up)) dirs.Add("NORD");
-        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.right)) dirs.Add("OST");
-        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.down)) dirs.Add("SÜD");
-        if (MacroGridManager.Instance.IsCellTargetedByBoss(current + Vector2Int.left)) dirs.Add("WEST");
-
-        if (currentRoomInDanger)
-        {
-            int ticks = tracker != null ? tracker.GetBossOrbCountdown() : 1;
-            return $"⚠️ AKUTE GEFAHR: DIESER RAUM WIRD IN {ticks} TICKS GETROFFEN!";
-        }
-
-        if (dirs.Count > 0)
-        {
-            return $"🔥 TÜR GLÜHT ROT [{string.Join(", ", dirs)}] -> Nachbarraum ist markiert!";
-        }
-
-        return "";
     }
 
     private static void EnsureCircleTexture()

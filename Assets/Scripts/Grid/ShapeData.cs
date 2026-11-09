@@ -5,34 +5,38 @@ using UnityEngine;
 public enum BlockModifier
 {
     None,
-    Ice,        // Schneeflocke (Rutschig / Non-Stick)
-    Fire,       // Feuer (Gefahr im Raum)
-    Electric,   // Blitz
-    Poison,     // Gift
-    Shrine,     // Positiv: Senkt Albtraum beim Erschließen/Bauen
-    SkillIcon   // Visueller Marker für Taktik-/Skill-Karten in der Vorschau
+    Ice,
+    Fire,
+    Electric,
+    Poison,
+    Shrine,
+    SkillIcon
 }
 
 public enum CardCategory
 {
-    CubeShape,      // 6er-Faltwürfel zum Platzieren auf dem Grid
-    TacticalSkill   // Sofort-Fähigkeit (Karten ziehen, Zeit-Anker, Läuterung, Heilung)
+    CubeShape,
+    TacticalSkill
 }
 
 public enum TacticalSkillType
 {
     None,
-    DrawCards,          // Zieht sofort X Karten nach
-    DelayBossTimeline,  // Verzögert den nächsten Boss-Puls um X Ticks
-    PurifyBossThreats,  // Entfernt aktive Boss-Warnungen auf dem Grid
-    ReduceNightmare     // Senkt die globale Albtraumleiste um X%
+    DrawCards,
+    DelayBossTimeline,
+    PurifyBossThreats,
+    ReduceNightmare
 }
 
-[System.Serializable]
+[Serializable]
 public class ShapeCell
 {
     public Vector2Int localPosition;
+    public ZoneType assignedZone = ZoneType.Forest;
+    public bool hasAssignedZone = false;
     public List<BlockModifier> modifiers = new List<BlockModifier>();
+
+    public ShapeCell() { }
 
     public ShapeCell(Vector2Int pos)
     {
@@ -49,20 +53,20 @@ public class ShapeCell
     }
 }
 
-[System.Serializable]
+[Serializable]
 public class ShapeData
 {
-    public string shapeName;
+    public string shapeName = "6er-Würfel";
     public CardCategory category = CardCategory.CubeShape;
-    public int tickCost = 1;
-    public string description = "";
+    [Range(0, 5)] public int tickCost = 1;
+    [TextArea(1, 3)] public string description = "";
 
-    // Für Würfel-Karten (und als Mini-Symbol für Skills in der bestehenden UI)
     public List<ShapeCell> cells = new List<ShapeCell>();
 
-    // Für Taktik-/Skill-Karten
     public TacticalSkillType skillType = TacticalSkillType.None;
     public int skillPower = 0;
+
+    public ShapeData() { }
 
     public ShapeData(string name, int cost = 1, string desc = "", CardCategory cardCategory = CardCategory.CubeShape)
     {
@@ -82,7 +86,11 @@ public class ShapeData
 
         foreach (ShapeCell cell in cells)
         {
-            ShapeCell cellCopy = new ShapeCell(cell.localPosition);
+            ShapeCell cellCopy = new ShapeCell(cell.localPosition)
+            {
+                assignedZone = cell.assignedZone,
+                hasAssignedZone = cell.hasAssignedZone
+            };
             cellCopy.modifiers.AddRange(cell.modifiers);
             copy.cells.Add(cellCopy);
         }
@@ -127,5 +135,23 @@ public class ShapeData
         }
 
         return new Vector2Int(maxX - minX + 1, maxY - minY + 1);
+    }
+}
+
+[CreateAssetMenu(fileName = "Card_New", menuName = "Slimily/Card Asset")]
+public class CardAsset : ScriptableObject
+{
+    public ShapeData cardData = new ShapeData();
+
+    [ContextMenu("Fülle mit Standard-Kreuz (6 Blöcke)")]
+    private void FillDefaultCross()
+    {
+        cardData.cells.Clear();
+        cardData.cells.Add(new ShapeCell(new Vector2Int(0, 0)));
+        cardData.cells.Add(new ShapeCell(new Vector2Int(0, 1)));
+        cardData.cells.Add(new ShapeCell(new Vector2Int(0, 2)));
+        cardData.cells.Add(new ShapeCell(new Vector2Int(0, 3)));
+        cardData.cells.Add(new ShapeCell(new Vector2Int(-1, 2)));
+        cardData.cells.Add(new ShapeCell(new Vector2Int(1, 2)));
     }
 }

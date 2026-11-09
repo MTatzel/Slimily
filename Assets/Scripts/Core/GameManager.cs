@@ -109,6 +109,11 @@ public class GameManager : MonoBehaviour
 
         // Neue ausgelagerte Komponenten automatisch anhängen
         threatTracker = GetComponent<ThreatTrackerManager>();
+        if (GetComponent<BiomeResonanceManager>() == null)
+        {
+           gameObject.AddComponent<BiomeResonanceManager>();
+        }
+        
         if (threatTracker == null) threatTracker = gameObject.AddComponent<ThreatTrackerManager>();
 
         if (GetComponent<ThreatOrbsAndPiPHUD>() == null)

@@ -46,23 +46,12 @@ public class ShapePreviewUI : MonoBehaviour
             {
                 if (cell.modifiers.Contains(BlockModifier.SkillIcon))
                 {
-                    img.color = new Color(1f, 0.82f, 0.22f); // Goldgelb für Taktik-/Skill-Karten
+                    img.color = new Color(1f, 0.82f, 0.22f);
                 }
-                else if (cell.modifiers.Contains(BlockModifier.Shrine))
+                else if (cell.hasAssignedZone && GridManager.Instance != null)
                 {
-                    img.color = new Color(0.2f, 0.95f, 0.55f); // Leuchtendes Heil-Grün für Schreine
-                }
-                else if (cell.modifiers.Contains(BlockModifier.Ice))
-                {
-                    img.color = new Color(0.4f, 0.8f, 1f); // Eisblau
-                }
-                else if (cell.modifiers.Contains(BlockModifier.Fire))
-                {
-                    img.color = new Color(1f, 0.3f, 0.2f); // Feuriges Rot
-                }
-                else if (cell.modifiers.Contains(BlockModifier.Poison))
-                {
-                    img.color = new Color(0.75f, 0.3f, 0.95f); // Gift-Violett
+                    // Zeigt direkt die ausgewürfelte Biom-Farbe des Blocks auf der Hand an!
+                    img.color = GridManager.Instance.GetZoneColor(cell.assignedZone);
                 }
                 else
                 {

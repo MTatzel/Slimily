@@ -6,40 +6,60 @@ using UnityEngine.InputSystem;
 [Serializable]
 public class ThreatOrbEntry
 {
-    public TimelineEventType eventType;
-    public string iconSymbol;
-    public string title;
-    public string description;
-    public Color orbColor;
-    public int countdown;
-    public int maxInterval;
+    public TimelineEventType eventType = TimelineEventType.BossMajorPulse;
+    public string iconSymbol = "💀";
+    public string title = "Boss-Aktion";
+    public string description = "";
+    public Color orbColor = new Color(0.9f, 0.2f, 0.2f, 1f);
+    public int countdown = 4;
+    public int maxInterval = 4;
     public Vector2Int targetGridCoord;
-    public bool hasSpecificGridTarget;
+    public bool highlightTargetOnGrid = false;
 
-    // Kurzer Puls-Timer, wenn der Zähler tickt oder bei 0 auslöst
-    public float pulseAnimTimer;
+    [HideInInspector] public float pulseAnimTimer;
 }
 
 public class ThreatTrackerManager : MonoBehaviour
 {
     public static ThreatTrackerManager Instance { get; private set; }
 
-    [Header("Farb-Codierung (Identisch auf UI-Symbol & Grid!)")]
-    public Color bossThreatColor = new Color(0.92f, 0.18f, 0.18f, 1f);    // Karmesinrot (Boss)
-    public Color minionThreatColor = new Color(0.95f, 0.65f, 0.12f, 1f);  // Bernstein/Gelb (Minion)
-    public Color ambientThreatColor = new Color(0.68f, 0.22f, 0.92f, 1f); // Violett (Umwelt/Nebel)
+    [Header("Dynamische Boss-Anbindung")]
+    public bool trackActiveBoss = true;
+    public Color defaultBossOrbColor = new Color(0.92f, 0.18f, 0.18f, 1f);
+
+    [Header("Optionale Test-Symbole (Inspector)")]
+    public List<ThreatOrbEntry> manualInspectorThreats = new List<ThreatOrbEntry>();
+
+    [Header("Live-Kamera-Ausschnitt (PiP) & R2-Inspektion")]
+    [Tooltip("Zeigt bei Countdown = 0 automatisch das kleine Live-Grid-Fenster oben rechts an.")]
+    public bool showPiPWindowOnZero = true;
+    [Tooltip("Wie lange das Live-Fenster voll sichtbar bleibt (in Sekunden), bevor es langsam verblasst.")]
+    public float pipHoldDuration = 2.5f;
+    [Tooltip("Wie lange das sanfte Ausblenden (Fade-Out) dauert (in Sekunden).")]
+    public float pipFadeDuration = 1.5f;
+    public bool allowR2Inspection = true;
 
     private readonly List<ThreatOrbEntry> activeOrbs = new List<ThreatOrbEntry>();
-
-    // R2-Inspektor: -1 = nichts ausgewählt, 0..2 = Index des ausgewählten Symbols oben rechts
     private int selectedOrbIndex = -1;
 
-    // Live-PiP-Kamera-Trigger (wenn ein Zähler 0 erreicht)
     public float PipActiveTimer { get; private set; } = 0f;
-    public float PipMaxDuration { get; private set; } = 2.1f;
     public string PipEventTitle { get; private set; } = "";
     public Color PipFrameColor { get; private set; } = Color.red;
     public Vector2Int PipFocusCoord { get; private set; } = new Vector2Int(25, 25);
+
+    /// <summary>
+    /// Berechnet den aktuellen Alpha-Wert (1.0 während der Haltezeit, danach sanftes Ausblenden auf 0.0).
+    /// </summary>
+    public float CurrentPipAlpha
+    {
+        get
+        {
+            if (SelectedOrb != null) return 1f;
+            if (PipActiveTimer <= 0f) return 0f;
+            if (pipFadeDuration <= 0.01f) return 1f;
+            return Mathf.Clamp01(PipActiveTimer / pipFadeDuration);
+        }
+    }
 
     public IReadOnlyList<ThreatOrbEntry> ActiveOrbs => activeOrbs;
     public int SelectedOrbIndex => selectedOrbIndex;
@@ -53,7 +73,14 @@ public class ThreatTrackerManager : MonoBehaviour
 
     private void Update()
     {
-        HandleR2InspectionInput();
+        if (allowR2Inspection)
+        {
+            HandleR2InspectionInput();
+        }
+        else
+        {
+            selectedOrbIndex = -1;
+        }
 
         for (int i = 0; i < activeOrbs.Count; i++)
         {
@@ -71,9 +98,6 @@ public class ThreatTrackerManager : MonoBehaviour
         SyncBossTargetCoordinate();
     }
 
-    /// <summary>
-    /// R2 auf dem Controller (oder Tab auf der Tastatur) schaltet durch die Gefahren-Symbole oben rechts!
-    /// </summary>
     private void HandleR2InspectionInput()
     {
         var gamepad = Gamepad.current;
@@ -87,73 +111,80 @@ public class ThreatTrackerManager : MonoBehaviour
             selectedOrbIndex++;
             if (selectedOrbIndex >= activeOrbs.Count)
             {
-                selectedOrbIndex = -1; // Nach dem letzten Symbol wieder schließen
+                selectedOrbIndex = -1;
             }
         }
     }
 
     public void InitializeOrbs(int bossInterval = 4)
     {
-        ClearMinionHighlightOnGrid();
+        ClearManualHighlights();
         activeOrbs.Clear();
         selectedOrbIndex = -1;
         PipActiveTimer = 0f;
 
-        int safeBossInterval = Mathf.Max(2, bossInterval);
+        int safeBossInterval = Mathf.Max(1, bossInterval);
 
-        // 1. BOSS-SYMBOL (Karmesinrot)
-        activeOrbs.Add(new ThreatOrbEntry
+        bool hasBossInLevel = GameManager.Instance != null && GameManager.Instance.ActiveBoss != null;
+        if (trackActiveBoss && hasBossInLevel)
         {
-            eventType = TimelineEventType.BossMajorPulse,
-            iconSymbol = "💀",
-            title = "BOSS-AKTION",
-            description = "Der Boss bewegt sich 1 Feld auf dich zu, lässt rot markierte Felder einschlagen und visiert ein neues Ziel an.",
-            orbColor = bossThreatColor,
-            countdown = safeBossInterval,
-            maxInterval = safeBossInterval,
-            targetGridCoord = GetCurrentBossGridCoord(),
-            hasSpecificGridTarget = true
-        });
+            BossBase boss = GameManager.Instance.ActiveBoss;
+            activeOrbs.Add(new ThreatOrbEntry
+            {
+                eventType = TimelineEventType.BossMajorPulse,
+                iconSymbol = "💀",
+                title = boss.BossName,
+                description = "Führt bei 0 den nächsten Boss-Zug auf dem Grid aus.",
+                orbColor = defaultBossOrbColor,
+                countdown = safeBossInterval,
+                maxInterval = safeBossInterval,
+                targetGridCoord = GetCurrentBossGridCoord(),
+                highlightTargetOnGrid = false
+            });
+        }
 
-        // 2. SCHERGEN-/MINION-SYMBOL (Bernstein-Gelb)
-        Vector2Int minionTarget = PickMinionTargetCoordinate();
-        activeOrbs.Add(new ThreatOrbEntry
+        if (manualInspectorThreats != null)
         {
-            eventType = TimelineEventType.MinionSlabTriggered,
-            iconSymbol = "🕷️",
-            title = "SCHERGEN-HINTERHALT",
-            description = "Ein Scherge attackiert die gelb markierte Kachel auf dem Grid (+4% Albtraum, +10% falls du dort stehst).",
-            orbColor = minionThreatColor,
-            countdown = 3,
-            maxInterval = 3,
-            targetGridCoord = minionTarget,
-            hasSpecificGridTarget = true
-        });
-        HighlightMinionTargetOnGrid(minionTarget, true);
+            foreach (ThreatOrbEntry manual in manualInspectorThreats)
+            {
+                if (manual == null) continue;
+                ThreatOrbEntry copy = new ThreatOrbEntry
+                {
+                    eventType = manual.eventType,
+                    iconSymbol = string.IsNullOrEmpty(manual.iconSymbol) ? "!" : manual.iconSymbol,
+                    title = manual.title,
+                    description = manual.description,
+                    orbColor = manual.orbColor,
+                    countdown = Mathf.Max(1, manual.countdown),
+                    maxInterval = Mathf.Max(1, manual.maxInterval),
+                    targetGridCoord = manual.targetGridCoord,
+                    highlightTargetOnGrid = manual.highlightTargetOnGrid
+                };
+                activeOrbs.Add(copy);
 
-        // 3. UMWELT-/NEBEL-SYMBOL (Violett)
-        activeOrbs.Add(new ThreatOrbEntry
-        {
-            eventType = TimelineEventType.AmbientNightmareRipple,
-            iconSymbol = "🌫️",
-            title = "ALBTRAUM-FLUT",
-            description = "Dichter Schattennebel zieht über das gesamte Raster (+Albtraum-Druck, besonders stark auf lila/schwarzen Randfeldern).",
-            orbColor = ambientThreatColor,
-            countdown = 5,
-            maxInterval = 5,
-            targetGridCoord = MacroGridManager.Instance != null ? MacroGridManager.Instance.CurrentCoordinate : new Vector2Int(25, 25),
-            hasSpecificGridTarget = false
-        });
+                if (copy.highlightTargetOnGrid && GridManager.Instance != null)
+                {
+                    GridManager.Instance.HighlightCell(copy.targetGridCoord, copy.orbColor);
+                }
+            }
+        }
     }
 
-    /// <summary>
-    /// Zählt alle Gefahren-Symbole oben rechts um 'ticks' herunter.
-    /// Erreicht ein Symbol 0, blitzt es auf, startet den Live-Kamera-Ausschnitt (PiP) und führt die Aktion aus!
-    /// </summary>
+    [ContextMenu("Inspector-Symbole jetzt neu laden")]
+    public void ReloadOrbsFromInspector()
+    {
+        int interval = GameManager.Instance != null ? GameManager.Instance.MaxFocusPerTurn : 4;
+        InitializeOrbs(interval);
+    }
+
     public void AdvanceAllOrbs(int ticks, EventManager eventManager)
     {
         if (ticks <= 0) return;
-        if (activeOrbs.Count == 0) InitializeOrbs();
+
+        if (activeOrbs.Count == 0 && trackActiveBoss && GameManager.Instance != null && GameManager.Instance.ActiveBoss != null)
+        {
+            InitializeOrbs(GameManager.Instance.MaxFocusPerTurn);
+        }
 
         for (int step = 0; step < ticks; step++)
         {
@@ -161,13 +192,13 @@ public class ThreatTrackerManager : MonoBehaviour
             {
                 ThreatOrbEntry orb = activeOrbs[i];
                 orb.countdown--;
-                orb.pulseAnimTimer = 0.6f;
+                orb.pulseAnimTimer = 0.5f;
 
                 if (orb.countdown <= 0)
                 {
                     TriggerOrbZeroEffect(orb, eventManager);
-                    orb.countdown = orb.maxInterval;
-                    orb.pulseAnimTimer = 1f;
+                    orb.countdown = Mathf.Max(1, orb.maxInterval);
+                    orb.pulseAnimTimer = 0.9f;
                 }
             }
         }
@@ -175,32 +206,15 @@ public class ThreatTrackerManager : MonoBehaviour
 
     private void TriggerOrbZeroEffect(ThreatOrbEntry orb, EventManager eventManager)
     {
-        // Fokus-Koordinate für den Live-Kamera-Ausschnitt (PiP) bestimmen
-        Vector2Int focusCoord = orb.targetGridCoord;
-
-        if (orb.eventType == TimelineEventType.BossMajorPulse)
+        if (showPiPWindowOnZero)
         {
-            focusCoord = GetCurrentBossGridCoord();
+            PipFocusCoord = orb.eventType == TimelineEventType.BossMajorPulse
+                ? GetCurrentBossGridCoord()
+                : orb.targetGridCoord;
+            PipEventTitle = $"⚡ {orb.title}";
+            PipFrameColor = orb.orbColor;
+            PipActiveTimer = pipHoldDuration + pipFadeDuration;
         }
-        else if (orb.eventType == TimelineEventType.MinionSlabTriggered)
-        {
-            focusCoord = orb.targetGridCoord;
-            HighlightMinionTargetOnGrid(orb.targetGridCoord, false);
-
-            // Neues gelbes Ziel für den nächsten Minion-Zyklus wählen
-            orb.targetGridCoord = PickMinionTargetCoordinate();
-            HighlightMinionTargetOnGrid(orb.targetGridCoord, true);
-        }
-        else if (MacroGridManager.Instance != null)
-        {
-            focusCoord = MacroGridManager.Instance.CurrentCoordinate;
-        }
-
-        // Live-Picture-in-Picture-Fenster oben rechts für 2.1 Sekunden aktivieren!
-        PipFocusCoord = focusCoord;
-        PipEventTitle = $"⚡ {orb.title} AUSGELÖST!";
-        PipFrameColor = orb.orbColor;
-        PipActiveTimer = PipMaxDuration;
 
         if (eventManager != null)
         {
@@ -214,7 +228,7 @@ public class ThreatTrackerManager : MonoBehaviour
         for (int i = 0; i < activeOrbs.Count; i++)
         {
             activeOrbs[i].countdown += extraTicks;
-            activeOrbs[i].pulseAnimTimer = 0.8f;
+            activeOrbs[i].pulseAnimTimer = 0.6f;
         }
     }
 
@@ -227,13 +241,11 @@ public class ThreatTrackerManager : MonoBehaviour
                 return activeOrbs[i].countdown;
             }
         }
-        return 4;
+        return GameManager.Instance != null ? GameManager.Instance.MaxFocusPerTurn : 4;
     }
 
     private void SyncBossTargetCoordinate()
     {
-        if (activeOrbs.Count == 0) return;
-
         for (int i = 0; i < activeOrbs.Count; i++)
         {
             if (activeOrbs[i].eventType == TimelineEventType.BossMajorPulse)
@@ -262,44 +274,14 @@ public class ThreatTrackerManager : MonoBehaviour
         return MacroGridManager.Instance != null ? MacroGridManager.Instance.CurrentCoordinate : new Vector2Int(25, 25);
     }
 
-    private Vector2Int PickMinionTargetCoordinate()
-    {
-        Vector2Int baseCoord = MacroGridManager.Instance != null ? MacroGridManager.Instance.CurrentCoordinate : new Vector2Int(25, 25);
-        Vector2Int[] offsets = new Vector2Int[]
-        {
-            new Vector2Int(1, 0),
-            new Vector2Int(-1, 0),
-            new Vector2Int(0, 1),
-            new Vector2Int(0, -1),
-            new Vector2Int(1, 1),
-            new Vector2Int(-1, 1)
-        };
-
-        Vector2Int chosen = baseCoord + offsets[UnityEngine.Random.Range(0, offsets.Length)];
-        if (GridManager.Instance != null)
-        {
-            chosen.x = Mathf.Clamp(chosen.x, 1, GridManager.Instance.width - 2);
-            chosen.y = Mathf.Clamp(chosen.y, 1, GridManager.Instance.height - 2);
-        }
-        return chosen;
-    }
-
-    private void HighlightMinionTargetOnGrid(Vector2Int coord, bool active)
+    private void ClearManualHighlights()
     {
         if (GridManager.Instance == null) return;
-        if (active)
-            GridManager.Instance.HighlightCell(coord, minionThreatColor);
-        else
-            GridManager.Instance.ResetCellHighlight(coord);
-    }
-
-    private void ClearMinionHighlightOnGrid()
-    {
-        for (int i = 0; i < activeOrbs.Count; i++)
+        foreach (var orb in activeOrbs)
         {
-            if (activeOrbs[i].eventType == TimelineEventType.MinionSlabTriggered)
+            if (orb.highlightTargetOnGrid)
             {
-                HighlightMinionTargetOnGrid(activeOrbs[i].targetGridCoord, false);
+                GridManager.Instance.ResetCellHighlight(orb.targetGridCoord);
             }
         }
     }

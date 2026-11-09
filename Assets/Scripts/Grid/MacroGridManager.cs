@@ -83,9 +83,6 @@ public class MacroGridManager : MonoBehaviour
         return HasRoom(targetCoord);
     }
 
-    /// <summary>
-    /// Prüft auf dem Makro-Grid, ob eine bestimmte Koordinate aktuell vom Boss anvisiert wird.
-    /// </summary>
     public bool IsCellTargetedByBoss(Vector2Int coord)
     {
         if (GridManager.Instance == null || GridManager.Instance.grid == null) return false;
@@ -283,13 +280,11 @@ public class MacroGridManager : MonoBehaviour
         bool openSouth = HasRoom(south);
         bool openWest = HasRoom(west);
 
-        // 1. Türen zu gebauten Nachbarräumen öffnen
         room.SetDoorOpen(Direction.North, openNorth);
         room.SetDoorOpen(Direction.East, openEast);
         room.SetDoorOpen(Direction.South, openSouth);
         room.SetDoorOpen(Direction.West, openWest);
 
-        // 2. UMWELT-TELEGRAFIE: Wenn ein Nachbarraum vom Boss anvisiert ist, glüht die Tür rot!
         room.SetDoorWarning(Direction.North, openNorth && IsCellTargetedByBoss(north));
         room.SetDoorWarning(Direction.East, openEast && IsCellTargetedByBoss(east));
         room.SetDoorWarning(Direction.South, openSouth && IsCellTargetedByBoss(south));
@@ -339,6 +334,13 @@ public class MacroGridManager : MonoBehaviour
             UpdateCameraForTransition(targetRoom, deltaPosition);
         }
 
+        // 1. Zuerst verschiebt die Laufrichtung (Nord/Ost/Süd/West) die Biom-Resonanz oben links:
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.OnPlayerMovedInDirection(exitDirection, !wasAlreadyVisited);
+        }
+
+        // 2. Danach wird genau +1 neue Karte für den neuen Raum gezogen (mit den neuen Prozenten!):
         if (!wasAlreadyVisited)
         {
             if (GameManager.Instance != null && GameManager.Instance.inventoryManager != null)
