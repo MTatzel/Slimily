@@ -1,112 +1,95 @@
-# Slimily (Puls-Edition) – Spieldesign-Konzept & Technische Roadmap
+# Slimily – Gameplay-Konzept, Kern-Systeme & Offene Design-Optionen
 
-Das überarbeitete Konzept von **Slimily** vereint die taktische Tiefe eines Grid-Deckbuilders mit dem unterbrechungsfreien Spielfluss eines präzisen 2D-Platformers. Durch den Wechsel vom starren „Zug beenden“-Rundenmodell auf das 4-Puls-Rhythmus-System entfallen künstliche Zwangspausen, geschlossene Türen vor der Nase und hektische Kamerawechsel.
-
----
-
-## 1. Das Gesamtkonzept
-
-### 1.1 Grundprinzip & 360°-Raum-Parcours (Dual-Layer ohne Waffen)
-
-* **Einheitliche Perspektive:** Makro-Übersichtskarte und Mikro-Platformer-Räume nutzen dieselbe orthogonale 2D-Ausrichtung (Norden auf dem Grid entspricht der oberen Tür im Raum).
-* **360°-Movement & Ecken-Kontrolle:** Der Slime klettert nahtlos an Böden, Wänden und Decken entlang, rollt kontrolliert um $90^\circ$-Innen- sowie $270^\circ$-Außenecken und kann direkt auf Kanten landen, dort im $45^\circ$-Winkel anhalten oder diagonal abspringen.
-* **Räume als 360°-Herausforderung:** Da Decken und Wände jederzeit begehbar sind, sind auch die oberen und seitlichen Raumflächen vollwertige Hindernis-Parcours (mit Decken-Gefahren, Non-Stick-Oberflächen und Engstellen), die präzises Ablösen und Springen verlangen.
-* **Waffenloses Gameplay:** Es gibt keine Angriffe oder Schadenswerte. Der Spieler überwindet Gefahren durch Bewegung und besiegt Bosse über Überlebensphasen, Raum-Mechanismen und kluge Grid-Verbindungen.
+Das Konzept von **Slimily** vereint die taktische Vorausplanung eines Grid-Deckbuilders mit dem nahtlosen Bewegungsfluss eines präzisen 2D-Platformers[cite: 1, 7]. Es gibt keine künstlichen Runden-Zwangsstopps, keine Ladebildschirme zwischen Räumen und keine erzwungenen Kamerawechsel[cite: 1, 7].
 
 ---
 
-### 1.2 Das 4-Puls-Rhythmus-System (Statt „Zug beenden“ & Kamera-Unterbrechung)
+## 1. Dual-Layer-Prinzip & 360°-Platforming (Mikro-Ebene)
 
-Das Spiel verzichtet komplett auf einen manuellen „Zug beenden“-Button im Platformer. Stattdessen reagiert die Albtraumwelt im Takt deiner Aktionen über einen Puls-Zähler (Standard: 4 Pulse):
-
-#### Was kostet Pulse?
-* **1 Puls:** Einen 6er-Würfel auf das Makro-Grid legen.
-* **1 Puls:** Einen neuen (noch ungesäuberten) Raum zum ersten Mal betreten.
-* **1 Straf-Puls (+ Albtraum-Anstieg):** Im Platformer von einem Hindernis oder Gegner getroffen werden (`TakeDamage`).
-
-#### Was kostet 0 Pulse (Kostenlos)?
-* Freies Klettern, Springen und Interagieren innerhalb des aktuellen Raums.
-* Das Durchqueren von bereits gesäuberten/besuchten Räumen.
-
-#### Was passiert beim 4. Puls (Der Boss-Schlag)?
-* Sobald der 4. Puls verbraucht wird (egal ob durch Bauen, das Betreten eines neuen Raums oder einen Treffer im Platformer), setzt sich der Zähler sofort wieder auf 4/4 zurück und löst im Hintergrund automatisch genau 1 Boss-/Welt-Aktion aus (`ExecuteTurn`).
-* **Kein Einfrieren, kein Kamera-Zwang:** Der Slime läuft im Raum flüssig weiter; alle Türen zu gebauten Nachbarräumen bleiben jederzeit offen.
-
-#### Warum Stehenbleiben unmöglich / sinnlos ist:
-Da es kein passives „Zug beenden“ mit Gratis-Boni gibt, passiert beim Stehenbleiben im Raum nichts. Fortschritt entsteht nur durch Vorrücken, und jeder Boss-Puls erhöht zusätzlich den Grunddruck der globalen Albtraumleiste (0 % – 100 %). Erreicht die Albtraumleiste 100 %, scheitert der Run und der Slime wacht im Hub auf.
+* **Einheitliche Perspektive (Seitenansicht):** Makro-Übersichtskarte (Grid) und Mikro-Platformer-Räume teilen sich dieselbe orthogonale 2D-Ausrichtung[cite: 1, 7]. Eine Kachel im Norden auf dem Grid entspricht exakt dem oberen Ausgang an der Raumdecke[cite: 1, 7].
+* **Nahtloses 360°-Klettern & Ecken-Kontrolle:** Der Slime haftet an Böden, Wänden und Decken, rollt kontrolliert um $90^\circ$-Innenecken sowie $270^\circ$-Außenecken und kann direkt auf scharfen Kanten im $45^\circ$-Winkel anhalten oder diagonal von ihnen abspringen[cite: 1, 7].
+* **Volles Movement-Repertoire (Bereits umgesetzt):** Neben dem 360°-Oberflächen-Klettern und variablen Sprüngen (inkl. Coyote Time, Jump Buffering und Apex Control) verfügt der Slime über **Run (Sprint)**, **Dash**, **Double Jump (Doppelsprung)** und **Float (Schweben/Gleiten)**[cite: 1, 7].
+* **Räume als 360°-Parcours:** Da alle Flächen und die Luft durch Dash, Double Jump und Float voll nutzbar sind, fungieren auch Decken und Wände als vollwertige Hindernis-Routen (mit Non-Stick-Oberflächen, Stacheln und Engstellen)[cite: 1, 7].
+* **Waffenloses Gameplay:** Der Slime besitzt keine direkten Waffen oder Angriffswerte[cite: 1, 7]. Gefahren und Bosse werden durch präzises Movement, Raum-Mechanismen, Überlebensphasen und geschicktes Bauen auf dem Grid überwunden[cite: 1, 7].
 
 ---
 
-### 1.3 Die Welt & Die visuelle 4-Ebenen-Hierarchie
+## 2. Zeit- & Bedrohungssystem (Aktionssymbole oben rechts)
 
-Um ein „RGB-Disco-Chaos“ bei gleichzeitigen Zonenfarben, Raum-Modifikatoren und Boss-Effekten zu verhindern, nutzt das Grid eine düstere, handgezeichnete Ästhetik (verwitterter Stein, Tusche, Moos, Pergament) mit strikter Trennung in 4 visuelle Ebenen:
+Statt eines „Zug beenden“-Buttons oder einer starren Aktionsleiste reagiert die Welt im Takt der Spieleraktionen über **dynamische Countdown-Symbole am oberen rechten Bildschirmrand**[cite: 7].
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ Ebene 3: Boss-Gefahren      -> Rote Riss-Schraffur, Fadenkreuz, Ketten  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 2: Akteure            -> Plastischer Slime-Marker & Boss-Monster  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 1: Raum-Eigenschaften -> Weiße/Kreideartige Gravur-Glyphen        │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 0: Zone & Status      -> Erdfarbene Steinplatten (Nebel vs Gebaut)│
-└─────────────────────────────────────────────────────────────────────────┘
-```
+### 2.1 Was lässt die Zähler herunterticken?
+* **0 Zähler (Kostenlos):** Freies Bewegen, Klettern, Dashen, Springen und Schweben im aktuellen Raum sowie das Durchqueren bereits besuchter/gesäuberter Räume[cite: 1, 7].
+* **1 Zähler (Standard):** Einen neuen, noch ungesäuberten Raum erstmals betreten oder einen regulären 6er-Würfel auf das Grid bauen[cite: 1, 7].
+* **0 bis 2 Zähler (Kartenabhängig):** Spezielle Bau-Formen oder Fähigkeiten besitzen individuelle Tick-Kosten[cite: 7].
+* **1 Straf-Zähler (+ Albtraum-Anstieg):** Im Platformer von einem Hindernis oder Gegner getroffen werden (`TakeDamage`)[cite: 1, 7].
+* **2 Zähler (Hand erneuern / Mulligan):** Per Tastendruck (`E` / `R3`) die aktuelle Hand abwerfen und sofort 5 neue Formen ziehen[cite: 7].
 
-1. **Ebene 0 – Zone & Bauzustand (Farbe & Helligkeit):**
-   * Im Zentrum liegt der helle, sichere Hub. Darum gruppieren sich 3 Tier-1-Zonen (z. B. Wald = Moosgrün, Meer = Tiefsee-Blau, Ruinen = Ocker-Sandstein) sowie weiter außen bedingte Tier-2-Zonen (z. B. Sumpf am Wald) und der lila/schwarze Albtraum-Rand.
-   * Im Nebel schimmern die Zonenfarben dunkel durch den Rauch; gebaute Kacheln sind voll ausgeleuchtete, strukturierte Steinplatten in der jeweiligen Zonenfarbe.
-2. **Ebene 1 – Kachel-Modifikatoren (Monochrome Gravuren):**
-   * Eigenschaften wie Eis-Physik (Schneeflocke), Schalter-Räume (Zahnrad), Teleporter (Ringe) oder Schreine werden als einfarbige, helle Kreide-/Stein-Symbole auf der Kachel dargestellt und verändern niemals die Grundfarbe der Zone.
-3. **Ebene 2 – Akteure:**
-   * Der leuchtende Slime-Tropfen und die plastische $2\times 2$-Silhouette des Bosses heben sich durch klare Konturen und Schattenwurf vom Untergrund ab.
-4. **Ebene 3 – Boss-Gefahren & Manipulationen (Rahmen, Risse & Kanten):**
-   * **Angriffszonen:** Keine deckende rote Fläche, sondern ein rot glühender Rahmen mit diagonaler Schraffur und glimmenden Rissen, durch die Zone und Symbol voll sichtbar bleiben.
-   * **Entschärfungs-Epizentrum:** Ein pulsierendes rotes Fadenkreuz markiert das Feld, in dem der Angriff im Raum abgebrochen werden kann.
-   * **Verschiebungen & Sperren:** Kleine Doppelpfeile (`>>`) zeigen Kachel-Verschiebungen an; Ketten und Dornenrahmen auf der Kachel-Grenze markieren verriegelte Türen.
+### 2.2 Aufbau & Verhalten der Aktionssymbole
+* **Dynamische Anzahl (0 bis X):** Oben rechts werden nur dann Medaillons eingeblendet, wenn tatsächlich eine Aktion von Boss, Minion oder Umwelt angekündigt ist[cite: 7]. Plant ein Boss zwei unterschiedliche Aktionen gleichzeitig, erscheinen zwei separate Symbole mit eigenem Countdown.
+* **Visuelle Kodierung (Wer, Was, Wann, Wo):**
+  * **Rahmenform = WER:** Gezacktes Wappen (Boss), runder Steinring (Minion/Scherge), Raute (globaler Umwelteffekt).
+  * **Innensymbol = WAS:** Zeigt den Effekt (z. B. Krater = Raum zerstören[cite: 1, 7], Ketten = Türen sperren[cite: 1, 7], Dornen/Gift = Raumgefahr[cite: 1, 7]).
+  * **Zahl = WANN:** Verbleibende Ticks bis zur Auslösung[cite: 7].
+  * **Farbe = WO:** Entspricht 1:1 der Farbmarkierung der betroffenen Zielkacheln auf dem Makro-Grid[cite: 7].
+* **R2-Inspektor & Live-Kamera-Ausschnitt (Picture-in-Picture):**
+  * Mit `R2` (oder `Tab`) kann der Spieler jederzeit durch die Symbole oben rechts schalten, um Details und den Zielsektor im Live-Kamera-Ausschnitt zu prüfen[cite: 7].
+  * Erreicht ein Zähler `0`, wird die Aktion nahtlos im Hintergrund ausgeführt[cite: 1, 7]. Gleichzeitig öffnet sich oben rechts unter den Symbolen automatisch das kleine **Live-PiP-Fenster**, zeigt für ca. 2,5 Sekunden live den Einschlag/Zug auf dem Grid und blendet sich danach über 1,5 Sekunden sanft wieder aus (`Fade-Out`), während der Spieler im Raum unterbrechungsfrei weiterläuft[cite: 7].
 
 ---
 
-### 1.4 Bausystem: 6er-Faltwürfel, Bau-Reichweite & Raum-Boni
+## 3. Biom-Resonanz, Dunkles Grid & Albtraumleiste (Oben links)
 
-* **11 echte 6er-Würfelnetze (Hexominos):** Karten falten sich beim Platzieren in 6 zusammenhängende Räume auf und nehmen jeweils die Zone des darunterliegenden Feldes an.
-* **Bau-Reichweite (Tether-Regel gegen den Hub-Autobahn-Exploit):** Ein neuer Würfel darf nur platziert werden, wenn mindestens eine seiner 6 Kacheln im Umkreis von maximal 2 Feldern um die aktuelle Position des Slimes (`MacroSlimeMarker`) liegt und an ein gebautes Feld andockt. Der Spieler muss im Platformer vorrücken, um weiter vorne neue Wege anzubauen.
-* **Aktive Kachel-Boni im Raum:** Legt man eine Kachel mit einem positiven Effekt (z. B. Schrein zur Albtraum-Senkung oder Teleporter), befindet sich dieser im Platformer-Raum an einer riskanten Position abseits des direkten Durchgangswegs.
+### 3.1 Ruhiges, dunkles Grid (Keine festen Farb-Sektoren im Nebel)
+* Das unbebaute Makro-Grid ist im Nebel (`CellState.Empty`) komplett einheitlich dunkelgrau gehalten, um visuelle Reizüberflutung zu vermeiden[cite: 7].
+* Nur der Start-Hub im Zentrum und der gefährliche lila/schwarze Außenrand (`PurpleNightmare` / `BlackVoid`) sind vorab auf dem Raster markiert[cite: 7].
 
----
+### 3.2 Die Biom-Resonanz (Oben links)
+* Oben links sieht der Spieler die aktuelle **Biom-Resonanz** in Prozent (Start im Hub z. B.: `Wald 80% | Ruinen 10% | Meer 10%`) sowie in eckigen Klammern die Anzahl der bereits auf dem Grid gebauten Kacheln jedes Bioms (`[Gebaut-Zähler]`)[cite: 7].
+* **Dynamische Verschiebung durch Laufrichtung:** Verlässt der Slime im Platformer einen Raum durch eine Tür (Nord, Ost, Süd, West), verschiebt sich die Resonanz-Anzeige oben links automatisch um einen einstellbaren Prozentsatz zugunsten des Bioms dieser Himmelsrichtung (z. B. Norden stärkt *Ruinen*, Osten stärkt *Meer*, Süden/Westen stärkt *Wald*)[cite: 7].
+* **Modulare Schnittstelle:** Über dieselbe Schnittstelle (`ShiftResonance`) können auch Bosse, Schreine oder Events die Biom-Wahrscheinlichkeiten manipulieren[cite: 7].
 
-### 1.5 Umwelt-Telegrafie im Raum & Die 4 Boss-Archetypen
-
-#### Wie der Spieler Boss-Aktionen spürt, OHNE dass die Kamera rauszoomt:
-* **Boss agiert in der Ferne:** Kurzes Raum-Beben, dumpfes Grollen und ein Partikel-/Schatten-Schauer aus der Himmelsrichtung des Bosses. Der Spieler läuft ohne Unterbrechung weiter und kann bei Bedarf selbst kurz die Schnellkarte (`MapView` per Touchpad / `M`) antippen.
-* **Nachbarraum ist rot markiert:** Die Tür (`RoomDoor`) in diese Himmelsrichtung glüht und raucht im aktuellen Raum rot.
-* **Aktueller Raum ist rot markiert:** Glühende Risse überziehen den Raumhintergrund, und oben im HUD warnt ein Countdown („Einschlag hier in X Pulsen!“).
-* **Aktives Entschärfen statt Weglaufen:** Da das bloße Zurückweichen in gesäuberte Räume 0 Pulse kostet, bestraft ein nicht verhinderter Boss-Einschlag deine Infrastruktur (zerstört gebaute Kacheln via `RemoveRoomAt` oder korrumpiert sie lila). Dringt der Spieler jedoch rechtzeitig in das Fadenkreuz-Epizentrum vor und betätigt den Unterbrecher im Raum, bricht er den Cast ab (`CancelCast`) und schwächt den Boss.
-
-#### Die 4 Boss-Archetypen (Kein stupides 1:1-Hinterherlaufen)
-1. **Die Festung / Der Belagerer (z. B. Ruinen):** Stationärer $2\times 2$-Turm. Nimmt alle 4 Pulse deine gebauten Straßen unter Beschuss, dreht Kacheln oder verriegelt Türen (`LockDoors`), bis du ihn erreichst und im Arena-Raum überlebst.
-2. **Der Saboteur / Jäger (z. B. Wald):** Bewegt sich auf deinen gebauten Kacheln gezielt zu deinen Knotenpunkten/Schreinen, um deine Route zu kappen – oder bricht bei Kontakt direkt in deinen aktuellen Platformer-Raum ein.
-3. **Das Myzel / Netzwerk (z. B. Sumpf):** Reiner Grid-Boss ohne Monster-Token. Besitzt 3 verteilte Herzkammern im Nebel, die der Spieler über eine durchgehende Kette aus 6er-Würfeln miteinander verbinden („kurzschließen“) und im Raum kappen muss.
-4. **Der Mahlstrom (z. B. Meer):** Zieht alle 4 Pulse die unterste Reihe deiner gebauten Kacheln (samt Slime) um 1 Feld Richtung Abgrund.
+### 3.3 Die globale Albtraumleiste (0 % – 100 %)
+* Sitzt direkt unter der Biom-Resonanz und ersetzt klassische Lebenspunkte[cite: 1, 7].
+* Steigt bei Treffern im Raum, bei ausgelösten Gegner-Symbolen, bei Raumzerstörung unter dem Slime sowie beim Aufenthalt auf lila/schwarzen Randfeldern[cite: 1, 7].
+* Sinkt durch Schreine und erfolgreiche Konter[cite: 1, 7]. Bei 100 % scheitert der Run und der Slime erwacht wieder im Hub[cite: 1, 7].
 
 ---
 
-### 1.6 Deckbuilding (Dual-Use-Karten) & Run-Struktur
+## 4. Hand-Formen (6er-Würfel), Farb-Snapshot & Bausystem (Unten)
 
-* **Dual-Use-Karten (Kein „Dead Draw“):** Jede Karte im Deck (Start: 8, Ausbau auf 14–18) kann entweder oben auf dem Grid als 6er-Würfel gebaut werden (1 Puls) oder unten im Platformer für 0 Pulse geopfert werden, um sofort einen Überlebens-Effekt im Raum auszulösen (z. B. Schild gegen nächsten Treffer/Straf-Puls, Türen knacken, Schwerkraft-Impuls).
-* **Run-Struktur & Adaptiver Endboss:** Ein Run dauert ca. 20–30 Minuten und führt durch 2–3 Zonen zum Endboss, der die Fähigkeiten genau jener Zonen-Bosse übernimmt, die der Spieler auf seiner Route besiegt hat.
+* **Reine Geometrie im Deck (`CardAsset`):** Karten werden modular als ScriptableObjects (oder über die Inspector-Liste im `InventoryManager`) verwaltet und definieren zunächst nur die 6er-Würfelnetz-Form (Hexomino), die Tick-Kosten und optionale Modifikatoren[cite: 7].
+* **Farb-Snapshot beim Ziehen:** In dem Moment, in dem eine Form vom Nachziehstapel auf die Hand gezogen wird, würfelt jeder ihrer 6 Blöcke anhand der aktuellen **Biom-Resonanz** (oben links) sein Biom aus[cite: 7].
+* **Volle Planbarkeit in der Hand:** Die ausgewürfelten Biom-Farben der 6 Blöcke sind sofort unten in der Hand-Vorschau sichtbar[cite: 7]. Dreht der Spieler die Form im Baumodus (`L1`/`R1` oder `Q`/`E`), wandern die Farben exakt mit[cite: 7]. Beim Platzieren auf dem Grid überträgt jeder Block seine Farbe und sein Biom dauerhaft auf die Grid-Kachel[cite: 7].
+* **Nachschub durch Raum-Fortschritt (Clear-Draw):** Immer wenn der Slime im Platformer einen **neuen, ungesäuberten Raum** betritt, zieht er automatisch `+1` neue Form (mit den neuen Resonanz-Prozenten!) auf die Hand[cite: 7].
+* **Tether-Regel (Bau-Reichweite):** Ein neuer 6er-Würfel muss an mindestens ein bereits gebautes Feld angrenzen **und** mindestens einer seiner 6 Blöcke muss im Umkreis von maximal 2 Feldern um die aktuelle Slime-Position liegen[cite: 1, 7].
+* **Modulare Test-Schalter:** Im Inspector des `InventoryManager` können Fähigkeiten-Karten (`includeSkillCards`) und Block-Modifikatoren (`includeBlockModifiers` für Feuer, Eis, Gift, Schrein) jederzeit per Haken ein- oder ausgeschaltet werden, ohne Code zu löschen[cite: 7].
 
 ---
 
-## 2. Abgleich: Was ist bereits umgesetzt vs. Was muss geändert werden?
+## 5. Offene Design-Optionen & Nächste Ausbaustufen
 
-Durch die Vorarbeit in Schritt 1–3 und das Ecken-Update steht bereits ein Großteil der Technik. Der Umbau auf das 4-Puls-System erfordert vor allem das Entfernen der alten Runden-Stopps in drei bestehenden Skripten:
+Die folgenden Punkte sind architektonisch bereits vorbereitet und können je nach Spielgefühl beim Testen flexibel entschieden oder kombiniert werden:
 
-| System / Skript | Aktueller Stand im Code (inkl. Schritt 1–3) | Was jetzt geändert / noch umgesetzt werden muss |
-| :--- | :--- | :--- |
-| **Steuerung & Ecken**<br>`PlatformerSlimeController.cs`<br>`GroundedState.cs`<br>`AirborneState.cs`<br>`PhysicsData.cs` | **Fertig umgesetzt:** 360°-Klettern, sanftes Rollen & Stehenbleiben auf $270^\circ$-Außenecken, $90^\circ$-Innenecken-Bremse, Variable Jump, Coyote Time, Apex Control, Squash & Stretch sowie `TakeDamage()` mit Blink-Unverwundbarkeit. | **Keine Änderung an der Physik nötig!**<br>Lediglich `TakeDamage()` friert den Slime bei 0 Fokus nicht mehr ein, sondern zieht einfach 1 Puls ab. |
-| **Puls-Zähler & Rundenfluss**<br>`GameManager.cs`<br>`EventManager.cs` | **Noch auf altem Stand (Zwangsstopp):** Zählt `currentFocus` von 4 auf 0 herunter. Bei 0 Fokus durch Treffer friert der Slime ein (`SetSlimeActive(false)`), die Kamera fährt zwangsweise hoch in `EnemyTurn` und zeigt `TurnBannerUI`-Banner (ZWANGSSTOPP / GEGNERPHASE / DEIN ZUG). | **Umbau auf 4-Puls-System (Wichtigste Änderung):**<br>1. Zwangsstopp, Slime-Einfrieren und Kamera-Rauszoomen aus dem `FreeRoam` entfernen.<br>2. Sobald `currentFocus` (Pulse) 0 erreicht, füllt er sich sofort wieder auf 4 auf und triggert im Hintergrund `ExecuteBossPulse()`.<br>3. Bist du im Platformer, läuft ein kurzes Kamera-Rumpeln ab statt des Kamerawechsels; bist du im Baumodus (`MacroPlan`), siehst du den Boss-Zug direkt auf dem Grid. |
-| **Raumübergänge & Türen**<br>`MacroGridManager.cs`<br>`Room.cs` | **Teilweise umgesetzt:** Merkt sich besuchte Räume in `visitedRooms` (neue Räume kosten 1, besuchte 0). Aber: Aktuell sperrt `UpdateRoomDoors()` alle Türen zu neuen Räumen physisch zu, sobald `currentFocus == 0` ist. | **Kleine Anpassung:**<br>1. Tür-Sperre bei 0 Fokus entfernen (`HasRoom` statt `CanEnterRoomAt`), da sich der Puls-Zähler bei 0 sofort wieder auf 4 zurücksetzt und den Boss-Tick auslöst.<br>2. Wenn ein Nachbarraum auf dem Grid `isTargeted` ist, Tür im Raum optisch rot einfärben (Umwelt-Telegrafie). |
-| **Bau-Regeln**<br>`PlacementManager.cs` | **Noch auf altem Stand:** Prüft in `CanPlaceShape()` nur, ob der Würfel irgendwo an ein bereits gebautes Feld (`CellState.Built`) angrenzt $\rightarrow$ erlaubt noch den „Hub-Autobahn-Exploit“. | **Kleine Ergänzung (ca. 10 Zeilen):**<br>Prüfung `maxBuildDistanceFromSlime = 2` in `CanPlaceShape()` einbauen: Mindestens eine Kachel des neuen 6er-Würfels muss $\le 2$ Felder vom aktuellen Raum des Slimes entfernt sein. |
-| **Grid, Zonen & 6er-Würfel**<br>`GridManager.cs`<br>`GridCell.cs`<br>`InventoryManager.cs` | **Grundfunktion umgesetzt:** Hub, Tier-1/Tier-2-Zonen, farbiger Nebel, lila/schwarzer Rand und die 6er-Würfelnetze (Hexominos) laufen bereits. | **Späteres Polish (für den ersten Test noch nicht zwingend):**<br>Weiße Modifikator-Icons auf `GridCell` anzeigen und das rote Warn-Overlay als Schraffur/Rahmen statt Vollfarbe darstellen. |
-| **Boss-Verhalten & Konter**<br>`BossBase.cs`<br>`BossController.cs` | **Noch auf altem Stand:** Boss läuft in `MoveTowardsSlimeRoutine()` 1 Feld auf den Slime zu und zerstört 1 Feld vor sich (`DestroyRoom`). Notfall-Schleudern bei Raumzerstörung unter dem Slime ist bereits drin. | **Mittelfristiger Ausbau:**<br>Boss markiert $3\times 3$-Gefahrenzonen mit 1 Epizentrum-Feld (Fadenkreuz). Betritt der Slime das Epizentrum vor Ablauf der Pulse, wird der Angriff abgebrochen (`CancelCast`) und der Boss geschwächt. |
+### Option A: Hand-Management & Fähigkeiten-Aufbewahrung
+1. **Klassisches Handlimit (Aktuell aktiv):** Bei 5 Karten auf der Hand stoppt das Nachziehen, bis wieder etwas gebaut oder per Mulligan (`E`/`R3`) abgeworfen wird[cite: 7].
+2. **Fließband-Hand (Conveyor-Belt / FIFO):** Betritt der Spieler bei voller Hand einen neuen Raum, schiebt sich die neue Form links rein und drückt automatisch die älteste Form rechts in den Ablagestapel. *Vorteil:* Verhindert das endlose Aufsparen von einfachen Start-Würfeln aus dem Hub, ohne die Farben bestehender Handkarten unvorhersehbar zu ändern.
+3. **Spezial-Fähigkeiten sichern:**
+   * *Variante 1 (Pin-Funktion):* Der Spieler kann genau 1 Element auf seiner Hand per Taste „anpinnen“, damit es nicht vom Fließband oder Mulligan abgeworfen wird.
+   * *Variante 2 (Getrennte Slots):* 4 Slots unten für reine 6er-Bauformen + 1–2 separate Fassungen daneben speziell für gezogene Fähigkeiten/Impulse.
+
+### Option B: Biom-Nachbarschafts-Effekte (Farb-Puzzeln auf dem Grid)
+Da Würfel oft gemischte Biom-Farben besitzen und drehbar sind[cite: 7], lassen sich beim Anlegen belohnende Puzzel-Regeln aktivieren:
+1. **Biom-Harmonie:** Dockt ein neuer Block an ein bereits liegendes Feld derselben Biom-Farbe an, gibt es einen kleinen Bonus (z. B. `-1 %` bis `-2 %` Albtraum).
+2. **Cluster-Meilensteine:** Bilden z. B. 8 zusammenhängende Felder derselben Farbe ein geschlossenes Gebiet, spawnt im letzten Raum automatisch ein Schrein oder ein positiver Raum-Effekt.
+3. **Biom-Kombinationen:** Bestimmte Farbgrenzen erzeugen Spezialeffekte (z. B. *Wald + Meer* = Heilquelle; *Ruinen + Albtraum* = schwerer Herausforderungsraum mit Trinket-Belohnung).
+
+### Option C: Boss-Trigger & Boss-Mechaniken über Biom-Zähler
+Weil Bosse durch das dynamische Biom-System nicht mehr an einen festen 120°-Karten-Sektor gefesselt sind[cite: 7], ergeben sich neue Möglichkeiten:
+1. **Erwachen & Phasenwechsel über `[Gebaut-Zähler]`:** Ein Boss spawnt oder wechselt seine Phase erst, wenn eine bestimmte Anzahl eines Bioms auf dem Grid liegt (z. B. *„Bei 20 gebauten Wald-Feldern erwacht der Jäger“*)[cite: 7].
+2. **Biom-Konter gegen Bosse:** Ein Ruinen-Festungsboss ist gepanzert, solange Ruinen dominieren – der Spieler muss gezielt in Richtung Wald-Resonanz laufen und X Wald-Felder an den Boss heranbauen, um seine Rüstung zu überwuchern.
+3. **Resonanz-Vergiftung durch Boss-Angriffe:** Statt nur Räume zu löschen, kann ein Boss-Angriff `30 % Sumpf/Albtraum` in die Resonanz oben links mischen, sodass neu gezogene Würfel gefährliche Kacheln enthalten, bis der Spieler einen Reinigungs-Schrein erreicht.
+
+### Option D: Aktives Entschärfen im Raum & Passive Trinkets
+1. **Epizentrum-Konter (`CancelCast`):** Größere Boss-Gefahrenzonen auf dem Grid erhalten 1 markiertes Fadenkreuz-Feld[cite: 1, 7]. Erreicht der Slime diesen Raum vor Ablauf des Symbol-Countdowns und aktiviert den Unterbrecher im Platformer-Parcours, bricht der Boss-Angriff ab[cite: 1, 7].
+2. **Trinkets (Relikte):** Dauerhafte passive Upgrades, die das erweiterte Movement (Dash, Double Jump, Float), die Biom-Resonanz und die Countdown-Symbole verknüpfen (z. B. *„Beim Mischen des Ablagestapels erhöht sich der Countdown aller Gefahren-Symbole um +1“*).

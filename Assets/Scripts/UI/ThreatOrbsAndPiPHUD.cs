@@ -112,19 +112,16 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
         Color prevColor = GUI.color;
 
-        // 1. Oben links: Biom-Resonanzen + Albtraumleiste darunter
         if (showTopLeftResonanceAndNightmare)
         {
             DrawTopLeftResonanceAndNightmare();
         }
 
-        // 2. Oben rechts: Aktions-Symbole + Live-PiP-Fenster (mit sanftem Ausblenden)
         if (showTopRightThreatOrbs && tracker != null)
         {
             DrawTopRightThreatOrbsAndPiP();
         }
 
-        // 3. Unten: Kleine Kosten-Perle an den Formen
         if (showSmallCostBadgeOnSlots && gameManager.currentState == GameState.MacroPlan && inventoryManager != null)
         {
             DrawMinimalSlotCostBadges();
@@ -133,27 +130,33 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         GUI.color = prevColor;
     }
 
-    // =====================================================================
-    // 1. OBEN LINKS: BIOM-RESONANZEN (OBEN) + ALBTRAUMLEISTE (DARUNTER)
-    // =====================================================================
-
     private void DrawTopLeftResonanceAndNightmare()
     {
         float panelX = 16f;
         float panelY = 16f;
-        float panelWidth = 310f;
+        float panelWidth = 320f;
 
-        int biomeCount = (resonanceManager != null && resonanceManager.resonances != null) ? resonanceManager.resonances.Count : 0;
-        float resonanceSectionHeight = biomeCount > 0 ? 34f : 0f;
+        List<BiomeWeightEntry> visibleBiomes = new List<BiomeWeightEntry>();
+        if (resonanceManager != null && resonanceManager.resonances != null)
+        {
+            for (int i = 0; i < resonanceManager.resonances.Count; i++)
+            {
+                if (resonanceManager.resonances[i].percentage > 0)
+                {
+                    visibleBiomes.Add(resonanceManager.resonances[i]);
+                }
+            }
+        }
+
+        int biomeCount = visibleBiomes.Count;
+        float resonanceSectionHeight = biomeCount > 0 ? 32f : 0f;
         float totalHeight = resonanceSectionHeight + 36f;
 
-        // Hintergrund-Box oben links
         GUI.color = new Color(0.06f, 0.07f, 0.10f, 0.92f);
         GUI.Box(new Rect(panelX, panelY, panelWidth, totalHeight), GUIContent.none);
 
         float currentY = panelY + 6f;
 
-        // A. BIOM-RESONANZ-SYMBOLE & PROZENTE
         if (biomeCount > 0)
         {
             EnsureCircleTexture();
@@ -161,31 +164,32 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
             GUIStyle resStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 11,
+                fontSize = 12,
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft
             };
 
             for (int i = 0; i < biomeCount; i++)
             {
-                BiomeWeightEntry entry = resonanceManager.resonances[i];
+                BiomeWeightEntry entry = visibleBiomes[i];
                 float itemX = panelX + 8f + i * slotWidth;
 
-                // Farbiger Biom-Punkt (gleiche Farbe wie auf den Hand-Würfeln & dem Grid!)
                 Color biomeCol = GridManager.Instance != null ? GridManager.Instance.GetZoneColor(entry.zoneType) : Color.green;
                 GUI.color = biomeCol;
                 GUI.DrawTexture(new Rect(itemX, currentY + 4f, 16f, 16f), circleTex);
 
-                // Prozentzahl + in Klammern die Anzahl bereits gebauter Felder dieses Bioms
                 GUI.color = Color.white;
-                string text = $"{entry.displayName} {entry.percentage:0}% [{entry.builtTilesOnGrid}]";
+                string text = $"{entry.displayName} {entry.percentage}%";
+                if (entry.builtTilesOnGrid > 0)
+                {
+                    text += $" [{entry.builtTilesOnGrid}]";
+                }
                 GUI.Label(new Rect(itemX + 20f, currentY, slotWidth - 20f, 24f), text, resStyle);
             }
 
-            currentY += 30f;
+            currentY += 28f;
         }
 
-        // B. ALBTRAUMLEISTE DIREKT UNTER DEN RESONANZEN
         Rect barBgRect = new Rect(panelX + 8f, currentY, panelWidth - 16f, 22f);
         GUI.color = new Color(0.14f, 0.05f, 0.20f, 0.98f);
         GUI.Box(barBgRect, GUIContent.none);
@@ -206,10 +210,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         };
         GUI.Label(barBgRect, $"Albtraum: {gameManager.CurrentNightmare:0}%", barLabelStyle);
     }
-
-    // =====================================================================
-    // 2. OBEN RECHTS: GEFAHREN-SYMBOLE + LIVE-AUSSCHNITT MIT FADE-OUT
-    // =====================================================================
 
     private void DrawTopRightThreatOrbsAndPiP()
     {
@@ -285,7 +285,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
             GUI.Label(new Rect(orbRect.x, orbRect.y + 22f, orbRect.width, 34f), orb.countdown.ToString(), countStyle);
         }
 
-        // LIVE-KAMERA-AUSSCHNITT (Bleibt länger stehen und verblasst dann sanft über CurrentPipAlpha)
         float alpha = tracker.CurrentPipAlpha;
         ThreatOrbEntry inspectedOrb = tracker.SelectedOrb;
 
@@ -320,10 +319,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
             }
         }
     }
-
-    // =====================================================================
-    // 3. UNTEN: KLEINE KOSTEN-ZAHL UNTER DEN SLOTS
-    // =====================================================================
 
     private void DrawMinimalSlotCostBadges()
     {

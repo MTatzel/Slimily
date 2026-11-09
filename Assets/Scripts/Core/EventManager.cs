@@ -4,9 +4,9 @@ using UnityEngine;
 
 public enum TimelineEventType
 {
-    MinionSlabTriggered,    // Gelbes Schergen-Symbol erreicht 0
-    AmbientNightmareRipple, // Violettes Umwelt-Symbol erreicht 0
-    BossMajorPulse          // Rotes Boss-Symbol erreicht 0
+    MinionSlabTriggered,
+    AmbientNightmareRipple,
+    BossMajorPulse
 }
 
 public class EventManager : MonoBehaviour
@@ -64,8 +64,6 @@ public class EventManager : MonoBehaviour
     {
         if (gameManager == null) gameManager = GameManager.Instance;
 
-        Debug.Log("--- [SYMBOL = 0] 🕷️ SCHERGEN-HINTERHALT AUSGELÖST! ---");
-
         if (gameManager != null)
         {
             gameManager.TriggerMicroCameraRumble(intensity: 0.22f, duration: 0.25f);
@@ -79,8 +77,6 @@ public class EventManager : MonoBehaviour
     private IEnumerator ExecuteAmbientRippleRoutine()
     {
         if (gameManager == null) gameManager = GameManager.Instance;
-
-        Debug.Log("--- [SYMBOL = 0] 🌫️ ALBTRAUM-FLUT AUSGELÖST! ---");
 
         if (gameManager != null)
         {
@@ -98,8 +94,6 @@ public class EventManager : MonoBehaviour
         if (gameManager == null) gameManager = GameManager.Instance;
         if (gridManager == null) gridManager = GridManager.Instance;
 
-        Debug.Log("--- [SYMBOL = 0] 💀 BOSS-AKTION AUSGELÖST (LIVE-PIP AKTIV)! ---");
-
         if (gameManager != null)
         {
             gameManager.TriggerMicroCameraRumble(intensity: 0.35f, duration: 0.38f);
@@ -108,6 +102,11 @@ public class EventManager : MonoBehaviour
         if (boss != null)
         {
             yield return StartCoroutine(boss.ExecuteTurn());
+        }
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.OnBossPulseTriggered();
         }
 
         if (gameManager != null && gameManager.NightmarePerTurn > 0f)

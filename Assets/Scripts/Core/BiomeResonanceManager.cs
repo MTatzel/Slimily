@@ -7,10 +7,10 @@ public class BiomeWeightEntry
 {
     public ZoneType zoneType;
     public string displayName;
-    [Range(0f, 100f)] public float percentage;
+    [Range(0, 100)] public int percentage;
     [HideInInspector] public int builtTilesOnGrid;
 
-    public BiomeWeightEntry(ZoneType type, string name, float startPercent)
+    public BiomeWeightEntry(ZoneType type, string name, int startPercent)
     {
         zoneType = type;
         displayName = name;
@@ -23,55 +23,66 @@ public class BiomeResonanceManager : MonoBehaviour
 {
     public static BiomeResonanceManager Instance { get; private set; }
 
-    [Header("Aktive Biom-Resonanzen (Werden automatisch auf 100% normiert)")]
+    [Header("Alle verfügbaren Biome (0% wird im HUD ausgeblendet!)")]
     public List<BiomeWeightEntry> resonances = new List<BiomeWeightEntry>();
 
-    [Header("Richtungs-Einfluss beim Laufen (Im Inspector frei einstellbar)")]
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach NORDEN läuft?")]
-    public ZoneType northBiome = ZoneType.Ruins;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach OSTEN läuft?")]
-    public ZoneType eastBiome = ZoneType.Ocean;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach SÜDEN läuft?")]
-    public ZoneType southBiome = ZoneType.Forest;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach WESTEN läuft?")]
-    public ZoneType westBiome = ZoneType.Forest;
+    [Header("Feste Prozent-Schritte (z.B. 20% -> 0, 20, 40, 60, 80, 100)")]
+    public int stepSize = 20;
 
-    [Header("Änderungs-Stärke")]
-    [Tooltip("Um wie viel Prozent verschiebt sich die Resonanz bei einem Schritt in eine Richtung?")]
-    [Range(1f, 35f)] public float shiftPerRoomStep = 8f;
-    [Tooltip("Wenn aktiv, ändert sich die Resonanz nur beim Erschließen NEUER Räume (verhindert Farmen durch Hin-und-Her-Laufen).")]
-    public bool onlyShiftOnNewRooms = false;
+    [Header("Trigger 1: Distanz & Himmelsrichtung")]
+    public int hubSafeRadius = 2;
+    public bool onlyShiftOnNewRooms = true;
+    public ZoneType northBiome = ZoneType.Ruins;
+    public ZoneType eastBiome = ZoneType.Ocean;
+    public ZoneType southBiome = ZoneType.Forest;
+    public ZoneType westBiome = ZoneType.Swamp;
+
+    [Header("Trigger 2: Boss manipuliert die Leiste")]
+    public bool bossInfluencesResonance = true;
+    public ZoneType bossInjectedBiome = ZoneType.PurpleNightmare;
+
+    [Header("Trigger 3: Hoher Albtraum-Druck")]
+    public bool nightmareBleedsIntoResonance = true;
+    [Range(30f, 90f)] public float nightmareBleedThreshold = 60f;
 
     public event Action OnResonanceChanged;
 
     private void Awake()
     {
         if (Instance == null) Instance = this;
-        else if (Instance != this) Destroy(this);
+        else if (Instance != this) { Destroy(this); return; }
 
-        if (resonances.Count == 0)
-        {
-            ResetToDefaultResonances();
-        }
-        NormalizePercentages();
+        ResetToDefaultResonances();
     }
 
     public void ResetToDefaultResonances()
     {
         resonances.Clear();
-        resonances.Add(new BiomeWeightEntry(ZoneType.Forest, "Wald", 80f));
-        resonances.Add(new BiomeWeightEntry(ZoneType.Ruins, "Ruinen", 10f));
-        resonances.Add(new BiomeWeightEntry(ZoneType.Ocean, "Meer", 10f));
-        NormalizePercentages();
+        resonances.Add(new BiomeWeightEntry(ZoneType.Forest, "Wald", 100));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Ruins, "Ruinen", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Ocean, "Meer", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Swamp, "Sumpf", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.PurpleNightmare, "Albtraum", 0));
+
         OnResonanceChanged?.Invoke();
     }
 
-    /// <summary>
-    /// Wird vom MacroGridManager aufgerufen, sobald der Slime einen Raum in Richtung 'dir' verlässt.
-    /// </summary>
     public void OnPlayerMovedInDirection(Direction dir, bool isNewRoom)
     {
         if (onlyShiftOnNewRooms && !isNewRoom) return;
+
+        if (MacroGridManager.Instance != null && GridManager.Instance != null)
+        {
+            Vector2Int current = MacroGridManager.Instance.CurrentCoordinate;
+            Vector2Int hub = new Vector2Int(GridManager.Instance.width / 2, GridManager.Instance.height / 2);
+            int distFromHub = Mathf.Max(Mathf.Abs(current.x - hub.x), Mathf.Abs(current.y - hub.y));
+
+            if (distFromHub <= hubSafeRadius)
+            {
+                ShiftResonanceByStep(ZoneType.Forest, 1);
+                return;
+            }
+        }
 
         ZoneType targetBiome = dir switch
         {
@@ -82,27 +93,54 @@ public class BiomeResonanceManager : MonoBehaviour
             _ => ZoneType.Forest
         };
 
-        ShiftResonance(targetBiome, shiftPerRoomStep);
+        ShiftResonanceByStep(targetBiome, 1);
     }
 
-    /// <summary>
-    /// Modulare Schnittstelle: Verschiebt die Resonanz zugunsten von 'targetZone'
-    /// (nutzbar für Richtungswechsel, Boss-Aktionen, Schreine oder Albtraum-Schwellenwerte).
-    /// </summary>
-    public void ShiftResonance(ZoneType targetZone, float deltaAmount)
+    public void OnBossPulseTriggered()
     {
-        if (deltaAmount <= 0f || resonances.Count == 0) return;
+        if (!bossInfluencesResonance) return;
+        ShiftResonanceByStep(bossInjectedBiome, 1);
+    }
 
-        BiomeWeightEntry targetEntry = GetOrAddEntry(targetZone);
-        targetEntry.percentage += deltaAmount;
+    public void ShiftResonanceByStep(ZoneType targetZone, int steps = 1)
+    {
+        int safeStep = Mathf.Clamp(stepSize, 5, 50);
+        BiomeWeightEntry target = GetOrAddEntry(targetZone);
 
-        NormalizePercentages();
+        for (int s = 0; s < steps; s++)
+        {
+            if (target.percentage >= 100) break;
+
+            BiomeWeightEntry donor = null;
+            int maxOtherPct = 0;
+
+            for (int i = 0; i < resonances.Count; i++)
+            {
+                BiomeWeightEntry candidate = resonances[i];
+                if (candidate.zoneType != targetZone && candidate.percentage > maxOtherPct)
+                {
+                    maxOtherPct = candidate.percentage;
+                    donor = candidate;
+                }
+            }
+
+            if (donor != null && donor.percentage > 0)
+            {
+                int transfer = Mathf.Min(safeStep, donor.percentage);
+                donor.percentage -= transfer;
+                target.percentage += transfer;
+            }
+        }
+
         OnResonanceChanged?.Invoke();
     }
 
-    /// <summary>
-    /// Würfelt für alle 6 Blöcke einer gezogenen Form die Biom-Farben anhand der aktuellen Resonanz aus.
-    /// </summary>
+    public void ShiftResonance(ZoneType targetZone, float deltaAmount)
+    {
+        int steps = Mathf.Max(1, Mathf.RoundToInt(deltaAmount / Mathf.Max(5f, stepSize)));
+        ShiftResonanceByStep(targetZone, steps);
+    }
+
     public void AssignBiomesToShape(ShapeData shape)
     {
         if (shape == null || shape.category != CardCategory.CubeShape) return;
@@ -121,27 +159,30 @@ public class BiomeResonanceManager : MonoBehaviour
     {
         if (resonances.Count == 0) return ZoneType.Forest;
 
-        float total = 0f;
+        int total = 0;
         for (int i = 0; i < resonances.Count; i++)
         {
-            total += Mathf.Max(0f, resonances[i].percentage);
+            total += Mathf.Max(0, resonances[i].percentage);
         }
 
-        if (total <= 0.01f) return resonances[0].zoneType;
+        if (total <= 0) return ZoneType.Forest;
 
-        float roll = UnityEngine.Random.Range(0f, total);
-        float cumulative = 0f;
+        int roll = UnityEngine.Random.Range(0, total);
+        int cumulative = 0;
 
         for (int i = 0; i < resonances.Count; i++)
         {
-            cumulative += Mathf.Max(0f, resonances[i].percentage);
-            if (roll <= cumulative)
+            int pct = Mathf.Max(0, resonances[i].percentage);
+            if (pct == 0) continue;
+
+            cumulative += pct;
+            if (roll < cumulative)
             {
                 return resonances[i].zoneType;
             }
         }
 
-        return resonances[resonances.Count - 1].zoneType;
+        return ZoneType.Forest;
     }
 
     public void RegisterBuiltTile(ZoneType zone)
@@ -186,39 +227,8 @@ public class BiomeResonanceManager : MonoBehaviour
             _ => zone.ToString()
         };
 
-        BiomeWeightEntry newEntry = new BiomeWeightEntry(zone, label, 0f);
+        BiomeWeightEntry newEntry = new BiomeWeightEntry(zone, label, 0);
         resonances.Add(newEntry);
         return newEntry;
     }
-
-    private void NormalizePercentages()
-    {
-        float sum = 0f;
-        for (int i = 0; i < resonances.Count; i++)
-        {
-            resonances[i].percentage = Mathf.Max(0f, resonances[i].percentage);
-            sum += resonances[i].percentage;
-        }
-
-        if (sum <= 0.001f)
-        {
-            if (resonances.Count > 0) resonances[0].percentage = 100f;
-            return;
-        }
-
-        for (int i = 0; i < resonances.Count; i++)
-        {
-            resonances[i].percentage = (resonances[i].percentage / sum) * 100f;
-        }
-    }
-
-#if UNITY_EDITOR
-    private void OnValidate()
-    {
-        if (resonances != null && resonances.Count > 0)
-        {
-            NormalizePercentages();
-        }
-    }
-#endif
 }
