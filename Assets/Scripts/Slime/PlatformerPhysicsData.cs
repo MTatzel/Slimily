@@ -31,6 +31,34 @@ public class PlatformerPhysicsData : ScriptableObject
     [Tooltip("Kulanzzeit in Sekunden, in der man kurz nach dem Verlassen einer Kante noch abspringen kann")]
     public float coyoteTimeDuration = 0.1f;
 
+    [Header("Fähigkeit 1: Doppelsprung")]
+    [Tooltip("Anzahl der erlaubten Zusatzsprünge in der Luft (1 = klassischer Doppelsprung)")]
+    public int maxAirJumps = 1;
+    [Tooltip("Sprungkraft des Doppelsprungs in der Luft")]
+    public float doubleJumpVelocity = 12.8f;
+
+    [Header("Fähigkeit 2: Dash & Sprint (Hollow Knight / Silksong Stil)")]
+    [Tooltip("Geschwindigkeit während des kurzen Dash-Stoßes")]
+    public float dashSpeed = 22f;
+    [Tooltip("Dauer des Dashes in Sekunden")]
+    public float dashDuration = 0.15f;
+    [Tooltip("Abklingzeit zwischen zwei Dashes in Sekunden")]
+    public float dashCooldown = 0.35f;
+    [Tooltip("Wie oft der Slime in der Luft dashen darf, bevor er wieder landen muss")]
+    public int maxAirDashes = 1;
+    [Tooltip("Geschwindigkeits-Multiplikator beim Weiterrennen (Sprint) nach dem Dash")]
+    [Range(1.1f, 2.2f)] public float sprintSpeedMultiplier = 1.45f;
+
+    [Header("Fähigkeit 3: Ballon-Schweben (Sprungtaste halten)")]
+    [Tooltip("Maximale Schwebezeit in Sekunden pro Sprungphase (wird beim Landen aufgeladen)")]
+    public float maxFloatDuration = 1.25f;
+    [Tooltip("Sinkgeschwindigkeit während des Ballon-Schwebens (0 = schwebt komplett auf einer Höhe, 0.8 = sanftes Gleiten)")]
+    [Range(0f, 5f)] public float floatFallSpeed = 0.6f;
+    [Tooltip("Wie schnell der Fall beim Aufblasen zum Ballon abgebremst wird")]
+    public float floatBrakeAcceleration = 85f;
+    [Tooltip("Wie stark sich der Slime beim Schweben optisch wie ein Ballon aufbläst")]
+    [Range(1.1f, 1.8f)] public float balloonScaleMultiplier = 1.35f;
+
     [Header("Äußere Ecken (270° Wrapping & Stehenbleiben)")]
     [Tooltip("Geschwindigkeits-Faktor beim Umrunden einer äußeren Ecke (kleiner = langsamer & kontrollierter)")]
     [Range(0.3f, 1.2f)] public float outerCornerSpeedMultiplier = 0.78f;

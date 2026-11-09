@@ -19,6 +19,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
     {
         justEntered = true;
         controller.IsGrounded = true;
+        Abilities.ResetAllCharges();
 
         Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = controller.IsOnOuterCorner
@@ -27,8 +28,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
 
-        // Landet man ohne aktive Richtungseingabe direkt auf einer äußeren Ecke, bleibt der Slime dort kontrolliert stehen
-        if (controller.IsOnOuterCorner && controller.MoveInput.sqrMagnitude < 0.04f)
+        if (controller.IsOnOuterCorner && Input.MoveInput.sqrMagnitude < 0.04f)
         {
             preservedSpeed = 0f;
         }
@@ -54,6 +54,24 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
+        // 1. Dash prüfen (Shift / R2 / Viereck)
+        if (Input.HasBufferedDash && Abilities.CanUseDash(isGrounded: true))
+        {
+            stateMachine.ChangeState(controller.DashState);
+            return;
+        }
+
+        // Sprint bleibt aktiv, solange die Dash-Taste gehalten wird
+        if (!Input.DashHeld || !Abilities.enableSprint)
+        {
+            Abilities.IsSprinting = false;
+        }
+        else if (Abilities.enableSprint && !Abilities.enableDash && Input.DashHeld)
+        {
+            // Falls Dash deaktiviert ist, aber Sprint erlaubt ist, kann man direkt per Halten sprinten
+            Abilities.IsSprinting = true;
+        }
+
         Vector2 surfaceNormal = controller.EffectiveSurfaceNormal;
         bool isOuterCorner = controller.IsOnOuterCorner;
         bool isCeiling = !isOuterCorner && surfaceNormal.y < -0.5f;
@@ -61,10 +79,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel (nicht auf äußeren Ecken)
+        // 2. Dropdown an der Decke via Hold-Timer
         if (isCeiling && !isHoldingDownFromWall)
         {
-            Vector2 input = controller.MoveInput;
+            Vector2 input = Input.MoveInput;
             bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
             if (isStrictlyDown)
@@ -80,7 +98,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
                     downHoldTimer = 0f;
                     controller.TriggerDetach(surfaceNormal);
 
-                    float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                    float airMoveX = Input.MoveInput.x * data.moveSpeed;
                     controller.Velocity = new Vector2(airMoveX, -3f);
 
                     stateMachine.ChangeState(controller.AirborneState);
@@ -97,7 +115,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             downHoldTimer = 0f;
         }
 
-        // 2. Sprung von der Fläche (Boden, Wand, Decke, Äußere Ecke oder Innere Ecke)
+        // 3. Sprung von der Fläche
         if (controller.HasBufferedJump)
         {
             ExecuteJump(surfaceNormal, isOuterCorner, isCeiling, isWall);
@@ -109,7 +127,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
         controller.ConsumeJumpBuffer();
 
         float stretch = (data != null) ? data.jumpStretchAmount : 0.16f;
-        controller.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+        Visuals.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+
+        float sprintMult = (Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+            ? data.sprintSpeedMultiplier
+            : 1f;
+        float currentMoveSpeed = data.moveSpeed * sprintMult;
 
         // FALL A: Absprung direkt von einer äußeren Ecke (270°)
         if (isOuterCorner)
@@ -118,9 +141,9 @@ public class PlatformerGroundedState : PlatformerSlimeState
             controller.TriggerCornerDetach(controller.OuterCornerNormalA, controller.OuterCornerNormalB);
 
             Vector2 launchDir = (cornerNormal * 1.0f + Vector2.up * 0.55f).normalized;
-            if (controller.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(controller.MoveInput.normalized, cornerNormal) > -0.25f)
+            if (Input.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(Input.MoveInput.normalized, cornerNormal) > -0.25f)
             {
-                launchDir = (launchDir + controller.MoveInput.normalized * 0.45f).normalized;
+                launchDir = (launchDir + Input.MoveInput.normalized * 0.45f).normalized;
             }
 
             controller.Velocity = launchDir * data.jumpVelocity;
@@ -145,17 +168,17 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         if (isCeiling)
         {
-            float airMoveX = Mathf.Abs(controller.MoveInput.x) > 0.1f
-                ? controller.MoveInput.x * data.moveSpeed
+            float airMoveX = Mathf.Abs(Input.MoveInput.x) > 0.1f
+                ? Input.MoveInput.x * currentMoveSpeed
                 : controller.Velocity.x;
             float verticalDrop = -data.jumpVelocity * 0.55f;
             controller.Velocity = new Vector2(airMoveX, verticalDrop);
         }
         else if (isWall)
         {
-            float awayInput = Vector2.Dot(controller.MoveInput, surfaceNormal);
+            float awayInput = Vector2.Dot(Input.MoveInput, surfaceNormal);
             float horizontalWeight = awayInput > 0.25f ? 0.95f : 0.72f;
-            float verticalWeight = controller.MoveInput.y < -0.4f ? 0.55f : 1.15f;
+            float verticalWeight = Input.MoveInput.y < -0.4f ? 0.55f : 1.15f;
 
             Vector2 jumpDir = (surfaceNormal * horizontalWeight + Vector2.up * verticalWeight).normalized;
             controller.Velocity = jumpDir * data.jumpVelocity;
@@ -163,8 +186,8 @@ public class PlatformerGroundedState : PlatformerSlimeState
         else
         {
             float currentTangentSpeed = controller.Velocity.x * surfaceNormal.y;
-            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
-                ? controller.MoveInput.x * data.moveSpeed 
+            float moveX = Mathf.Abs(Input.MoveInput.x) > 0.1f 
+                ? Input.MoveInput.x * currentMoveSpeed 
                 : currentTangentSpeed;
 
             controller.Velocity = new Vector2(moveX, data.jumpVelocity);
@@ -175,14 +198,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
     public override void PhysicsUpdate()
     {
-        // Auf äußeren Ecken nutzen wir die 45°-Diagonaltangente der Ecke,
-        // damit man an jeder Stelle der Ecke (0% bis 100%) sofort in beide Richtungen anfahren kann.
         Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = controller.IsOnOuterCorner
             ? controller.OuterCornerDiagonalTangent
             : new Vector2(normal.y, -normal.x);
 
-        Vector2 input = controller.MoveInput;
+        Vector2 input = Input.MoveInput;
         float inputSqrMag = input.sqrMagnitude;
 
         float targetSpeed = 0f;
@@ -239,9 +260,15 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isTraversing)
             {
-                targetSpeed = currentTraverseSign * data.moveSpeed * controller.CornerSpeedMultiplier;
+                float sprintMult = (Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+                    ? data.sprintSpeedMultiplier
+                    : 1f;
+
+                targetSpeed = currentTraverseSign * data.moveSpeed * sprintMult * controller.CornerSpeedMultiplier;
             }
         }
+
+        Abilities.UpdateFacingDirection(input, tangent, currentTraverseSign);
 
         Vector2 vel = controller.Velocity;
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;

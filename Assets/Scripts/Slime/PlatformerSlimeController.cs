@@ -10,23 +10,25 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
-    private SpriteRenderer visualRenderer;
-    private Color defaultSpriteColor = Color.white;
-    private Vector3 defaultVisualScale = Vector3.one;
-    private Vector2 currentScaleDeform = Vector2.one;
 
     private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
+
+    // --- Modulare Sub-Komponenten ---
+    public SlimeInputHandler InputHandler { get; private set; }
+    public SlimeAbilities Abilities { get; private set; }
+    public SlimeVisuals Visuals { get; private set; }
 
     // --- State Machine & Zustände ---
     public PlatformerStateMachine StateMachine { get; private set; }
     public PlatformerGroundedState GroundedState { get; private set; }
     public PlatformerAirborneState AirborneState { get; private set; }
+    public PlatformerDashState DashState { get; private set; }
 
-    // --- Zentralisierter Input ---
-    public Vector2 MoveInput { get; private set; }
-    public bool JumpTriggered { get; private set; }
-    public bool JumpHeld { get; private set; }
+    // --- Weitergeleitete Input-Properties (für Abwärtskompatibilität) ---
+    public Vector2 MoveInput => InputHandler != null ? InputHandler.MoveInput : Vector2.zero;
+    public bool JumpHeld => InputHandler != null && InputHandler.JumpHeld;
+    public bool HasBufferedJump => InputHandler != null && InputHandler.HasBufferedJump;
 
     // --- Kollisions- & Orientierungsstatus ---
     public Vector2 Velocity { get; set; }
@@ -41,15 +43,12 @@ public class PlatformerSlimeController : MonoBehaviour
     public Vector2 OuterCornerVertex { get; private set; }
     public Vector2 OuterCornerNormalA { get; private set; } = Vector2.up;
     public Vector2 OuterCornerNormalB { get; private set; } = Vector2.right;
-    [Range(0f, 1f)] public float OuterCornerProgress { get; private set; } // 0 = Fläche A, 0.5 = 45° Eckspitze, 1 = Fläche B
+    [Range(0f, 1f)] public float OuterCornerProgress { get; private set; }
 
     public bool IsInInnerCornerPocket { get; private set; }
     public Vector2 InnerCornerAdjacentNormal { get; private set; } = Vector2.zero;
     private float innerCornerSlowdownTimer = 0f;
 
-    /// <summary>
-    /// Gibt die aktuelle effektive Oberflächennormale zurück (auf äußeren Ecken stufenlos z.B. 45°).
-    /// </summary>
     public Vector2 EffectiveSurfaceNormal
     {
         get
@@ -63,14 +62,8 @@ public class PlatformerSlimeController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 45°-Winkelhalbierende der aktuellen äußeren Ecke (ideal für stabile Input-Projektion & Ecksprünge).
-    /// </summary>
     public Vector2 OuterCornerDiagonalNormal => (OuterCornerNormalA + OuterCornerNormalB).normalized;
 
-    /// <summary>
-    /// Zugehörige 45°-Tangente im Uhrzeigersinn auf einer äußeren Ecke.
-    /// </summary>
     public Vector2 OuterCornerDiagonalTangent
     {
         get
@@ -80,9 +73,6 @@ public class PlatformerSlimeController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Aktueller Geschwindigkeits-Multiplikator für sanfteres Tempo an Innen- und Außenecken.
-    /// </summary>
     public float CornerSpeedMultiplier
     {
         get
@@ -109,49 +99,44 @@ public class PlatformerSlimeController : MonoBehaviour
 
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
-    private float jumpBufferTimer;
     private float coyoteTimer;
 
-    [Header("Treffer & Unverwundbarkeit (Schritt 3)")]
-    [Tooltip("Kurze Schutzzeit nach einem Treffer, damit ein Hindernis nicht mehrfach pro Sekunde Fokus abzieht")]
+    [Header("Treffer & Unverwundbarkeit")]
     [SerializeField] private float damageInvincibilityDuration = 0.75f;
-    [Tooltip("Erlaubt das Simulieren eines Treffers über die Taste K auf der Tastatur")]
     [SerializeField] private bool enableDebugDamageKeyK = true;
     private float invincibilityTimer = 0f;
 
     [Header("Controller Settings")]
     [SerializeField] private float stickDeadzone = 0.2f;
 
-    public bool HasBufferedJump => jumpBufferTimer > 0f;
     public bool HasCoyoteTime => coyoteTimer > 0f;
     public bool IsInvincible => invincibilityTimer > 0f;
 
     public void ConsumeJumpBuffer()
     {
-        jumpBufferTimer = 0f;
+        if (InputHandler != null) InputHandler.ConsumeJumpBuffer();
         coyoteTimer = 0f;
+    }
+
+    public void ApplySquashAndStretch(float scaleX, float scaleY)
+    {
+        if (Visuals != null) Visuals.ApplySquashAndStretch(scaleX, scaleY);
     }
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
         boxCollider = GetComponent<BoxCollider2D>();
-
-        if (visualTransform != null)
-        {
-            defaultVisualScale = visualTransform.localScale;
-            visualRenderer = visualTransform.GetComponentInChildren<SpriteRenderer>();
-        }
-        if (visualRenderer == null)
-        {
-            visualRenderer = GetComponentInChildren<SpriteRenderer>();
-        }
-        if (visualRenderer != null)
-        {
-            defaultSpriteColor = visualRenderer.color;
-        }
-
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
+
+        // Modulare Komponenten automatisch holen oder anlegen
+        InputHandler = GetComponent<SlimeInputHandler>() ?? gameObject.AddComponent<SlimeInputHandler>();
+        Abilities = GetComponent<SlimeAbilities>() ?? gameObject.AddComponent<SlimeAbilities>();
+        Visuals = GetComponent<SlimeVisuals>() ?? gameObject.AddComponent<SlimeVisuals>();
+
+        InputHandler.Initialize(stickDeadzone, jumpBufferDuration);
+        Abilities.Initialize(data);
+        Visuals.Initialize(this, visualTransform, boxCollider, data);
 
         contactFilter = new ContactFilter2D
         {
@@ -163,6 +148,7 @@ public class PlatformerSlimeController : MonoBehaviour
         StateMachine = new PlatformerStateMachine();
         GroundedState = new PlatformerGroundedState(this, StateMachine, data);
         AirborneState = new PlatformerAirborneState(this, StateMachine, data);
+        DashState = new PlatformerDashState(this, StateMachine, data);
     }
 
     private void Start()
@@ -178,14 +164,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void OnDisable()
     {
-        if (visualRenderer != null)
-        {
-            visualRenderer.color = defaultSpriteColor;
-        }
-        if (visualTransform != null)
-        {
-            visualTransform.localScale = defaultVisualScale;
-        }
+        if (Visuals != null) Visuals.ResetVisuals();
     }
 
     private void Update()
@@ -196,7 +175,8 @@ public class PlatformerSlimeController : MonoBehaviour
             if (!enabled) return;
         }
 
-        ReadInput();
+        InputHandler.ReadInput(IsMeditating || IsViewingMap);
+        Abilities.TickTimers(Time.deltaTime);
 
         if (IsGrounded)
         {
@@ -212,15 +192,18 @@ public class PlatformerSlimeController : MonoBehaviour
             innerCornerSlowdownTimer -= Time.deltaTime;
         }
 
-        StateMachine.Update();
-        UpdateSurfaceRotationAndSquash();
-
         if (detachCooldownTimer > 0f)
         {
             detachCooldownTimer -= Time.deltaTime;
         }
 
-        UpdateInvincibilityVisuals();
+        if (invincibilityTimer > 0f)
+        {
+            invincibilityTimer -= Time.deltaTime;
+        }
+
+        StateMachine.Update();
+        Visuals.UpdateVisuals(invincibilityTimer);
     }
 
     private void FixedUpdate()
@@ -229,47 +212,25 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
     }
 
-    private void UpdateInvincibilityVisuals()
-    {
-        if (invincibilityTimer > 0f)
-        {
-            invincibilityTimer -= Time.deltaTime;
-
-            if (visualRenderer != null)
-            {
-                if (invincibilityTimer <= 0f)
-                {
-                    visualRenderer.color = defaultSpriteColor;
-                }
-                else
-                {
-                    float blink = Mathf.PingPong(Time.time * 18f, 1f);
-                    visualRenderer.color = Color.Lerp(defaultSpriteColor, new Color(1f, 0.2f, 0.2f, 0.45f), blink);
-                }
-            }
-        }
-    }
-
-    public void ApplySquashAndStretch(float scaleX, float scaleY)
-    {
-        if (data != null && !data.enableSquashAndStretch) return;
-        currentScaleDeform = new Vector2(scaleX, scaleY);
-    }
-
     public void ZeroOutMomentum()
     {
         Velocity = Vector2.zero;
-        MoveInput = Vector2.zero;
-        jumpBufferTimer = 0f;
+        if (InputHandler != null) InputHandler.ClearAllInputs();
+        if (Abilities != null)
+        {
+            Abilities.IsDashing = false;
+            Abilities.IsSprinting = false;
+            Abilities.IsBalloonFloating = false;
+        }
 
         if (rb != null)
         {
             rb.linearVelocity = Vector2.zero;
         }
 
-        if (visualRenderer != null)
+        if (Visuals != null)
         {
-            visualRenderer.color = defaultSpriteColor;
+            Visuals.ResetVisuals();
         }
     }
 
@@ -322,6 +283,32 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.position += pushDir * (data.skinWidth * 4f + 0.045f);
     }
 
+    /// <summary>
+    /// Prüft unmittelbar nach einem Boden-Dash, ob direkt unter dem Slime eine Fläche zum nahtlosen Weiterrennen liegt.
+    /// </summary>
+    public void TrySnapToNearbySurfaceAfterDash()
+    {
+        Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
+        Vector2 origin = rb.position + boxCollider.offset;
+        Vector2 checkNormal = SnapToCardinal(CurrentSurfaceNormal);
+        Vector2 snapDir = -checkNormal;
+
+        int hits = Physics2D.BoxCast(origin, boxSize, 0f, snapDir, contactFilter, hitBuffer, 0.22f);
+        for (int i = 0; i < hits; i++)
+        {
+            Vector2 hitNormal = SnapToCardinal(hitBuffer[i].normal);
+            if (hitBuffer[i].distance > 0.0001f && CanAttachTo(hitNormal))
+            {
+                float dist = Mathf.Max(0f, hitBuffer[i].distance - data.skinWidth);
+                rb.position += snapDir * dist;
+                CurrentSurfaceNormal = hitNormal;
+                TargetSurfaceNormal = hitNormal;
+                IsGrounded = true;
+                return;
+            }
+        }
+    }
+
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
     public bool CanAttachTo(Vector2 candidateNormal)
@@ -350,10 +337,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return new Vector2(0f, Mathf.Sign(rawNormal.y));
     }
 
-    /// <summary>
-    /// Berechnet die exakte Bogen-Position um eine äußere Ecke.
-    /// Clamp01 auf Cos/Sin verhindert zuverlässig NaN-Werte bei progress = 1f (Cos(pi/2) < 0 in float).
-    /// </summary>
     private Vector2 CalculateOuterCornerCenterPosition(Vector2 vertex, Vector2 normalA, Vector2 normalB, float progress)
     {
         float clampedT = Mathf.Clamp01(progress);
@@ -372,9 +355,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return vertex + normalA * (weightA * extentA) + normalB * (weightB * extentB);
     }
 
-    /// <summary>
-    /// Sucht über mehrere Prüftiefen zuverlässig die angrenzende 270°-Wand einer äußeren Ecke.
-    /// </summary>
     private bool TryFindAdjacentOuterCornerWall(
         Vector2 currentCenter,
         Vector2 tentativeCenter,
@@ -504,9 +484,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return found;
     }
 
-    /// <summary>
-    /// Prüft, ob die Mitte des Slimes knapp über eine äußere Kante hinausragt (z. B. beim Anhalten an der Kante oder nach einer Landung).
-    /// </summary>
     private bool TryDetectOuterCornerUnderneath(
         Vector2 center,
         Vector2 surfaceNormal,
@@ -521,7 +498,6 @@ public class PlatformerSlimeController : MonoBehaviour
         float extentNormal = GetColliderExtent(-surfaceNormal);
         float floorDist = extentNormal + Mathf.Max(0.25f, data.skinWidth * 8f);
 
-        // Wenn direkt unter dem Zentrum stabiler Boden mit passender Normale ist, stehen wir auf der Fläche
         RaycastHit2D centerFloorHit = Physics2D.Raycast(center, -surfaceNormal, floorDist, data.groundLayer);
         if (centerFloorHit.collider != null && centerFloorHit.distance > 0.0005f && Vector2.Dot(SnapToCardinal(centerFloorHit.normal), surfaceNormal) > 0.6f)
         {
@@ -562,126 +538,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return false;
     }
 
-    private void ReadInput()
-    {
-        if (IsMeditating || IsViewingMap)
-        {
-            MoveInput = Vector2.zero;
-            jumpBufferTimer = 0f;
-            JumpHeld = false;
-            return;
-        }
-
-        Vector2 input = Vector2.zero;
-        bool jumpPressedThisFrame = false;
-        bool jumpIsHeld = false;
-
-        // --- 1. TASTATUR ---
-        var keyboard = Keyboard.current;
-        if (keyboard != null)
-        {
-            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
-            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
-            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
-            if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
-
-            if (keyboard.spaceKey.wasPressedThisFrame) jumpPressedThisFrame = true;
-            if (keyboard.spaceKey.isPressed) jumpIsHeld = true;
-        }
-
-        // --- 2. GAMEPAD / PS5 DUALSENSE ---
-        var gamepad = Gamepad.current;
-        if (gamepad != null)
-        {
-            Vector2 stick = Vector2.zero;
-            Vector2 rawStick = gamepad.leftStick.ReadValue();
-
-            if (rawStick.magnitude >= stickDeadzone)
-            {
-                Vector2 stickDir = rawStick.normalized;
-                float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
-
-                if (Mathf.Abs(stickDir.x) > 0.7f)
-                {
-                    stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
-                }
-                else if (Mathf.Abs(stickDir.y) > 0.7f)
-                {
-                    stick = new Vector2(0f, Mathf.Sign(stickDir.y) * stickMag);
-                }
-                else
-                {
-                    stick = stickDir * stickMag;
-                }
-            }
-
-            Vector2 dpad = gamepad.dpad.ReadValue();
-
-            if (dpad.sqrMagnitude > 0.1f)
-            {
-                input += dpad;
-            }
-            else if (stick.sqrMagnitude > 0.01f)
-            {
-                input += stick;
-            }
-
-            if (gamepad.buttonSouth.wasPressedThisFrame) jumpPressedThisFrame = true;
-            if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
-        }
-
-        input.x = Mathf.Clamp(input.x, -1f, 1f);
-        input.y = Mathf.Clamp(input.y, -1f, 1f);
-
-        if (jumpPressedThisFrame)
-        {
-            jumpBufferTimer = jumpBufferDuration;
-        }
-        else if (jumpBufferTimer > 0f)
-        {
-            jumpBufferTimer -= Time.deltaTime;
-        }
-
-        JumpHeld = jumpIsHeld;
-        MoveInput = input;
-    }
-
-    private void UpdateSurfaceRotationAndSquash()
-    {
-        transform.rotation = Quaternion.identity;
-
-        if (visualTransform != null)
-        {
-            Vector2 desiredVisualNormal = TargetSurfaceNormal;
-            if (IsOnOuterCorner)
-            {
-                desiredVisualNormal = EffectiveSurfaceNormal;
-            }
-            else if (IsInInnerCornerPocket && InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
-            {
-                desiredVisualNormal = (CurrentSurfaceNormal + InnerCornerAdjacentNormal * 0.75f).normalized;
-            }
-
-            float targetAngle = Mathf.Atan2(desiredVisualNormal.y, desiredVisualNormal.x) * Mathf.Rad2Deg - 90f;
-            Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
-
-            float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 680f;
-            visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
-
-            float halfColHeight = boxCollider.size.y * 0.5f;
-            Vector2 targetOffset = (Vector2)boxCollider.offset - desiredVisualNormal * (halfColHeight - 0.26f);
-            visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 20f * Time.deltaTime);
-
-            float recovery = (data != null && data.squashRecoverySpeed > 0f) ? data.squashRecoverySpeed : 12f;
-            currentScaleDeform = Vector2.MoveTowards(currentScaleDeform, Vector2.one, recovery * Time.deltaTime);
-            visualTransform.localScale = new Vector3(
-                defaultVisualScale.x * currentScaleDeform.x,
-                defaultVisualScale.y * currentScaleDeform.y,
-                defaultVisualScale.z
-            );
-        }
-    }
-
     private void MoveAndResolveCollisions(Vector2 deltaMovement)
     {
         IsGrounded = false;
@@ -706,9 +562,6 @@ public class PlatformerSlimeController : MonoBehaviour
             {
                 maxIterations--;
 
-                // =========================================================
-                // MODUS A: SLIME ROLLT GERADE UM EINE ÄUSSERE 270°-ECKE
-                // =========================================================
                 if (IsOnOuterCorner)
                 {
                     Vector2 tangentA = new Vector2(OuterCornerNormalA.y, -OuterCornerNormalA.x);
@@ -721,7 +574,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
                     if (nextProgress >= 1f)
                     {
-                        // Ecke fertig umrundet -> stabiler Übergang auf Fläche B (inkl. kleinem Sicherheits-Einzug auf Fläche B)
                         float usedRatio = (1f - OuterCornerProgress) / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
                         remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
 
@@ -739,7 +591,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else if (nextProgress <= 0f)
                     {
-                        // Zurückgerollt -> stabiler Übergang auf Fläche A (inkl. kleinem Sicherheits-Einzug auf Fläche A)
                         float usedRatio = OuterCornerProgress / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
                         remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
 
@@ -757,7 +608,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else
                     {
-                        // Mitten auf dem Ecken-Bogen -> geschmeidig weiterrollen
                         OuterCornerProgress = nextProgress;
                         Vector2 arcCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
                         position = arcCenter - boxCollider.offset;
@@ -768,9 +618,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                 }
 
-                // =========================================================
-                // MODUS B: REGULÄRE BEWEGUNG AUF FLÄCHE (INKL. ECKEN-CHECKS)
-                // =========================================================
                 Vector2 currentNormal = SnapToCardinal(CurrentSurfaceNormal);
                 Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
                 Vector2 moveDir = currentTangent * moveSign;
@@ -779,7 +626,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 float extentNormal = GetColliderExtent(-currentNormal);
                 float extentTangent = GetColliderExtent(moveDir);
 
-                // 1. INNENECKEN- & WAND-CHECK (90°)
                 float innerPreviewDist = (data != null && data.innerCornerBlendDistance > 0.05f) ? data.innerCornerBlendDistance : 0.40f;
                 float lookAheadDist = Mathf.Max(remainingMove, innerPreviewDist) + extentTangent + data.skinWidth * 2f;
 
@@ -795,7 +641,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 {
                     float actualDistToWall = Mathf.Max(0f, hitDist - data.skinWidth);
 
-                    // Sanftes Vorab-Neigen in die Innenecke kurz vor Kontakt
                     if (actualDistToWall <= innerPreviewDist && Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f)
                     {
                         float blendT = 1f - Mathf.Clamp01(actualDistToWall / innerPreviewDist);
@@ -820,7 +665,6 @@ public class PlatformerSlimeController : MonoBehaviour
                                 ? data.innerCornerSlowdownDuration
                                 : 0.06f;
 
-                            // Restbewegung flüssig auf die neue Wandfläche mitnehmen statt 1 Frame zu stocken
                             remainingMove = Mathf.Max(0f, remainingMove - actualDistToWall);
                             continue;
                         }
@@ -834,7 +678,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                 }
 
-                // 2. ÄUSSERE ECKEN-CHECK (270°) – SOBALD DAS ZENTRUM DIE KANTE ERREICHT!
                 float stepDist = remainingMove;
                 Vector2 tentativePos = position + moveDir * stepDist;
                 Vector2 tentativeCenter = tentativePos + boxCollider.offset;
@@ -850,7 +693,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
                 else
                 {
-                    // Das Zentrum hat die Kante erreicht -> Angrenzende 270°-Wand suchen
                     if (TryFindAdjacentOuterCornerWall(
                         currentCenter,
                         tentativeCenter,
@@ -866,7 +708,6 @@ public class PlatformerSlimeController : MonoBehaviour
                         float distToCornerVertex = Mathf.Max(0f, Vector2.Dot(cornerPoint - currentCenter, moveDir));
                         float pastVertexDist = Mathf.Max(0.002f, stepDist - distToCornerVertex);
 
-                        // Nahtloser Einstieg am Eckpunkt ohne Positions-Sprung (Progress startet bei 0f und läuft über pastVertexDist weiter)
                         IsOnOuterCorner = true;
                         OuterCornerVertex = cornerPoint;
                         OuterCornerNormalA = currentNormal;
@@ -882,14 +723,12 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else
                     {
-                        // Freie Kante ohne angrenzende 270°-Wand
                         position = tentativePos;
                         remainingMove = 0f;
                     }
                 }
             }
 
-            // 3. HAFTUNG ZUR FLÄCHE ODER ECKE (Surface & Corner Snap)
             if (IsOnOuterCorner)
             {
                 if (data != null && !data.allowStoppingOnOuterCorners && MoveInput.sqrMagnitude < 0.04f)
@@ -932,7 +771,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 snapOrigin = position + boxCollider.offset;
                 float snapDist = Mathf.Max(0.20f, data.skinWidth * 8f);
 
-                // Wenn das Zentrum im Stillstand bereits über einer äußeren Ecke hängt, direkt in den Ecken-Zustand einrasten
                 if ((data == null || data.allowStoppingOnOuterCorners) &&
                     TryDetectOuterCornerUnderneath(snapOrigin, finalNormal, out Vector2 detectedVertex, out Vector2 detectedWallNormal, out float detectedProgress))
                 {
@@ -989,7 +827,6 @@ public class PlatformerSlimeController : MonoBehaviour
                         }
                         else if (groundHits > 0)
                         {
-                            // Box überlappt die Kante noch minimal -> Kontakt halten
                             IsGrounded = true;
                             CurrentSurfaceNormal = finalNormal;
                         }
@@ -1012,7 +849,7 @@ public class PlatformerSlimeController : MonoBehaviour
         }
         else
         {
-            // --- FLUG-MODUS (Airborne) ---
+            // --- FLUG- & DASH-MODUS (Welt-Koordinaten) ---
 
             // Y-Achse
             Vector2 castOriginY = position + boxCollider.offset;
@@ -1065,7 +902,7 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // X-Achse (nur falls nicht schon bei Y-Achse gelandet)
+            // X-Achse
             if (!IsGrounded)
             {
                 Vector2 castOriginX = position + boxCollider.offset;
@@ -1124,9 +961,6 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.MovePosition(position);
     }
 
-    /// <summary>
-    /// Landet aus dem Sprung auf einer Fläche – und erkennt automatisch, wenn der Slime direkt auf einer äußeren Ecke landet.
-    /// </summary>
     private void AttachToSurfaceFromAir(ref Vector2 position, Vector2 landedNormal)
     {
         TargetSurfaceNormal = landedNormal;
@@ -1180,18 +1014,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void OnTriggerEnter2D(Collider2D other)
     {
-        if (other.CompareTag("Hazard"))
-        {
-            TakeDamage();
-        }
+        if (other.CompareTag("Hazard")) TakeDamage();
     }
 
     private void OnCollisionEnter2D(Collision2D collision)
     {
-        if (collision.collider.CompareTag("Hazard"))
-        {
-            TakeDamage();
-        }
+        if (collision.collider.CompareTag("Hazard")) TakeDamage();
     }
 
     private void OnDrawGizmos()
@@ -1214,7 +1042,6 @@ public class PlatformerSlimeController : MonoBehaviour
     public void TakeDamage()
     {
         if (IsInvincible) return;
-
         invincibilityTimer = damageInvincibilityDuration;
 
         if (GameManager.Instance != null)

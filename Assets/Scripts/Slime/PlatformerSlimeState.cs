@@ -6,6 +6,10 @@ public abstract class PlatformerSlimeState
     protected PlatformerStateMachine stateMachine;
     protected PlatformerPhysicsData data;
 
+    protected SlimeInputHandler Input => controller.InputHandler;
+    protected SlimeAbilities Abilities => controller.Abilities;
+    protected SlimeVisuals Visuals => controller.Visuals;
+
     public PlatformerSlimeState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data)
     {
         this.controller = controller;
@@ -19,19 +23,21 @@ public abstract class PlatformerSlimeState
     public virtual void PhysicsUpdate() { }
 
     /// <summary>
-    /// Berechnet die horizontale Bewegung und erhält bestehenden Sprung-Schwung in Flugrichtung.
+    /// Berechnet die horizontale Bewegung und erhält bestehenden Sprung-/Sprint-Schwung in Flugrichtung.
     /// </summary>
     protected void ApplyHorizontalMovement(float accel, float decel)
     {
-        float inputX = controller.MoveInput.x;
-        float targetSpeed = inputX * data.moveSpeed;
+        float inputX = Input.MoveInput.x;
+        float speedMult = (Abilities != null && Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+            ? data.sprintSpeedMultiplier
+            : 1f;
+
+        float targetSpeed = inputX * data.moveSpeed * speedMult;
         Vector2 vel = controller.Velocity;
 
         float rate;
         if (Mathf.Abs(inputX) > 0.05f)
         {
-            // Bewegt sich der Slime durch einen Wand-/Ecksprung bereits schneller in Eingaberichtung,
-            // bremsen wir ihn nicht hart auf moveSpeed ab, sondern lassen den Schwung sanft auslaufen.
             bool movingFasterInSameDir = (vel.x * inputX > 0f) && (Mathf.Abs(vel.x) > Mathf.Abs(targetSpeed));
             rate = movingFasterInSameDir ? decel : accel;
         }
@@ -44,9 +50,6 @@ public abstract class PlatformerSlimeState
         controller.Velocity = vel;
     }
 
-    /// <summary>
-    /// Wendet die konfigurierte Schwerkraft bis zum Geschwindigkeitslimit an.
-    /// </summary>
     protected void ApplyGravity()
     {
         Vector2 vel = controller.Velocity;
