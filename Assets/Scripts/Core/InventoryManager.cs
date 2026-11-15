@@ -15,34 +15,31 @@ public class InventoryManager : MonoBehaviour
     public ShapePreviewUI centerPreview;
     public GameObject uiBlockPrefab;
 
-    [Header("Filter zum Testen (Code bleibt erhalten!)")]
-    [Tooltip("Wenn AUS, werden keine Fähigkeiten/Skills (wie Zeit-Anker oder Sternenschauer) ins Deck gemischt.")]
-    public bool includeSkillCards = false;
+    [Header("Inventar-Einstellungen (Kein Kartendeck mehr!)")]
+    [Tooltip("Mit wie vielen Würfeln der Spieler im Hub startet (z.B. 2).")]
+    [Range(1, 5)] public int startingCubeCount = 2;
+
+    [Tooltip("Wie viele Würfel maximal gleichzeitig im Inventar getragen werden können.")]
+    [Range(1, 8)] public int maxInventorySize = 5;
+
+    [Header("Vorlagen-Pool für gefundene Würfel (Inspector)")]
+    [Tooltip("Optional: Eigene CardAssets als Formen-Pool für gefundene Würfel.")]
+    public List<CardAsset> shapePoolAssets = new List<CardAsset>();
+
+    [Tooltip("Optional: Direkt im Inspector bearbeitbare Formen-Vorlagen.")]
+    public List<ShapeData> inlineShapePool = new List<ShapeData>();
 
     [Tooltip("Wenn AUS, werden Feuer/Eis/Gift/Schrein-Mods auf den Würfeln ignoriert (nur reine Biom-Farben).")]
     public bool includeBlockModifiers = false;
 
-    [Header("Deck-Konfiguration (Im Inspector anpassbar!)")]
-    [Tooltip("Ziehe hier deine erstellten CardAsset-ScriptableObjects hinein.")]
-    public List<CardAsset> startingDeckAssets = new List<CardAsset>();
-
-    [Tooltip("Oder bearbeite Karten direkt hier in der Liste ohne eigene Asset-Datei.")]
-    public List<ShapeData> inlineStartingDeck = new List<ShapeData>();
-
-    [Tooltip("Wenn beide Listen oben leer sind, werden automatisch die Standard-Würfel geladen.")]
-    public bool useFallbackIfEmpty = true;
-
-    [Header("Hand-Größe")]
-    public int maxHandSize = 5;
-    public int startingHandSize = 5;
-
     [HideInInspector]
     public ShapeData[] hotbarSlots = new ShapeData[8];
 
-    private readonly List<ShapeData> masterDeck = new List<ShapeData>();
-    private readonly List<ShapeData> drawPile = new List<ShapeData>();
-    private readonly List<ShapeData> hand = new List<ShapeData>();
-    private readonly List<ShapeData> discardPile = new List<ShapeData>();
+    // Der Formen-Pool (aus dem beim Finden eines Würfels im Raum eine 6er-Geometrie gewählt wird)
+    private readonly List<ShapeData> availableShapeTemplates = new List<ShapeData>();
+
+    // Das tatsächliche Inventar des Spielers
+    private readonly List<ShapeData> inventoryCubes = new List<ShapeData>();
 
     private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
     private int currentSelectedIndex = 0;
@@ -50,18 +47,16 @@ public class InventoryManager : MonoBehaviour
     [SerializeField] private float navRepeatDelay = 0.18f;
     private float navRepeatTimer = 0f;
 
-    public int DrawPileCount => drawPile.Count;
-    public int HandCount => hand.Count;
-    public int DiscardPileCount => discardPile.Count;
+    public int HandCount => inventoryCubes.Count;
     public int CurrentSelectedIndex => currentSelectedIndex;
 
     public ShapeData CurrentlySelectedCard =>
-        (currentSelectedIndex >= 0 && currentSelectedIndex < hand.Count) ? hand[currentSelectedIndex] : null;
+        (currentSelectedIndex >= 0 && currentSelectedIndex < inventoryCubes.Count) ? inventoryCubes[currentSelectedIndex] : null;
 
-    [ContextMenu("Fülle Inline-Deck mit Standard-Formen (Zum Bearbeiten im Inspector)")]
-    private void PopulateInlineDeckWithDefaults()
+    [ContextMenu("Fülle Formen-Pool mit Standard-6er-Würfeln")]
+    private void PopulateInlinePoolWithDefaults()
     {
-        inlineStartingDeck = MemoryCardCatalog.CreateStarterDeck();
+        inlineShapePool = MemoryCardCatalog.CreateStarterDeck();
     }
 
     void Awake()
@@ -75,26 +70,24 @@ public class InventoryManager : MonoBehaviour
         if (gameManager == null) gameManager = GameManager.Instance;
         if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
 
-        // Wichtig: Erst in Start() ziehen, damit BiomeResonanceManager & GridManager garantiert wach sind!
-        RebuildMasterDeckFromInspector();
-        ResetDeckAndDrawStartingHand();
+        RebuildShapeTemplatesPool();
+        ResetInventoryToStartingCubes();
 
         RefreshAllPreviews();
         UpdateCursorPosition();
     }
 
     /// <summary>
-    /// Liest die Karten ein und berücksichtigt dabei die beiden Inspector-Schalter (includeSkillCards / includeBlockModifiers).
+    /// Baut die Liste der möglichen 6er-Grundformen auf (ignoriert Skills).
     /// </summary>
-    public void RebuildMasterDeckFromInspector()
+    public void RebuildShapeTemplatesPool()
     {
-        masterDeck.Clear();
-
+        availableShapeTemplates.Clear();
         List<ShapeData> rawCandidates = new List<ShapeData>();
 
-        if (startingDeckAssets != null)
+        if (shapePoolAssets != null)
         {
-            foreach (CardAsset asset in startingDeckAssets)
+            foreach (CardAsset asset in shapePoolAssets)
             {
                 if (asset != null && asset.cardData != null && asset.cardData.cells.Count > 0)
                 {
@@ -103,9 +96,9 @@ public class InventoryManager : MonoBehaviour
             }
         }
 
-        if (inlineStartingDeck != null)
+        if (inlineShapePool != null)
         {
-            foreach (ShapeData shape in inlineStartingDeck)
+            foreach (ShapeData shape in inlineShapePool)
             {
                 if (shape != null && shape.cells.Count > 0)
                 {
@@ -114,23 +107,20 @@ public class InventoryManager : MonoBehaviour
             }
         }
 
-        if (rawCandidates.Count == 0 && useFallbackIfEmpty)
+        if (rawCandidates.Count == 0)
         {
             rawCandidates.AddRange(MemoryCardCatalog.CreateStarterDeck());
         }
 
         foreach (ShapeData candidate in rawCandidates)
         {
-            // 1. Fähigkeiten überspringen, solange includeSkillCards im Inspector deaktiviert ist
-            if (!includeSkillCards && candidate.category == CardCategory.TacticalSkill)
-            {
-                continue;
-            }
+            // Nur echte 6er-Bau-Würfel in den Pool aufnehmen
+            if (candidate.category != CardCategory.CubeShape) continue;
 
             ShapeData copy = candidate.Clone();
+            copy.tickCost = 1; // Standardkosten 1 Tick
 
-            // 2. Modifikatoren (Feuer/Eis/Gift/Schrein) ausblenden, solange includeBlockModifiers deaktiviert ist
-            if (!includeBlockModifiers && copy.category == CardCategory.CubeShape)
+            if (!includeBlockModifiers)
             {
                 foreach (ShapeCell cell in copy.cells)
                 {
@@ -138,7 +128,7 @@ public class InventoryManager : MonoBehaviour
                 }
             }
 
-            masterDeck.Add(copy);
+            availableShapeTemplates.Add(copy);
         }
     }
 
@@ -162,136 +152,99 @@ public class InventoryManager : MonoBehaviour
         }
     }
 
-    public void ResetDeckAndDrawStartingHand()
+    /// <summary>
+    /// Leert das Inventar und gibt dem Spieler genau die Startwürfel (z.B. 2 Stück).
+    /// </summary>
+    public void ResetInventoryToStartingCubes()
     {
-        drawPile.Clear();
-        hand.Clear();
-        discardPile.Clear();
+        inventoryCubes.Clear();
 
-        RebuildMasterDeckFromInspector();
-
-        foreach (ShapeData card in masterDeck)
+        if (availableShapeTemplates.Count == 0)
         {
-            ShapeData freshCard = card.Clone();
-            // Beim Mischen noch kein Biom festlegen – erst beim tatsächlichen Ziehen!
-            foreach (ShapeCell cell in freshCard.cells)
-            {
-                cell.hasAssignedZone = false;
-            }
-            drawPile.Add(freshCard);
+            RebuildShapeTemplatesPool();
         }
 
-        ShuffleList(drawPile);
-        DrawCards(startingHandSize);
-    }
-
-    public void DrawCards(int amount)
-    {
-        int effectiveMaxHand = Mathf.Min(maxHandSize, hotbarSlots.Length);
-
-        // Sicherstellen, dass der BiomeResonanceManager existiert
-        if (BiomeResonanceManager.Instance == null && GameManager.Instance != null)
+        for (int i = 0; i < startingCubeCount; i++)
         {
-            if (GameManager.Instance.GetComponent<BiomeResonanceManager>() == null)
-            {
-                GameManager.Instance.gameObject.AddComponent<BiomeResonanceManager>();
-            }
+            AddFoundCubeToInventory(isSecretBonus: false);
         }
 
-        for (int i = 0; i < amount; i++)
-        {
-            if (hand.Count >= effectiveMaxHand) break;
-
-            if (drawPile.Count == 0)
-            {
-                if (discardPile.Count == 0) break;
-
-                // Beim Zurückmischen des Ablagestapels die alten Biom-Farben löschen,
-                // damit sie beim erneuten Ziehen die NEUE Resonanz annehmen!
-                foreach (ShapeData discardedCard in discardPile)
-                {
-                    foreach (ShapeCell cell in discardedCard.cells)
-                    {
-                        cell.hasAssignedZone = false;
-                    }
-                    drawPile.Add(discardedCard);
-                }
-
-                discardPile.Clear();
-                ShuffleList(drawPile);
-            }
-
-            ShapeData drawn = drawPile[0];
-            drawPile.RemoveAt(0);
-
-            // HIER PASSIERT DIE FARB-ZUWEISUNG ANHAND DER AKTUELLEN RESONANZ OBEN LINKS:
-            if (BiomeResonanceManager.Instance != null)
-            {
-                BiomeResonanceManager.Instance.AssignBiomesToShape(drawn);
-            }
-
-            hand.Add(drawn);
-        }
-
-        SyncHandToHotbarSlots();
-        RefreshAllPreviews();
-    }
-
-    private void ShuffleList(List<ShapeData> list)
-    {
-        for (int i = list.Count - 1; i > 0; i--)
-        {
-            int swapIndex = Random.Range(0, i + 1);
-            ShapeData temp = list[i];
-            list[i] = list[swapIndex];
-            list[swapIndex] = temp;
-        }
-    }
-
-    public void MulliganHand()
-    {
-        while (hand.Count > 0)
-        {
-            discardPile.Add(hand[0]);
-            hand.RemoveAt(0);
-        }
-
-        DrawCards(startingHandSize);
         currentSelectedIndex = 0;
         UpdateSelection();
     }
 
-    private void SyncHandToHotbarSlots()
+    // Abwärtskompatible Methode für GameManager Reset
+    public void ResetDeckAndDrawStartingHand() => ResetInventoryToStartingCubes();
+
+    public bool CanAddCube()
+    {
+        int limit = Mathf.Min(maxInventorySize, hotbarSlots.Length);
+        return inventoryCubes.Count < limit;
+    }
+
+    /// <summary>
+    /// Wird aufgerufen, wenn der Slime im Platformer-Raum einen Würfel einsammelt!
+    /// Erzeugt einen neuen Würfel und färbt ihn anhand der aktuellen Biom-Resonanz oben links ein.
+    /// </summary>
+    public bool AddFoundCubeToInventory(bool isSecretBonus = false)
+    {
+        if (!CanAddCube()) return false;
+
+        if (availableShapeTemplates.Count == 0)
+        {
+            RebuildShapeTemplatesPool();
+        }
+        if (availableShapeTemplates.Count == 0) return false;
+
+        ShapeData template = availableShapeTemplates[Random.Range(0, availableShapeTemplates.Count)];
+        ShapeData newCube = template.Clone();
+
+        foreach (ShapeCell cell in newCube.cells)
+        {
+            cell.hasAssignedZone = false;
+        }
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.AssignBiomesToShape(newCube);
+        }
+
+        inventoryCubes.Add(newCube);
+        SyncInventoryToHotbarSlots();
+        RefreshAllPreviews();
+        return true;
+    }
+
+    public void AddRandomShape() => AddFoundCubeToInventory(false);
+
+    // Bleibt als leerer Hook für EventManager erhalten, zieht aber nichts mehr gratis nach!
+    public void CheckAndRefillIfEmpty() { }
+
+    /// <summary>
+    /// Entfernt den gebauten Würfel aus dem Inventar (ohne Ablagestapel).
+    /// </summary>
+    public void ConsumeShape(int index)
+    {
+        if (index < 0 || index >= inventoryCubes.Count) return;
+
+        inventoryCubes.RemoveAt(index);
+
+        SyncInventoryToHotbarSlots();
+        RefreshAllPreviews();
+        UpdateSelection();
+    }
+
+    private void SyncInventoryToHotbarSlots()
     {
         for (int i = 0; i < hotbarSlots.Length; i++)
         {
-            hotbarSlots[i] = (i < hand.Count) ? hand[i] : null;
+            hotbarSlots[i] = (i < inventoryCubes.Count) ? inventoryCubes[i] : null;
         }
 
-        if (currentSelectedIndex >= hand.Count && hand.Count > 0)
+        if (currentSelectedIndex >= inventoryCubes.Count && inventoryCubes.Count > 0)
         {
-            currentSelectedIndex = hand.Count - 1;
+            currentSelectedIndex = inventoryCubes.Count - 1;
         }
-    }
-
-    public void AddRandomShape() => DrawCards(1);
-
-    public void CheckAndRefillIfEmpty()
-    {
-        if (hand.Count == 0) DrawCards(2);
-    }
-
-    public void ConsumeShape(int index)
-    {
-        if (index < 0 || index >= hand.Count) return;
-
-        ShapeData played = hand[index];
-        hand.RemoveAt(index);
-        discardPile.Add(played);
-
-        SyncHandToHotbarSlots();
-        RefreshAllPreviews();
-        UpdateSelection();
     }
 
     void Update()
@@ -316,7 +269,7 @@ public class InventoryManager : MonoBehaviour
             else if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) moveDir = 1;
         }
 
-        int maxSelectableIndex = Mathf.Max(0, hand.Count - 1);
+        int maxSelectableIndex = Mathf.Max(0, inventoryCubes.Count - 1);
         if (moveDir != 0)
         {
             if (navRepeatTimer <= 0f)
@@ -401,67 +354,15 @@ public class InventoryManager : MonoBehaviour
 
     void TrySelectCurrentSlot()
     {
-        if (currentSelectedIndex < 0 || currentSelectedIndex >= hand.Count) return;
+        if (currentSelectedIndex < 0 || currentSelectedIndex >= inventoryCubes.Count) return;
 
-        ShapeData selectedCard = hand[currentSelectedIndex];
-        if (selectedCard == null) return;
-
-        if (selectedCard.category == CardCategory.TacticalSkill)
-        {
-            ExecuteTacticalSkillCard(selectedCard, currentSelectedIndex);
-            return;
-        }
+        ShapeData selectedCube = inventoryCubes[currentSelectedIndex];
+        if (selectedCube == null) return;
 
         if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
         if (placementManager != null)
         {
-            placementManager.SelectShape(selectedCard, currentSelectedIndex);
-        }
-    }
-
-    private void ExecuteTacticalSkillCard(ShapeData skillCard, int slotIndex)
-    {
-        if (gameManager == null) gameManager = GameManager.Instance;
-
-        string cardName = skillCard.shapeName;
-        int cost = skillCard.tickCost;
-        TacticalSkillType type = skillCard.skillType;
-        int power = skillCard.skillPower;
-
-        ConsumeShape(slotIndex);
-
-        switch (type)
-        {
-            case TacticalSkillType.DrawCards:
-                DrawCards(power);
-                break;
-
-            case TacticalSkillType.DelayBossTimeline:
-                if (gameManager != null) gameManager.DelayNextBossEvent(power, cardName);
-                break;
-
-            case TacticalSkillType.PurifyBossThreats:
-                if (gameManager != null && gameManager.ActiveBoss != null && GridManager.Instance != null)
-                {
-                    foreach (var zone in gameManager.ActiveBoss.ActiveZones)
-                    {
-                        foreach (var coord in zone.targetCoordinates)
-                        {
-                            GridManager.Instance.ResetCellHighlight(coord);
-                        }
-                    }
-                }
-                if (gameManager != null) gameManager.AddNightmare(-power, cardName);
-                break;
-
-            case TacticalSkillType.ReduceNightmare:
-                if (gameManager != null) gameManager.AddNightmare(-power, cardName);
-                break;
-        }
-
-        if (gameManager != null && cost > 0)
-        {
-            gameManager.AdvanceTicks(cost, $"Skill '{cardName}'");
+            placementManager.SelectShape(selectedCube, currentSelectedIndex);
         }
     }
 }

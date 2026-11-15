@@ -107,13 +107,17 @@ public class GameManager : MonoBehaviour
         if (Instance == null) Instance = this;
         else { Destroy(gameObject); return; }
 
-        // Neue ausgelagerte Komponenten automatisch anhängen
-        threatTracker = GetComponent<ThreatTrackerManager>();
         if (GetComponent<BiomeResonanceManager>() == null)
         {
-           gameObject.AddComponent<BiomeResonanceManager>();
+            gameObject.AddComponent<BiomeResonanceManager>();
         }
-        
+
+        if (GetComponent<CubeLootManager>() == null)
+        {
+            gameObject.AddComponent<CubeLootManager>();
+        }
+
+        threatTracker = GetComponent<ThreatTrackerManager>();
         if (threatTracker == null) threatTracker = gameObject.AddComponent<ThreatTrackerManager>();
 
         if (GetComponent<ThreatOrbsAndPiPHUD>() == null)
@@ -148,9 +152,6 @@ public class GameManager : MonoBehaviour
 
     public void ForceDrainFocus(int amount, string reason = "") => AdvanceTicks(amount, reason);
 
-    /// <summary>
-    /// Zählt alle Gefahren-Symbole oben rechts um 'ticks' herunter.
-    /// </summary>
     public void AdvanceTicks(int ticks, string reason = "")
     {
         if (ticks <= 0 || isResettingRun) return;
@@ -168,9 +169,6 @@ public class GameManager : MonoBehaviour
         NotifyFocusChanged();
     }
 
-    /// <summary>
-    /// Erhöht den Countdown aller Gefahren-Symbole oben rechts (z. B. durch 'Zeit-Anker').
-    /// </summary>
     public void DelayNextBossEvent(int extraTicks, string reason = "")
     {
         if (extraTicks <= 0 || isResettingRun) return;
@@ -216,16 +214,6 @@ public class GameManager : MonoBehaviour
         activeRumbleCoroutine = null;
     }
 
-    public void TriggerMulliganRedraw()
-    {
-        if (isResettingRun) return;
-
-        if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
-        if (inventoryManager != null) inventoryManager.MulliganHand();
-
-        AdvanceTicks(mulliganTickCost, "Neue Erinnerungen gerufen");
-    }
-
     public void RefillFocus()
     {
         if (threatTracker == null) threatTracker = GetComponent<ThreatTrackerManager>();
@@ -243,6 +231,11 @@ public class GameManager : MonoBehaviour
 
         currentNightmare = Mathf.Clamp(currentNightmare + amount, 0f, maxNightmare);
         NotifyNightmareChanged();
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.CheckNightmareThreshold(currentNightmare);
+        }
 
         if (currentNightmare >= maxNightmare && !isResettingRun)
         {
@@ -275,8 +268,13 @@ public class GameManager : MonoBehaviour
         totalTicksElapsed = 0;
         NotifyNightmareChanged();
 
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.ResetToDefaultResonances();
+        }
+
         if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
-        if (inventoryManager != null) inventoryManager.ResetDeckAndDrawStartingHand();
+        if (inventoryManager != null) inventoryManager.ResetInventoryToStartingCubes();
 
         if (currentLevelConfig != null) LoadLevel(currentLevelConfig);
         RefillFocus();
@@ -375,15 +373,6 @@ public class GameManager : MonoBehaviour
 
         var gamepad = Gamepad.current;
         var keyboard = Keyboard.current;
-
-        bool mulliganTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
-                                 (keyboard != null && keyboard.eKey.wasPressedThisFrame);
-
-        if (mulliganTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
-        {
-            TriggerMulliganRedraw();
-            return;
-        }
 
         bool touchpadPressed = false;
         if (gamepad != null)

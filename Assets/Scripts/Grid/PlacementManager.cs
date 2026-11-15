@@ -248,10 +248,14 @@ public class PlacementManager : MonoBehaviour
             int cardTickCost = currentShape.tickCost;
             int shrineCount = currentShape.CountModifier(BlockModifier.Shrine);
 
+            List<Vector2Int> newlyPlacedCoords = new List<Vector2Int>();
+
             foreach (ShapeCell cell in currentShape.cells)
             {
                 int x = startX + cell.localPosition.x;
                 int y = startY + cell.localPosition.y;
+                Vector2Int coord = new Vector2Int(x, y);
+                newlyPlacedCoords.Add(coord);
 
                 ZoneType blockBiome = cell.hasAssignedZone ? cell.assignedZone : ZoneType.Forest;
                 gridManager.PlaceBiomeBlockAt(x, y, blockBiome);
@@ -263,9 +267,14 @@ public class PlacementManager : MonoBehaviour
 
                 if (MacroGridManager.Instance != null)
                 {
-                    Vector2Int coord = new Vector2Int(x, y);
                     MacroGridManager.Instance.RegisterRoom(coord, null);
                 }
+            }
+
+            // WICHTIG: Dem CubeLootManager die 6 neuen Räume melden, damit er 1 garantierten + 1 versteckten Würfel darin platziert!
+            if (CubeLootManager.Instance != null)
+            {
+                CubeLootManager.Instance.RegisterPlacedCluster(newlyPlacedCoords);
             }
 
             if (MacroGridManager.Instance != null)
@@ -291,7 +300,7 @@ public class PlacementManager : MonoBehaviour
 
             if (useFocusCost && gameManager != null && cardTickCost > 0)
             {
-                gameManager.AdvanceTicks(cardTickCost, $"Karte '{placedName}' ({cardTickCost} Tick)");
+                gameManager.AdvanceTicks(cardTickCost, $"Würfel '{placedName}' gebaut ({cardTickCost} Tick)");
             }
         }
     }

@@ -102,6 +102,20 @@ public class BiomeResonanceManager : MonoBehaviour
         ShiftResonanceByStep(bossInjectedBiome, 1);
     }
 
+    /// <summary>
+    /// Prüft bei steigendem Albtraum, ob ab dem Schwellenwert (z. B. 60%) Albtraum in die Resonanz drückt.
+    /// </summary>
+    public void CheckNightmareThreshold(float currentNightmarePercent)
+    {
+        if (!nightmareBleedsIntoResonance) return;
+
+        BiomeWeightEntry nightmareEntry = GetOrAddEntry(ZoneType.PurpleNightmare);
+        if (currentNightmarePercent >= nightmareBleedThreshold && nightmareEntry.percentage < stepSize)
+        {
+            ShiftResonanceByStep(ZoneType.PurpleNightmare, 1);
+        }
+    }
+
     public void ShiftResonanceByStep(ZoneType targetZone, int steps = 1)
     {
         int safeStep = Mathf.Clamp(stepSize, 5, 50);

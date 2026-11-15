@@ -30,6 +30,13 @@ public class Room : MonoBehaviour
     [Header("Exits & Spawns")]
     [SerializeField] private DoorSetup[] doors;
 
+    [Header("Würfel-Spawnpunkte (Es wird maximal 1 pro Kategorie aktiv!)")]
+    [Tooltip("Lege hier mehrere mögliche Plätze für den normalen Würfel im Raum an.")]
+    [SerializeField] private Transform[] normalCubeSpawnPoints;
+
+    [Tooltip("Lege hier Plätze für versteckte / schwer erreichbare Bonus-Würfel im Raum an.")]
+    [SerializeField] private Transform[] secretCubeSpawnPoints;
+
     [Header("Kamera-Begrenzung")]
     [Tooltip("Der Trigger-Collider (Box oder Polygon) für CinemachineConfiner2D")]
     [SerializeField] private Collider2D cameraBounds;
@@ -41,10 +48,14 @@ public class Room : MonoBehaviour
     [SerializeField] private bool debugForceOpenSouth;
     [SerializeField] private bool debugForceOpenWest;
 
-    // Automatisch erzeugte Fallback-Warnlichter pro Himmelsrichtung (falls warningRenderer leer ist)
     private readonly Dictionary<Direction, SpriteRenderer> runtimeWarningGlows = new Dictionary<Direction, SpriteRenderer>();
     private readonly HashSet<Direction> activeWarningDirections = new HashSet<Direction>();
+    private readonly List<CubePickup> activePickups = new List<CubePickup>();
     private static Sprite fallbackGlowSprite;
+
+    // Falls noch keine Spawnpunkte im Inspector eingetragen sind, zählt zumindest die Raummitte als 1 Punkt
+    public int NormalSpawnPointCount => (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0) ? normalCubeSpawnPoints.Length : 1;
+    public int SecretSpawnPointCount => (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0) ? secretCubeSpawnPoints.Length : 1;
 
     private void Awake()
     {
@@ -66,7 +77,6 @@ public class Room : MonoBehaviour
     {
         if (activeWarningDirections.Count == 0) return;
 
-        // Sanftes rotes Pulsieren für alle bedrohten Nachbartüren
         float pulse = Mathf.PingPong(Time.time * 4.5f, 0.55f) + 0.25f;
         Color warnColor = new Color(1f, 0.15f, 0.1f, pulse);
 
@@ -77,6 +87,61 @@ public class Room : MonoBehaviour
             {
                 sr.color = warnColor;
             }
+        }
+    }
+
+    public Transform GetNormalSpawnPoint(int index)
+    {
+        if (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, normalCubeSpawnPoints.Length - 1);
+            if (normalCubeSpawnPoints[safeIndex] != null)
+            {
+                return normalCubeSpawnPoints[safeIndex];
+            }
+        }
+        return transform;
+    }
+
+    public Transform GetSecretSpawnPoint(int index)
+    {
+        if (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, secretCubeSpawnPoints.Length - 1);
+            if (secretCubeSpawnPoints[safeIndex] != null)
+            {
+                return secretCubeSpawnPoints[safeIndex];
+            }
+        }
+        return transform;
+    }
+
+    public void RegisterSpawnedPickup(CubePickup pickup)
+    {
+        if (pickup != null)
+        {
+            activePickups.Add(pickup);
+        }
+    }
+
+    public void ClearSpawnedPickups()
+    {
+        for (int i = activePickups.Count - 1; i >= 0; i--)
+        {
+            if (activePickups[i] != null)
+            {
+                Destroy(activePickups[i].gameObject);
+            }
+        }
+        activePickups.Clear();
+    }
+
+    [ContextMenu("Nächsten Spawnpunkt in diesem Raum testen (Switch)")]
+    public void DebugSwitchSpawnPoint()
+    {
+        if (CubeLootManager.Instance != null)
+        {
+            CubeLootManager.Instance.CycleActiveRoomSpawnPoint(this);
         }
     }
 
@@ -97,10 +162,6 @@ public class Room : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Schaltet die rote Umwelt-Telegrafie an einer Tür an oder aus,
-    /// wenn der Nachbarraum in dieser Richtung vom Boss anvisiert wird.
-    /// </summary>
     public void SetDoorWarning(Direction direction, bool warn)
     {
         if (warn)
@@ -141,13 +202,11 @@ public class Room : MonoBehaviour
                     return doors[i].warningRenderer;
                 }
 
-                // Kein eigenes Sprite zugewiesen -> Automatischen Warn-Schein am SpawnPoint erzeugen
                 Transform anchor = doors[i].spawnPoint != null ? doors[i].spawnPoint : transform;
                 GameObject glowObj = new GameObject($"DoorWarningGlow_{direction}");
                 glowObj.transform.SetParent(anchor, false);
                 glowObj.transform.localPosition = Vector3.zero;
 
-                // Je nach Tür-Ausrichtung als schmalen Warn-Streifen im Durchgang skalieren
                 bool isVerticalDoor = (direction == Direction.East || direction == Direction.West);
                 glowObj.transform.localScale = isVerticalDoor ? new Vector3(1.4f, 5.2f, 1f) : new Vector3(5.2f, 1.4f, 1f);
 
@@ -209,6 +268,37 @@ public class Room : MonoBehaviour
     public void TriggerExit(Direction dir)
     {
         OnExitTriggered?.Invoke(this, dir);
+    }
+
+    private void OnDrawGizmos()
+    {
+        // Türkise Markierungen für normale Würfel-Spawnpunkte
+        if (normalCubeSpawnPoints != null)
+        {
+            Gizmos.color = Color.cyan;
+            for (int i = 0; i < normalCubeSpawnPoints.Length; i++)
+            {
+                if (normalCubeSpawnPoints[i] != null)
+                {
+                    Gizmos.DrawWireSphere(normalCubeSpawnPoints[i].position, 0.45f);
+                    Gizmos.DrawWireCube(normalCubeSpawnPoints[i].position, new Vector3(0.5f, 0.5f, 0.5f));
+                }
+            }
+        }
+
+        // Goldene Markierungen für versteckte Bonus-Würfel-Spawnpunkte
+        if (secretCubeSpawnPoints != null)
+        {
+            Gizmos.color = new Color(1f, 0.8f, 0.1f, 1f);
+            for (int i = 0; i < secretCubeSpawnPoints.Length; i++)
+            {
+                if (secretCubeSpawnPoints[i] != null)
+                {
+                    Gizmos.DrawWireSphere(secretCubeSpawnPoints[i].position, 0.5f);
+                    Gizmos.DrawWireCube(secretCubeSpawnPoints[i].position, new Vector3(0.6f, 0.6f, 0.6f));
+                }
+            }
+        }
     }
 
 #if UNITY_EDITOR
