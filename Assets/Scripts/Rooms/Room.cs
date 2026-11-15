@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Tilemaps;
 
 public class Room : MonoBehaviour
 {
@@ -19,9 +20,9 @@ public class Room : MonoBehaviour
     public struct DoorSetup
     {
         public Direction direction;
-        [Tooltip("Das Tür-Prefab in der 6-Tile-Lücke (Sprite + Collider auf Layer 'Ground')")]
+        [Tooltip("Das Tür-Prefab in der Lücke (Door_North/South/East/West)")]
         public GameObject wallBlocker;
-        [Tooltip("Einstiegspunkt, wenn man aus dieser Richtung kommt")]
+        [Tooltip("Fallback-Einstiegspunkt")]
         public Transform spawnPoint;
         [Tooltip("Optional: Eigener SpriteRenderer für rotes Gefahren-Leuchten an dieser Tür")]
         public SpriteRenderer warningRenderer;
@@ -29,16 +30,14 @@ public class Room : MonoBehaviour
 
     [Header("Exits & Spawns")]
     [SerializeField] private DoorSetup[] doors;
+    [Tooltip("Passt die Exit-Trigger beim Start automatisch an die volle Breite der Door_...-Blöcke an.")]
+    [SerializeField] private bool autoAlignExitTriggersToDoors = true;
 
     [Header("Würfel-Spawnpunkte (Es wird maximal 1 pro Kategorie aktiv!)")]
-    [Tooltip("Lege hier mehrere mögliche Plätze für den normalen Würfel im Raum an.")]
     [SerializeField] private Transform[] normalCubeSpawnPoints;
-
-    [Tooltip("Lege hier Plätze für versteckte / schwer erreichbare Bonus-Würfel im Raum an.")]
     [SerializeField] private Transform[] secretCubeSpawnPoints;
 
     [Header("Kamera-Begrenzung")]
-    [Tooltip("Der Trigger-Collider (Box oder Polygon) für CinemachineConfiner2D")]
     [SerializeField] private Collider2D cameraBounds;
     public Collider2D CameraBounds => cameraBounds;
 
@@ -51,9 +50,10 @@ public class Room : MonoBehaviour
     private readonly Dictionary<Direction, SpriteRenderer> runtimeWarningGlows = new Dictionary<Direction, SpriteRenderer>();
     private readonly HashSet<Direction> activeWarningDirections = new HashSet<Direction>();
     private readonly List<CubePickup> activePickups = new List<CubePickup>();
+    private readonly Dictionary<Direction, Bounds> localDoorTunnelBounds = new Dictionary<Direction, Bounds>();
+    private bool doorBoundsCached = false;
     private static Sprite fallbackGlowSprite;
 
-    // Falls noch keine Spawnpunkte im Inspector eingetragen sind, zählt zumindest die Raummitte als 1 Punkt
     public int NormalSpawnPointCount => (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0) ? normalCubeSpawnPoints.Length : 1;
     public int SecretSpawnPointCount => (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0) ? secretCubeSpawnPoints.Length : 1;
 
@@ -64,13 +64,181 @@ public class Room : MonoBehaviour
             Collider2D[] colliders = GetComponentsInChildren<Collider2D>();
             foreach (var col in colliders)
             {
-                if (col.isTrigger)
+                if (col.isTrigger && col.GetComponent<RoomExitTrigger>() == null)
                 {
                     cameraBounds = col;
                     break;
                 }
             }
         }
+
+        CacheAllDoorTunnelBounds();
+    }
+
+    /// <summary>
+    /// Liest einmalig die exakte 4x2-Türrahmen-Geometrie aus Door_North/South/East/West (wallBlocker) aus,
+    /// völlig unabhängig davon, wie groß oder L-förmig der Raum ist.
+    /// </summary>
+    public void CacheAllDoorTunnelBounds()
+    {
+        if (doorBoundsCached || doors == null) return;
+
+        for (int i = 0; i < doors.Length; i++)
+        {
+            Direction dir = doors[i].direction;
+            GameObject blocker = doors[i].wallBlocker;
+            Bounds localB = ExtractLocalBoundsFromBlocker(blocker, doors[i].spawnPoint);
+            localDoorTunnelBounds[dir] = localB;
+        }
+
+        doorBoundsCached = true;
+
+        if (autoAlignExitTriggersToDoors)
+        {
+            AlignExitTriggersToDoorTunnels();
+        }
+    }
+
+    private Bounds ExtractLocalBoundsFromBlocker(GameObject blocker, Transform fallbackSpawn)
+    {
+        if (blocker != null)
+        {
+            bool wasActive = blocker.activeSelf;
+            if (!wasActive) blocker.SetActive(true);
+            Physics2D.SyncTransforms();
+
+            Bounds worldBounds = default;
+            bool found = false;
+
+            // 1. Prüfen ob Door_... eine Tilemap nutzt
+            Tilemap tm = blocker.GetComponentInChildren<Tilemap>();
+            if (tm != null)
+            {
+                tm.CompressBounds();
+                if (tm.cellBounds.size.x > 0 && tm.cellBounds.size.y > 0)
+                {
+                    Vector3 minW = tm.transform.TransformPoint(tm.localBounds.min);
+                    Vector3 maxW = tm.transform.TransformPoint(tm.localBounds.max);
+                    worldBounds.SetMinMax(Vector3.Min(minW, maxW), Vector3.Max(minW, maxW));
+                    found = true;
+                }
+            }
+
+            // 2. Prüfen ob Door_... einen Collider2D hat (wie der 4x2 Rahmen auf dem Screenshot)
+            if (!found)
+            {
+                Collider2D col = blocker.GetComponentInChildren<Collider2D>();
+                if (col != null && col.bounds.size.sqrMagnitude > 0.05f)
+                {
+                    worldBounds = col.bounds;
+                    found = true;
+                }
+            }
+
+            // 3. Prüfen ob Door_... einen SpriteRenderer hat
+            if (!found)
+            {
+                Renderer rend = blocker.GetComponentInChildren<Renderer>();
+                if (rend != null && rend.bounds.size.sqrMagnitude > 0.05f)
+                {
+                    worldBounds = rend.bounds;
+                    found = true;
+                }
+            }
+
+            if (!wasActive) blocker.SetActive(false);
+
+            if (found)
+            {
+                Vector3 localCenter = transform.InverseTransformPoint(worldBounds.center);
+                return new Bounds(localCenter, worldBounds.size);
+            }
+        }
+
+        if (fallbackSpawn != null)
+        {
+            Vector3 localPos = transform.InverseTransformPoint(fallbackSpawn.position);
+            return new Bounds(localPos, new Vector3(4f, 2f, 1f));
+        }
+
+        return new Bounds(Vector3.zero, new Vector3(4f, 2f, 1f));
+    }
+
+    /// <summary>
+    /// Passt die Exit_North/South/East/West Trigger automatisch an die äußere Kante des 4x2-Türrahmens an,
+    /// damit man auf jeder Höhe/Seite der Tür zuverlässig den Übergang auslöst.
+    /// </summary>
+    private void AlignExitTriggersToDoorTunnels()
+    {
+        RoomExitTrigger[] triggers = GetComponentsInChildren<RoomExitTrigger>(true);
+        for (int i = 0; i < triggers.Length; i++)
+        {
+            RoomExitTrigger trig = triggers[i];
+            if (trig == null) continue;
+
+            BoxCollider2D box = trig.GetComponent<BoxCollider2D>();
+            if (box == null) continue;
+
+            Direction dir = trig.ExitDirection;
+            if (!localDoorTunnelBounds.TryGetValue(dir, out Bounds tunnel)) continue;
+
+            Vector3 worldTunnelCenter = transform.TransformPoint(tunnel.center);
+            Vector3 triggerWorldCenter = worldTunnelCenter;
+            Vector2 triggerSize = box.size;
+
+            if (dir == Direction.North)
+            {
+                // Obere Hälfte des Nord-Türrahmens, volle Breite
+                float stripH = Mathf.Min(0.75f, tunnel.size.y * 0.45f);
+                triggerWorldCenter.y = (worldTunnelCenter.y + tunnel.extents.y) - stripH * 0.5f;
+                triggerSize = new Vector2(tunnel.size.x, stripH);
+            }
+            else if (dir == Direction.South)
+            {
+                // Untere Hälfte des Süd-Türrahmens, volle Breite
+                float stripH = Mathf.Min(0.75f, tunnel.size.y * 0.45f);
+                triggerWorldCenter.y = (worldTunnelCenter.y - tunnel.extents.y) + stripH * 0.5f;
+                triggerSize = new Vector2(tunnel.size.x, stripH);
+            }
+            else if (dir == Direction.East)
+            {
+                // Rechte Hälfte des Ost-Türrahmens, volle Höhe
+                float stripW = Mathf.Min(0.75f, tunnel.size.x * 0.45f);
+                triggerWorldCenter.x = (worldTunnelCenter.x + tunnel.extents.x) - stripW * 0.5f;
+                triggerSize = new Vector2(stripW, tunnel.size.y);
+            }
+            else if (dir == Direction.West)
+            {
+                // Linke Hälfte des West-Türrahmens, volle Höhe
+                float stripW = Mathf.Min(0.75f, tunnel.size.x * 0.45f);
+                triggerWorldCenter.x = (worldTunnelCenter.x - tunnel.extents.x) + stripW * 0.5f;
+                triggerSize = new Vector2(stripW, tunnel.size.y);
+            }
+
+            box.transform.position = triggerWorldCenter;
+            box.offset = Vector2.zero;
+            box.size = triggerSize;
+            box.isTrigger = true;
+        }
+    }
+
+    /// <summary>
+    /// Gibt die exakte Welt-Bounding-Box des Türrahmens (z.B. 4x2 Kasten) für eine Richtung zurück.
+    /// </summary>
+    public Bounds GetDoorTunnelWorldBounds(Direction dir)
+    {
+        if (!doorBoundsCached)
+        {
+            CacheAllDoorTunnelBounds();
+        }
+
+        if (localDoorTunnelBounds.TryGetValue(dir, out Bounds localB))
+        {
+            return new Bounds(transform.TransformPoint(localB.center), localB.size);
+        }
+
+        Transform sp = GetSpawnPoint(dir);
+        return new Bounds(sp != null ? sp.position : transform.position, new Vector3(4f, 2f, 1f));
     }
 
     private void Update()
@@ -202,13 +370,13 @@ public class Room : MonoBehaviour
                     return doors[i].warningRenderer;
                 }
 
-                Transform anchor = doors[i].spawnPoint != null ? doors[i].spawnPoint : transform;
+                Bounds tunnel = GetDoorTunnelWorldBounds(direction);
                 GameObject glowObj = new GameObject($"DoorWarningGlow_{direction}");
-                glowObj.transform.SetParent(anchor, false);
-                glowObj.transform.localPosition = Vector3.zero;
+                glowObj.transform.SetParent(transform, true);
+                glowObj.transform.position = tunnel.center;
 
                 bool isVerticalDoor = (direction == Direction.East || direction == Direction.West);
-                glowObj.transform.localScale = isVerticalDoor ? new Vector3(1.4f, 5.2f, 1f) : new Vector3(5.2f, 1.4f, 1f);
+                glowObj.transform.localScale = isVerticalDoor ? new Vector3(1.4f, 4.5f, 1f) : new Vector3(4.5f, 1.4f, 1f);
 
                 SpriteRenderer sr = glowObj.AddComponent<SpriteRenderer>();
                 sr.sprite = GetFallbackGlowSprite();
@@ -272,7 +440,6 @@ public class Room : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        // Türkise Markierungen für normale Würfel-Spawnpunkte
         if (normalCubeSpawnPoints != null)
         {
             Gizmos.color = Color.cyan;
@@ -286,7 +453,6 @@ public class Room : MonoBehaviour
             }
         }
 
-        // Goldene Markierungen für versteckte Bonus-Würfel-Spawnpunkte
         if (secretCubeSpawnPoints != null)
         {
             Gizmos.color = new Color(1f, 0.8f, 0.1f, 1f);

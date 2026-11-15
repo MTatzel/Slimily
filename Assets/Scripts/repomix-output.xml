@@ -46,6 +46,7 @@ Boss/
   BossController.cs
 Core/
   BiomeResonanceManager.cs
+  CubeLootManager.cs
   EventManager.cs
   GameManager.cs
   GridManager.cs
@@ -63,22 +64,26 @@ Grid/
   ShapeData.cs
   ShapePreviewUI.cs
 Rooms/
+  CubePickup.cs
   Direction.cs
   Room.cs
   RoomDoor.cs
   RoomExitTrigger.cs
 Slime/
   PlatformerAirborneState.cs
+  PlatformerDashState.cs
   PlatformerGroundedState.cs
   PlatformerPhysicsData.cs
   PlatformerSlimeController.cs
   PlatformerSlimeState.cs
   PlatformerStateMachine.cs
+  SlimeAbilities.cs
+  SlimeInputHandler.cs
+  SlimeVisuals.cs
 UI/
   ThreatOrbsAndPiPHUD.cs
   TurnBannerUI.cs
 .repomixignore
-PROJEKT_KONTEXT_OLD.md
 PROJEKT_KONTEXT.md
 repomix.config.json
 </directory_structure>
@@ -405,10 +410,10 @@ public class BiomeWeightEntry
 {
     public ZoneType zoneType;
     public string displayName;
-    [Range(0f, 100f)] public float percentage;
+    [Range(0, 100)] public int percentage;
     [HideInInspector] public int builtTilesOnGrid;
 
-    public BiomeWeightEntry(ZoneType type, string name, float startPercent)
+    public BiomeWeightEntry(ZoneType type, string name, int startPercent)
     {
         zoneType = type;
         displayName = name;
@@ -421,55 +426,66 @@ public class BiomeResonanceManager : MonoBehaviour
 {
     public static BiomeResonanceManager Instance { get; private set; }
 
-    [Header("Aktive Biom-Resonanzen (Werden automatisch auf 100% normiert)")]
+    [Header("Alle verfügbaren Biome (0% wird im HUD ausgeblendet!)")]
     public List<BiomeWeightEntry> resonances = new List<BiomeWeightEntry>();
 
-    [Header("Richtungs-Einfluss beim Laufen (Im Inspector frei einstellbar)")]
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach NORDEN läuft?")]
-    public ZoneType northBiome = ZoneType.Ruins;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach OSTEN läuft?")]
-    public ZoneType eastBiome = ZoneType.Ocean;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach SÜDEN läuft?")]
-    public ZoneType southBiome = ZoneType.Forest;
-    [Tooltip("Welches Biom wird stärker, wenn der Spieler nach WESTEN läuft?")]
-    public ZoneType westBiome = ZoneType.Forest;
+    [Header("Feste Prozent-Schritte (z.B. 20% -> 0, 20, 40, 60, 80, 100)")]
+    public int stepSize = 20;
 
-    [Header("Änderungs-Stärke")]
-    [Tooltip("Um wie viel Prozent verschiebt sich die Resonanz bei einem Schritt in eine Richtung?")]
-    [Range(1f, 35f)] public float shiftPerRoomStep = 8f;
-    [Tooltip("Wenn aktiv, ändert sich die Resonanz nur beim Erschließen NEUER Räume (verhindert Farmen durch Hin-und-Her-Laufen).")]
-    public bool onlyShiftOnNewRooms = false;
+    [Header("Trigger 1: Distanz & Himmelsrichtung")]
+    public int hubSafeRadius = 2;
+    public bool onlyShiftOnNewRooms = true;
+    public ZoneType northBiome = ZoneType.Ruins;
+    public ZoneType eastBiome = ZoneType.Ocean;
+    public ZoneType southBiome = ZoneType.Forest;
+    public ZoneType westBiome = ZoneType.Swamp;
+
+    [Header("Trigger 2: Boss manipuliert die Leiste")]
+    public bool bossInfluencesResonance = true;
+    public ZoneType bossInjectedBiome = ZoneType.PurpleNightmare;
+
+    [Header("Trigger 3: Hoher Albtraum-Druck")]
+    public bool nightmareBleedsIntoResonance = true;
+    [Range(30f, 90f)] public float nightmareBleedThreshold = 60f;
 
     public event Action OnResonanceChanged;
 
     private void Awake()
     {
         if (Instance == null) Instance = this;
-        else if (Instance != this) Destroy(this);
+        else if (Instance != this) { Destroy(this); return; }
 
-        if (resonances.Count == 0)
-        {
-            ResetToDefaultResonances();
-        }
-        NormalizePercentages();
+        ResetToDefaultResonances();
     }
 
     public void ResetToDefaultResonances()
     {
         resonances.Clear();
-        resonances.Add(new BiomeWeightEntry(ZoneType.Forest, "Wald", 80f));
-        resonances.Add(new BiomeWeightEntry(ZoneType.Ruins, "Ruinen", 10f));
-        resonances.Add(new BiomeWeightEntry(ZoneType.Ocean, "Meer", 10f));
-        NormalizePercentages();
+        resonances.Add(new BiomeWeightEntry(ZoneType.Forest, "Wald", 100));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Ruins, "Ruinen", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Ocean, "Meer", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.Swamp, "Sumpf", 0));
+        resonances.Add(new BiomeWeightEntry(ZoneType.PurpleNightmare, "Albtraum", 0));
+
         OnResonanceChanged?.Invoke();
     }
 
-    /// <summary>
-    /// Wird vom MacroGridManager aufgerufen, sobald der Slime einen Raum in Richtung 'dir' verlässt.
-    /// </summary>
     public void OnPlayerMovedInDirection(Direction dir, bool isNewRoom)
     {
         if (onlyShiftOnNewRooms && !isNewRoom) return;
+
+        if (MacroGridManager.Instance != null && GridManager.Instance != null)
+        {
+            Vector2Int current = MacroGridManager.Instance.CurrentCoordinate;
+            Vector2Int hub = new Vector2Int(GridManager.Instance.width / 2, GridManager.Instance.height / 2);
+            int distFromHub = Mathf.Max(Mathf.Abs(current.x - hub.x), Mathf.Abs(current.y - hub.y));
+
+            if (distFromHub <= hubSafeRadius)
+            {
+                ShiftResonanceByStep(ZoneType.Forest, 1);
+                return;
+            }
+        }
 
         ZoneType targetBiome = dir switch
         {
@@ -480,27 +496,68 @@ public class BiomeResonanceManager : MonoBehaviour
             _ => ZoneType.Forest
         };
 
-        ShiftResonance(targetBiome, shiftPerRoomStep);
+        ShiftResonanceByStep(targetBiome, 1);
+    }
+
+    public void OnBossPulseTriggered()
+    {
+        if (!bossInfluencesResonance) return;
+        ShiftResonanceByStep(bossInjectedBiome, 1);
     }
 
     /// <summary>
-    /// Modulare Schnittstelle: Verschiebt die Resonanz zugunsten von 'targetZone'
-    /// (nutzbar für Richtungswechsel, Boss-Aktionen, Schreine oder Albtraum-Schwellenwerte).
+    /// Prüft bei steigendem Albtraum, ob ab dem Schwellenwert (z. B. 60%) Albtraum in die Resonanz drückt.
     /// </summary>
-    public void ShiftResonance(ZoneType targetZone, float deltaAmount)
+    public void CheckNightmareThreshold(float currentNightmarePercent)
     {
-        if (deltaAmount <= 0f || resonances.Count == 0) return;
+        if (!nightmareBleedsIntoResonance) return;
 
-        BiomeWeightEntry targetEntry = GetOrAddEntry(targetZone);
-        targetEntry.percentage += deltaAmount;
+        BiomeWeightEntry nightmareEntry = GetOrAddEntry(ZoneType.PurpleNightmare);
+        if (currentNightmarePercent >= nightmareBleedThreshold && nightmareEntry.percentage < stepSize)
+        {
+            ShiftResonanceByStep(ZoneType.PurpleNightmare, 1);
+        }
+    }
 
-        NormalizePercentages();
+    public void ShiftResonanceByStep(ZoneType targetZone, int steps = 1)
+    {
+        int safeStep = Mathf.Clamp(stepSize, 5, 50);
+        BiomeWeightEntry target = GetOrAddEntry(targetZone);
+
+        for (int s = 0; s < steps; s++)
+        {
+            if (target.percentage >= 100) break;
+
+            BiomeWeightEntry donor = null;
+            int maxOtherPct = 0;
+
+            for (int i = 0; i < resonances.Count; i++)
+            {
+                BiomeWeightEntry candidate = resonances[i];
+                if (candidate.zoneType != targetZone && candidate.percentage > maxOtherPct)
+                {
+                    maxOtherPct = candidate.percentage;
+                    donor = candidate;
+                }
+            }
+
+            if (donor != null && donor.percentage > 0)
+            {
+                int transfer = Mathf.Min(safeStep, donor.percentage);
+                donor.percentage -= transfer;
+                target.percentage += transfer;
+            }
+        }
+
         OnResonanceChanged?.Invoke();
     }
 
-    /// <summary>
-    /// Würfelt für alle 6 Blöcke einer gezogenen Form die Biom-Farben anhand der aktuellen Resonanz aus.
-    /// </summary>
+    public void ShiftResonance(ZoneType targetZone, float deltaAmount)
+    {
+        int steps = Mathf.Max(1, Mathf.RoundToInt(deltaAmount / Mathf.Max(5f, stepSize)));
+        ShiftResonanceByStep(targetZone, steps);
+    }
+
     public void AssignBiomesToShape(ShapeData shape)
     {
         if (shape == null || shape.category != CardCategory.CubeShape) return;
@@ -519,27 +576,30 @@ public class BiomeResonanceManager : MonoBehaviour
     {
         if (resonances.Count == 0) return ZoneType.Forest;
 
-        float total = 0f;
+        int total = 0;
         for (int i = 0; i < resonances.Count; i++)
         {
-            total += Mathf.Max(0f, resonances[i].percentage);
+            total += Mathf.Max(0, resonances[i].percentage);
         }
 
-        if (total <= 0.01f) return resonances[0].zoneType;
+        if (total <= 0) return ZoneType.Forest;
 
-        float roll = UnityEngine.Random.Range(0f, total);
-        float cumulative = 0f;
+        int roll = UnityEngine.Random.Range(0, total);
+        int cumulative = 0;
 
         for (int i = 0; i < resonances.Count; i++)
         {
-            cumulative += Mathf.Max(0f, resonances[i].percentage);
-            if (roll <= cumulative)
+            int pct = Mathf.Max(0, resonances[i].percentage);
+            if (pct == 0) continue;
+
+            cumulative += pct;
+            if (roll < cumulative)
             {
                 return resonances[i].zoneType;
             }
         }
 
-        return resonances[resonances.Count - 1].zoneType;
+        return ZoneType.Forest;
     }
 
     public void RegisterBuiltTile(ZoneType zone)
@@ -584,41 +644,311 @@ public class BiomeResonanceManager : MonoBehaviour
             _ => zone.ToString()
         };
 
-        BiomeWeightEntry newEntry = new BiomeWeightEntry(zone, label, 0f);
+        BiomeWeightEntry newEntry = new BiomeWeightEntry(zone, label, 0);
         resonances.Add(newEntry);
         return newEntry;
     }
+}
+</file>
 
-    private void NormalizePercentages()
+<file path="Core/CubeLootManager.cs">
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class CoordinateLootState
+{
+    public Vector2Int coordinate;
+
+    public bool hasNormalCube;
+    public bool normalCollected;
+    public int normalSpawnIndex = -1;
+
+    public bool hasSecretCube;
+    public bool secretCollected;
+    public int secretSpawnIndex = -1;
+}
+
+public class CubeLootManager : MonoBehaviour
+{
+    public static CubeLootManager Instance { get; private set; }
+
+    [Header("Pickup-Prefabs (Optional - hat automatischen Fallback!)")]
+    [Tooltip("Dein CubePickup-Prefab für den garantierten Würfel im Raum.")]
+    public CubePickup normalCubePickupPrefab;
+    [Tooltip("Optionales eigenes Prefab für versteckte Bonus-Würfel (nutzt sonst normalCubePickupPrefab).")]
+    public CubePickup secretCubePickupPrefab;
+
+    [Header("Spawn-Regeln pro gelegtem 6er-Würfel")]
+    [Tooltip("Wie viele garantierte Würfel in jedem gelegten 6er-Block spawnen (Standard: 1).")]
+    [Range(1, 3)] public int guaranteedCubesPerShape = 1;
+
+    [Tooltip("Wahrscheinlichkeit (0 bis 1), dass in einem der anderen Räume des 6er-Blocks zusätzlich ein versteckter Bonus-Würfel spawnt.")]
+    [Range(0f, 1f)] public float secretCubeChancePerShape = 1.0f;
+
+    [Header("Debug / Testen")]
+    [Tooltip("Erlaubt mit Taste P im Raum das Umschalten des aktiven Spawnpunkts zum schnellen Testen.")]
+    public bool enableSpawnSwitchKeyP = true;
+
+    // Speichert den Loot-Zustand pro Grid-Koordinate (damit mehrfach genutzte Raum-Prefabs aus dem Pool nie kollidieren)
+    private readonly Dictionary<Vector2Int, CoordinateLootState> lootByCoord = new Dictionary<Vector2Int, CoordinateLootState>();
+
+    private static Sprite fallbackCubeSprite;
+
+    private void Awake()
     {
-        float sum = 0f;
-        for (int i = 0; i < resonances.Count; i++)
+        if (Instance == null) Instance = this;
+        else if (Instance != this) { Destroy(this); return; }
+    }
+
+    private void Update()
+    {
+        // Mit Taste P im aktuellen Raum den Spawnpunkt live durchschalten
+        if (enableSpawnSwitchKeyP && Keyboard.current != null && Keyboard.current.pKey.wasPressedThisFrame)
         {
-            resonances[i].percentage = Mathf.Max(0f, resonances[i].percentage);
-            sum += resonances[i].percentage;
+            CycleActiveRoomSpawnPoint();
+        }
+    }
+
+    public void ClearAllLootStates()
+    {
+        lootByCoord.Clear();
+    }
+
+    /// <summary>
+    /// Wird vom PlacementManager aufgerufen, sobald ein 6er-Würfel auf das Grid gelegt wird.
+    /// Wählt aus den 6 Koordinaten genau die Räume aus, die tatsächlich einen Würfel erhalten!
+    /// </summary>
+    public void RegisterPlacedCluster(List<Vector2Int> clusterCoords)
+    {
+        if (clusterCoords == null || clusterCoords.Count == 0) return;
+
+        List<Vector2Int> availableCoords = new List<Vector2Int>(clusterCoords);
+        ShuffleCoords(availableCoords);
+
+        // 1. Alle 6 Koordinaten des gelegten Würfels initialisieren (Standard: leer)
+        foreach (Vector2Int coord in clusterCoords)
+        {
+            lootByCoord[coord] = new CoordinateLootState
+            {
+                coordinate = coord,
+                hasNormalCube = false,
+                normalCollected = false,
+                normalSpawnIndex = -1,
+                hasSecretCube = false,
+                secretCollected = false,
+                secretSpawnIndex = -1
+            };
         }
 
-        if (sum <= 0.001f)
+        int index = 0;
+
+        // 2. Garantierte(n) Würfel auf 1 (oder X) der 6 Räume verteilen
+        int normalCount = Mathf.Min(guaranteedCubesPerShape, availableCoords.Count);
+        for (int i = 0; i < normalCount; i++)
         {
-            if (resonances.Count > 0) resonances[0].percentage = 100f;
+            Vector2Int chosen = availableCoords[index++];
+            lootByCoord[chosen].hasNormalCube = true;
+            Debug.Log($"[CubeLootManager] Garantierter Würfel zugewiesen an Raum {chosen}.");
+        }
+
+        // 3. Optionalen Geheim-/Bonus-Würfel auf einen der verbleibenden Räume des 6er-Blocks legen
+        if (index < availableCoords.Count && Random.value <= secretCubeChancePerShape)
+        {
+            Vector2Int secretChosen = availableCoords[index++];
+            lootByCoord[secretChosen].hasSecretCube = true;
+            Debug.Log($"[CubeLootManager] Versteckter Bonus-Würfel zugewiesen an Raum {secretChosen}.");
+        }
+    }
+
+    /// <summary>
+    /// Wird aufgerufen, wenn MacroGridManager einen Raum aktiviert oder spawnt.
+    /// </summary>
+    public void RefreshRoomLoot(Room room, Vector2Int coord)
+    {
+        if (room == null) return;
+
+        // Zuerst alte Pickup-Instanzen in dieser Raum-Instanz aufräumen
+        room.ClearSpawnedPickups();
+
+        if (!lootByCoord.TryGetValue(coord, out CoordinateLootState state))
+        {
+            // Raum hat keinen Loot-Eintrag (z.B. Start-Hub)
             return;
         }
 
-        for (int i = 0; i < resonances.Count; i++)
+        // 1. Normaler Würfel
+        if (state.hasNormalCube && !state.normalCollected)
         {
-            resonances[i].percentage = (resonances[i].percentage / sum) * 100f;
+            int spawnCount = room.NormalSpawnPointCount;
+            if (spawnCount > 0)
+            {
+                if (state.normalSpawnIndex < 0 || state.normalSpawnIndex >= spawnCount)
+                {
+                    state.normalSpawnIndex = Random.Range(0, spawnCount);
+                }
+
+                Transform spawnPoint = room.GetNormalSpawnPoint(state.normalSpawnIndex);
+                CubePickup pickup = CreatePickupInstance(spawnPoint, room.transform, isSecret: false);
+                pickup.Initialize(coord, secret: false);
+                room.RegisterSpawnedPickup(pickup);
+            }
+        }
+
+        // 2. Versteckter Bonus-Würfel
+        if (state.hasSecretCube && !state.secretCollected)
+        {
+            int secretCount = room.SecretSpawnPointCount;
+            if (secretCount > 0)
+            {
+                if (state.secretSpawnIndex < 0 || state.secretSpawnIndex >= secretCount)
+                {
+                    state.secretSpawnIndex = Random.Range(0, secretCount);
+                }
+
+                Transform spawnPoint = room.GetSecretSpawnPoint(state.secretSpawnIndex);
+                CubePickup pickup = CreatePickupInstance(spawnPoint, room.transform, isSecret: true);
+                pickup.Initialize(coord, secret: true);
+                room.RegisterSpawnedPickup(pickup);
+            }
         }
     }
 
-#if UNITY_EDITOR
-    private void OnValidate()
+    /// <summary>
+    /// Wird von CubePickup aufgerufen, sobald der Slime den Würfel im Raum berührt.
+    /// </summary>
+    public bool TryCollectCubeFromRoom(Vector2Int coord, bool isSecret)
     {
-        if (resonances != null && resonances.Count > 0)
+        InventoryManager inv = GameManager.Instance != null ? GameManager.Instance.inventoryManager : FindAnyObjectByType<InventoryManager>();
+        if (inv == null) return false;
+
+        if (!inv.CanAddCube())
         {
-            NormalizePercentages();
+            Debug.Log("[CubeLootManager] Inventar ist voll! Baue zuerst einen Würfel, bevor du diesen einsammelst.");
+            return false;
+        }
+
+        if (lootByCoord.TryGetValue(coord, out CoordinateLootState state))
+        {
+            if (isSecret) state.secretCollected = true;
+            else state.normalCollected = true;
+        }
+
+        inv.AddFoundCubeToInventory(isSecret);
+        return true;
+    }
+
+    /// <summary>
+    /// Schaltet im aktuellen Raum den Spawnpunkt auf den nächsten Platz weiter (zum Testen mit Taste P oder über den Inspector).
+    /// </summary>
+    public void CycleActiveRoomSpawnPoint(Room specificRoom = null)
+    {
+        if (MacroGridManager.Instance == null) return;
+
+        Vector2Int coord = specificRoom != null ? specificRoom.GridCoordinate : MacroGridManager.Instance.CurrentCoordinate;
+        if (!MacroGridManager.Instance.Grid.TryGetValue(coord, out Room room) || room == null) return;
+
+        if (!lootByCoord.TryGetValue(coord, out CoordinateLootState state))
+        {
+            // Falls wir im Hub testen wollen, legen wir kurz einen Test-Eintrag an
+            state = new CoordinateLootState
+            {
+                coordinate = coord,
+                hasNormalCube = true,
+                normalCollected = false,
+                normalSpawnIndex = 0
+            };
+            lootByCoord[coord] = state;
+        }
+
+        if (room.NormalSpawnPointCount > 0)
+        {
+            state.hasNormalCube = true;
+            state.normalCollected = false;
+            state.normalSpawnIndex = (state.normalSpawnIndex + 1) % room.NormalSpawnPointCount;
+            Debug.Log($"[CubeLootManager] Raum {coord}: Normal-Spawnpunkt gewechselt auf Index {state.normalSpawnIndex}.");
+        }
+
+        if (room.SecretSpawnPointCount > 0 && state.hasSecretCube)
+        {
+            state.secretCollected = false;
+            state.secretSpawnIndex = (state.secretSpawnIndex + 1) % room.SecretSpawnPointCount;
+        }
+
+        RefreshRoomLoot(room, coord);
+    }
+
+    public void OnRoomDestroyedByBoss(Vector2Int coord)
+    {
+        lootByCoord.Remove(coord);
+    }
+
+    private CubePickup CreatePickupInstance(Transform spawnPoint, Transform roomTransform, bool isSecret)
+    {
+        Vector3 worldPos = spawnPoint != null ? spawnPoint.position : roomTransform.position;
+        CubePickup prefabToUse = isSecret && secretCubePickupPrefab != null ? secretCubePickupPrefab : normalCubePickupPrefab;
+
+        if (prefabToUse != null)
+        {
+            return Instantiate(prefabToUse, worldPos, Quaternion.identity, roomTransform);
+        }
+
+        // Automatischer Fallback, falls im Inspector noch kein Prefab zugewiesen wurde:
+        GameObject fallbackObj = new GameObject(isSecret ? "SecretCubePickup_Auto" : "NormalCubePickup_Auto");
+        fallbackObj.transform.SetParent(roomTransform, false);
+        fallbackObj.transform.position = worldPos;
+        fallbackObj.transform.localScale = new Vector3(0.85f, 0.85f, 1f);
+
+        SpriteRenderer sr = fallbackObj.AddComponent<SpriteRenderer>();
+        sr.sprite = GetFallbackCubeSprite();
+        sr.sortingOrder = 18;
+
+        BoxCollider2D col = fallbackObj.AddComponent<BoxCollider2D>();
+        col.size = new Vector2(0.9f, 0.9f);
+        col.isTrigger = true;
+
+        return fallbackObj.AddComponent<CubePickup>();
+    }
+
+    private static Sprite GetFallbackCubeSprite()
+    {
+        if (fallbackCubeSprite != null) return fallbackCubeSprite;
+
+        int size = 32;
+        Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        tex.filterMode = FilterMode.Point;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                bool isBorder = (x < 3 || x >= size - 3 || y < 3 || y >= size - 3);
+                bool isInnerCore = (x >= 10 && x < size - 10 && y >= 10 && y < size - 10);
+
+                if (isBorder)
+                    tex.SetPixel(x, y, Color.white);
+                else if (isInnerCore)
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, 0.95f));
+                else
+                    tex.SetPixel(x, y, new Color(0.7f, 0.9f, 1f, 0.45f));
+            }
+        }
+        tex.Apply();
+
+        fallbackCubeSprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 32f);
+        return fallbackCubeSprite;
+    }
+
+    private void ShuffleCoords(List<Vector2Int> list)
+    {
+        for (int i = list.Count - 1; i > 0; i--)
+        {
+            int swap = Random.Range(0, i + 1);
+            Vector2Int tmp = list[i];
+            list[i] = list[swap];
+            list[swap] = tmp;
         }
     }
-#endif
 }
 </file>
 
@@ -629,9 +959,9 @@ using UnityEngine;
 
 public enum TimelineEventType
 {
-    MinionSlabTriggered,    // Gelbes Schergen-Symbol erreicht 0
-    AmbientNightmareRipple, // Violettes Umwelt-Symbol erreicht 0
-    BossMajorPulse          // Rotes Boss-Symbol erreicht 0
+    MinionSlabTriggered,
+    AmbientNightmareRipple,
+    BossMajorPulse
 }
 
 public class EventManager : MonoBehaviour
@@ -689,8 +1019,6 @@ public class EventManager : MonoBehaviour
     {
         if (gameManager == null) gameManager = GameManager.Instance;
 
-        Debug.Log("--- [SYMBOL = 0] 🕷️ SCHERGEN-HINTERHALT AUSGELÖST! ---");
-
         if (gameManager != null)
         {
             gameManager.TriggerMicroCameraRumble(intensity: 0.22f, duration: 0.25f);
@@ -704,8 +1032,6 @@ public class EventManager : MonoBehaviour
     private IEnumerator ExecuteAmbientRippleRoutine()
     {
         if (gameManager == null) gameManager = GameManager.Instance;
-
-        Debug.Log("--- [SYMBOL = 0] 🌫️ ALBTRAUM-FLUT AUSGELÖST! ---");
 
         if (gameManager != null)
         {
@@ -723,8 +1049,6 @@ public class EventManager : MonoBehaviour
         if (gameManager == null) gameManager = GameManager.Instance;
         if (gridManager == null) gridManager = GridManager.Instance;
 
-        Debug.Log("--- [SYMBOL = 0] 💀 BOSS-AKTION AUSGELÖST (LIVE-PIP AKTIV)! ---");
-
         if (gameManager != null)
         {
             gameManager.TriggerMicroCameraRumble(intensity: 0.35f, duration: 0.38f);
@@ -733,6 +1057,11 @@ public class EventManager : MonoBehaviour
         if (boss != null)
         {
             yield return StartCoroutine(boss.ExecuteTurn());
+        }
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.OnBossPulseTriggered();
         }
 
         if (gameManager != null && gameManager.NightmarePerTurn > 0f)
@@ -885,13 +1214,17 @@ public class GameManager : MonoBehaviour
         if (Instance == null) Instance = this;
         else { Destroy(gameObject); return; }
 
-        // Neue ausgelagerte Komponenten automatisch anhängen
-        threatTracker = GetComponent<ThreatTrackerManager>();
         if (GetComponent<BiomeResonanceManager>() == null)
         {
-           gameObject.AddComponent<BiomeResonanceManager>();
+            gameObject.AddComponent<BiomeResonanceManager>();
         }
-        
+
+        if (GetComponent<CubeLootManager>() == null)
+        {
+            gameObject.AddComponent<CubeLootManager>();
+        }
+
+        threatTracker = GetComponent<ThreatTrackerManager>();
         if (threatTracker == null) threatTracker = gameObject.AddComponent<ThreatTrackerManager>();
 
         if (GetComponent<ThreatOrbsAndPiPHUD>() == null)
@@ -926,9 +1259,6 @@ public class GameManager : MonoBehaviour
 
     public void ForceDrainFocus(int amount, string reason = "") => AdvanceTicks(amount, reason);
 
-    /// <summary>
-    /// Zählt alle Gefahren-Symbole oben rechts um 'ticks' herunter.
-    /// </summary>
     public void AdvanceTicks(int ticks, string reason = "")
     {
         if (ticks <= 0 || isResettingRun) return;
@@ -946,9 +1276,6 @@ public class GameManager : MonoBehaviour
         NotifyFocusChanged();
     }
 
-    /// <summary>
-    /// Erhöht den Countdown aller Gefahren-Symbole oben rechts (z. B. durch 'Zeit-Anker').
-    /// </summary>
     public void DelayNextBossEvent(int extraTicks, string reason = "")
     {
         if (extraTicks <= 0 || isResettingRun) return;
@@ -994,16 +1321,6 @@ public class GameManager : MonoBehaviour
         activeRumbleCoroutine = null;
     }
 
-    public void TriggerMulliganRedraw()
-    {
-        if (isResettingRun) return;
-
-        if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
-        if (inventoryManager != null) inventoryManager.MulliganHand();
-
-        AdvanceTicks(mulliganTickCost, "Neue Erinnerungen gerufen");
-    }
-
     public void RefillFocus()
     {
         if (threatTracker == null) threatTracker = GetComponent<ThreatTrackerManager>();
@@ -1021,6 +1338,11 @@ public class GameManager : MonoBehaviour
 
         currentNightmare = Mathf.Clamp(currentNightmare + amount, 0f, maxNightmare);
         NotifyNightmareChanged();
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.CheckNightmareThreshold(currentNightmare);
+        }
 
         if (currentNightmare >= maxNightmare && !isResettingRun)
         {
@@ -1053,8 +1375,13 @@ public class GameManager : MonoBehaviour
         totalTicksElapsed = 0;
         NotifyNightmareChanged();
 
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.ResetToDefaultResonances();
+        }
+
         if (inventoryManager == null) inventoryManager = FindAnyObjectByType<InventoryManager>();
-        if (inventoryManager != null) inventoryManager.ResetDeckAndDrawStartingHand();
+        if (inventoryManager != null) inventoryManager.ResetInventoryToStartingCubes();
 
         if (currentLevelConfig != null) LoadLevel(currentLevelConfig);
         RefillFocus();
@@ -1153,15 +1480,6 @@ public class GameManager : MonoBehaviour
 
         var gamepad = Gamepad.current;
         var keyboard = Keyboard.current;
-
-        bool mulliganTriggered = (gamepad != null && gamepad.rightStickButton.wasPressedThisFrame) ||
-                                 (keyboard != null && keyboard.eKey.wasPressedThisFrame);
-
-        if (mulliganTriggered && (currentState == GameState.FreeRoam || currentState == GameState.MacroPlan))
-        {
-            TriggerMulliganRedraw();
-            return;
-        }
 
         bool touchpadPressed = false;
         if (gamepad != null)
@@ -1631,27 +1949,31 @@ public class InventoryManager : MonoBehaviour
     public ShapePreviewUI centerPreview;
     public GameObject uiBlockPrefab;
 
-    [Header("Deck-Konfiguration (Im Inspector anpassbar!)")]
-    [Tooltip("Ziehe hier deine erstellten CardAsset-ScriptableObjects hinein.")]
-    public List<CardAsset> startingDeckAssets = new List<CardAsset>();
+    [Header("Inventar-Einstellungen (Kein Kartendeck mehr!)")]
+    [Tooltip("Mit wie vielen Würfeln der Spieler im Hub startet (z.B. 2).")]
+    [Range(1, 5)] public int startingCubeCount = 2;
 
-    [Tooltip("Oder bearbeite Karten direkt hier in der Liste ohne eigene Asset-Datei.")]
-    public List<ShapeData> inlineStartingDeck = new List<ShapeData>();
+    [Tooltip("Wie viele Würfel maximal gleichzeitig im Inventar getragen werden können.")]
+    [Range(1, 8)] public int maxInventorySize = 5;
 
-    [Tooltip("Wenn beide Listen oben leer sind, werden automatisch 8 saubere Standard-Würfel erzeugt.")]
-    public bool useFallbackIfEmpty = true;
+    [Header("Vorlagen-Pool für gefundene Würfel (Inspector)")]
+    [Tooltip("Optional: Eigene CardAssets als Formen-Pool für gefundene Würfel.")]
+    public List<CardAsset> shapePoolAssets = new List<CardAsset>();
 
-    [Header("Hand-Größe")]
-    public int maxHandSize = 5;
-    public int startingHandSize = 5;
+    [Tooltip("Optional: Direkt im Inspector bearbeitbare Formen-Vorlagen.")]
+    public List<ShapeData> inlineShapePool = new List<ShapeData>();
+
+    [Tooltip("Wenn AUS, werden Feuer/Eis/Gift/Schrein-Mods auf den Würfeln ignoriert (nur reine Biom-Farben).")]
+    public bool includeBlockModifiers = false;
 
     [HideInInspector]
     public ShapeData[] hotbarSlots = new ShapeData[8];
 
-    private readonly List<ShapeData> masterDeck = new List<ShapeData>();
-    private readonly List<ShapeData> drawPile = new List<ShapeData>();
-    private readonly List<ShapeData> hand = new List<ShapeData>();
-    private readonly List<ShapeData> discardPile = new List<ShapeData>();
+    // Der Formen-Pool (aus dem beim Finden eines Würfels im Raum eine 6er-Geometrie gewählt wird)
+    private readonly List<ShapeData> availableShapeTemplates = new List<ShapeData>();
+
+    // Das tatsächliche Inventar des Spielers
+    private readonly List<ShapeData> inventoryCubes = new List<ShapeData>();
 
     private ShapePreviewUI[] slotPreviews = new ShapePreviewUI[8];
     private int currentSelectedIndex = 0;
@@ -1659,68 +1981,88 @@ public class InventoryManager : MonoBehaviour
     [SerializeField] private float navRepeatDelay = 0.18f;
     private float navRepeatTimer = 0f;
 
-    public int DrawPileCount => drawPile.Count;
-    public int HandCount => hand.Count;
-    public int DiscardPileCount => discardPile.Count;
+    public int HandCount => inventoryCubes.Count;
     public int CurrentSelectedIndex => currentSelectedIndex;
 
     public ShapeData CurrentlySelectedCard =>
-        (currentSelectedIndex >= 0 && currentSelectedIndex < hand.Count) ? hand[currentSelectedIndex] : null;
+        (currentSelectedIndex >= 0 && currentSelectedIndex < inventoryCubes.Count) ? inventoryCubes[currentSelectedIndex] : null;
 
-    [ContextMenu("Fülle Inline-Deck mit Standard-Formen (Zum Bearbeiten im Inspector)")]
-    private void PopulateInlineDeckWithDefaults()
+    [ContextMenu("Fülle Formen-Pool mit Standard-6er-Würfeln")]
+    private void PopulateInlinePoolWithDefaults()
     {
-        inlineStartingDeck = MemoryCardCatalog.CreateStarterDeck();
+        inlineShapePool = MemoryCardCatalog.CreateStarterDeck();
     }
 
     void Awake()
     {
         InitializeSlotPreviews();
         hotbarSlots = new ShapeData[8];
-        RebuildMasterDeckFromInspector();
-        ResetDeckAndDrawStartingHand();
     }
 
     void Start()
     {
         if (gameManager == null) gameManager = GameManager.Instance;
         if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
+
+        RebuildShapeTemplatesPool();
+        ResetInventoryToStartingCubes();
+
         RefreshAllPreviews();
         UpdateCursorPosition();
     }
 
     /// <summary>
-    /// Liest die im Inspector zugewiesenen Karten-Assets und Inline-Karten ein.
+    /// Baut die Liste der möglichen 6er-Grundformen auf (ignoriert Skills).
     /// </summary>
-    public void RebuildMasterDeckFromInspector()
+    public void RebuildShapeTemplatesPool()
     {
-        masterDeck.Clear();
+        availableShapeTemplates.Clear();
+        List<ShapeData> rawCandidates = new List<ShapeData>();
 
-        if (startingDeckAssets != null)
+        if (shapePoolAssets != null)
         {
-            foreach (CardAsset asset in startingDeckAssets)
+            foreach (CardAsset asset in shapePoolAssets)
             {
                 if (asset != null && asset.cardData != null && asset.cardData.cells.Count > 0)
                 {
-                    masterDeck.Add(asset.cardData.Clone());
+                    rawCandidates.Add(asset.cardData);
                 }
             }
         }
 
-        if (inlineStartingDeck != null)
+        if (inlineShapePool != null)
         {
-            foreach (ShapeData shape in inlineStartingDeck)
+            foreach (ShapeData shape in inlineShapePool)
             {
                 if (shape != null && shape.cells.Count > 0)
                 {
-                    masterDeck.Add(shape.Clone());
+                    rawCandidates.Add(shape);
                 }
             }
         }
 
-        if (masterDeck.Count == 0 && useFallbackIfEmpty)
+        if (rawCandidates.Count == 0)
         {
-            masterDeck.AddRange(MemoryCardCatalog.CreateStarterDeck());
+            rawCandidates.AddRange(MemoryCardCatalog.CreateStarterDeck());
+        }
+
+        foreach (ShapeData candidate in rawCandidates)
+        {
+            // Nur echte 6er-Bau-Würfel in den Pool aufnehmen
+            if (candidate.category != CardCategory.CubeShape) continue;
+
+            ShapeData copy = candidate.Clone();
+            copy.tickCost = 1; // Standardkosten 1 Tick
+
+            if (!includeBlockModifiers)
+            {
+                foreach (ShapeCell cell in copy.cells)
+                {
+                    cell.modifiers.Clear();
+                }
+            }
+
+            availableShapeTemplates.Add(copy);
         }
     }
 
@@ -1744,106 +2086,99 @@ public class InventoryManager : MonoBehaviour
         }
     }
 
-    public void ResetDeckAndDrawStartingHand()
+    /// <summary>
+    /// Leert das Inventar und gibt dem Spieler genau die Startwürfel (z.B. 2 Stück).
+    /// </summary>
+    public void ResetInventoryToStartingCubes()
     {
-        drawPile.Clear();
-        hand.Clear();
-        discardPile.Clear();
+        inventoryCubes.Clear();
 
-        if (masterDeck.Count == 0)
+        if (availableShapeTemplates.Count == 0)
         {
-            RebuildMasterDeckFromInspector();
+            RebuildShapeTemplatesPool();
         }
 
-        foreach (ShapeData card in masterDeck)
+        for (int i = 0; i < startingCubeCount; i++)
         {
-            drawPile.Add(card.Clone());
+            AddFoundCubeToInventory(isSecretBonus: false);
         }
 
-        ShuffleList(drawPile);
-        DrawCards(startingHandSize);
-    }
-
-    public void DrawCards(int amount)
-    {
-        int effectiveMaxHand = Mathf.Min(maxHandSize, hotbarSlots.Length);
-
-        for (int i = 0; i < amount; i++)
-        {
-            if (hand.Count >= effectiveMaxHand) break;
-
-            if (drawPile.Count == 0)
-            {
-                if (discardPile.Count == 0) break;
-                drawPile.AddRange(discardPile);
-                discardPile.Clear();
-                ShuffleList(drawPile);
-            }
-
-            ShapeData drawn = drawPile[0];
-            drawPile.RemoveAt(0);
-            hand.Add(drawn);
-        }
-
-        SyncHandToHotbarSlots();
-        RefreshAllPreviews();
-    }
-
-    private void ShuffleList(List<ShapeData> list)
-    {
-        for (int i = list.Count - 1; i > 0; i--)
-        {
-            int swapIndex = Random.Range(0, i + 1);
-            ShapeData temp = list[i];
-            list[i] = list[swapIndex];
-            list[swapIndex] = temp;
-        }
-    }
-
-    public void MulliganHand()
-    {
-        while (hand.Count > 0)
-        {
-            discardPile.Add(hand[0]);
-            hand.RemoveAt(0);
-        }
-
-        DrawCards(startingHandSize);
         currentSelectedIndex = 0;
         UpdateSelection();
     }
 
-    private void SyncHandToHotbarSlots()
+    // Abwärtskompatible Methode für GameManager Reset
+    public void ResetDeckAndDrawStartingHand() => ResetInventoryToStartingCubes();
+
+    public bool CanAddCube()
+    {
+        int limit = Mathf.Min(maxInventorySize, hotbarSlots.Length);
+        return inventoryCubes.Count < limit;
+    }
+
+    /// <summary>
+    /// Wird aufgerufen, wenn der Slime im Platformer-Raum einen Würfel einsammelt!
+    /// Erzeugt einen neuen Würfel und färbt ihn anhand der aktuellen Biom-Resonanz oben links ein.
+    /// </summary>
+    public bool AddFoundCubeToInventory(bool isSecretBonus = false)
+    {
+        if (!CanAddCube()) return false;
+
+        if (availableShapeTemplates.Count == 0)
+        {
+            RebuildShapeTemplatesPool();
+        }
+        if (availableShapeTemplates.Count == 0) return false;
+
+        ShapeData template = availableShapeTemplates[Random.Range(0, availableShapeTemplates.Count)];
+        ShapeData newCube = template.Clone();
+
+        foreach (ShapeCell cell in newCube.cells)
+        {
+            cell.hasAssignedZone = false;
+        }
+
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.AssignBiomesToShape(newCube);
+        }
+
+        inventoryCubes.Add(newCube);
+        SyncInventoryToHotbarSlots();
+        RefreshAllPreviews();
+        return true;
+    }
+
+    public void AddRandomShape() => AddFoundCubeToInventory(false);
+
+    // Bleibt als leerer Hook für EventManager erhalten, zieht aber nichts mehr gratis nach!
+    public void CheckAndRefillIfEmpty() { }
+
+    /// <summary>
+    /// Entfernt den gebauten Würfel aus dem Inventar (ohne Ablagestapel).
+    /// </summary>
+    public void ConsumeShape(int index)
+    {
+        if (index < 0 || index >= inventoryCubes.Count) return;
+
+        inventoryCubes.RemoveAt(index);
+
+        SyncInventoryToHotbarSlots();
+        RefreshAllPreviews();
+        UpdateSelection();
+    }
+
+    private void SyncInventoryToHotbarSlots()
     {
         for (int i = 0; i < hotbarSlots.Length; i++)
         {
-            hotbarSlots[i] = (i < hand.Count) ? hand[i] : null;
+            hotbarSlots[i] = (i < inventoryCubes.Count) ? inventoryCubes[i] : null;
         }
 
-        if (currentSelectedIndex >= hand.Count && hand.Count > 0)
+        if (currentSelectedIndex >= inventoryCubes.Count && inventoryCubes.Count > 0)
         {
-            currentSelectedIndex = hand.Count - 1;
+            currentSelectedIndex = inventoryCubes.Count - 1;
         }
-    }
-
-    public void AddRandomShape() => DrawCards(1);
-
-    public void CheckAndRefillIfEmpty()
-    {
-        if (hand.Count == 0) DrawCards(2);
-    }
-
-    public void ConsumeShape(int index)
-    {
-        if (index < 0 || index >= hand.Count) return;
-
-        ShapeData played = hand[index];
-        hand.RemoveAt(index);
-        discardPile.Add(played);
-
-        SyncHandToHotbarSlots();
-        RefreshAllPreviews();
-        UpdateSelection();
     }
 
     void Update()
@@ -1868,7 +2203,7 @@ public class InventoryManager : MonoBehaviour
             else if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) moveDir = 1;
         }
 
-        int maxSelectableIndex = Mathf.Max(0, hand.Count - 1);
+        int maxSelectableIndex = Mathf.Max(0, inventoryCubes.Count - 1);
         if (moveDir != 0)
         {
             if (navRepeatTimer <= 0f)
@@ -1953,67 +2288,15 @@ public class InventoryManager : MonoBehaviour
 
     void TrySelectCurrentSlot()
     {
-        if (currentSelectedIndex < 0 || currentSelectedIndex >= hand.Count) return;
+        if (currentSelectedIndex < 0 || currentSelectedIndex >= inventoryCubes.Count) return;
 
-        ShapeData selectedCard = hand[currentSelectedIndex];
-        if (selectedCard == null) return;
-
-        if (selectedCard.category == CardCategory.TacticalSkill)
-        {
-            ExecuteTacticalSkillCard(selectedCard, currentSelectedIndex);
-            return;
-        }
+        ShapeData selectedCube = inventoryCubes[currentSelectedIndex];
+        if (selectedCube == null) return;
 
         if (placementManager == null) placementManager = FindAnyObjectByType<PlacementManager>();
         if (placementManager != null)
         {
-            placementManager.SelectShape(selectedCard, currentSelectedIndex);
-        }
-    }
-
-    private void ExecuteTacticalSkillCard(ShapeData skillCard, int slotIndex)
-    {
-        if (gameManager == null) gameManager = GameManager.Instance;
-
-        string cardName = skillCard.shapeName;
-        int cost = skillCard.tickCost;
-        TacticalSkillType type = skillCard.skillType;
-        int power = skillCard.skillPower;
-
-        ConsumeShape(slotIndex);
-
-        switch (type)
-        {
-            case TacticalSkillType.DrawCards:
-                DrawCards(power);
-                break;
-
-            case TacticalSkillType.DelayBossTimeline:
-                if (gameManager != null) gameManager.DelayNextBossEvent(power, cardName);
-                break;
-
-            case TacticalSkillType.PurifyBossThreats:
-                if (gameManager != null && gameManager.ActiveBoss != null && GridManager.Instance != null)
-                {
-                    foreach (var zone in gameManager.ActiveBoss.ActiveZones)
-                    {
-                        foreach (var coord in zone.targetCoordinates)
-                        {
-                            GridManager.Instance.ResetCellHighlight(coord);
-                        }
-                    }
-                }
-                if (gameManager != null) gameManager.AddNightmare(-power, cardName);
-                break;
-
-            case TacticalSkillType.ReduceNightmare:
-                if (gameManager != null) gameManager.AddNightmare(-power, cardName);
-                break;
-        }
-
-        if (gameManager != null && cost > 0)
-        {
-            gameManager.AdvanceTicks(cost, $"Skill '{cardName}'");
+            placementManager.SelectShape(selectedCube, currentSelectedIndex);
         }
     }
 }
@@ -2848,9 +3131,6 @@ public class MacroGridManager : MonoBehaviour
         return HasRoom(targetCoord);
     }
 
-    /// <summary>
-    /// Prüft auf dem Makro-Grid, ob eine bestimmte Koordinate aktuell vom Boss anvisiert wird.
-    /// </summary>
     public bool IsCellTargetedByBoss(Vector2Int coord)
     {
         if (GridManager.Instance == null || GridManager.Instance.grid == null) return false;
@@ -2894,6 +3174,11 @@ public class MacroGridManager : MonoBehaviour
         grid.Clear();
         roomPrefabs.Clear();
         visitedRooms.Clear();
+
+        if (CubeLootManager.Instance != null)
+        {
+            CubeLootManager.Instance.ClearAllLootStates();
+        }
 
         InitializeGrid();
 
@@ -2951,9 +3236,15 @@ public class MacroGridManager : MonoBehaviour
                 Room room = GetOrCreateRoom(coord);
                 if (room != null)
                 {
+                    bool wasInactive = !room.gameObject.activeSelf;
                     room.gameObject.SetActive(true);
                     room.transform.position = GetWorldPosition(coord);
                     room.GridCoordinate = coord;
+
+                    if (wasInactive && CubeLootManager.Instance != null)
+                    {
+                        CubeLootManager.Instance.RefreshRoomLoot(room, coord);
+                    }
                 }
             }
         }
@@ -3030,6 +3321,13 @@ public class MacroGridManager : MonoBehaviour
             newRoom.GridCoordinate = coord;
             newRoom.name = $"{prefabToSpawn.name}_[{coord.x},{coord.y}]";
             grid[coord] = newRoom;
+
+            // Sobald der Raum erstellt wird, prüft CubeLootManager, ob auf dieser Koordinate ein Würfel spawnen soll!
+            if (CubeLootManager.Instance != null)
+            {
+                CubeLootManager.Instance.RefreshRoomLoot(newRoom, coord);
+            }
+
             return newRoom;
         }
 
@@ -3048,13 +3346,11 @@ public class MacroGridManager : MonoBehaviour
         bool openSouth = HasRoom(south);
         bool openWest = HasRoom(west);
 
-        // 1. Türen zu gebauten Nachbarräumen öffnen
         room.SetDoorOpen(Direction.North, openNorth);
         room.SetDoorOpen(Direction.East, openEast);
         room.SetDoorOpen(Direction.South, openSouth);
         room.SetDoorOpen(Direction.West, openWest);
 
-        // 2. UMWELT-TELEGRAFIE: Wenn ein Nachbarraum vom Boss anvisiert ist, glüht die Tür rot!
         room.SetDoorWarning(Direction.North, openNorth && IsCellTargetedByBoss(north));
         room.SetDoorWarning(Direction.East, openEast && IsCellTargetedByBoss(east));
         room.SetDoorWarning(Direction.South, openSouth && IsCellTargetedByBoss(south));
@@ -3103,30 +3399,11 @@ public class MacroGridManager : MonoBehaviour
             Vector3 deltaPosition = targetPos - previousPos;
             UpdateCameraForTransition(targetRoom, deltaPosition);
         }
-        // 1. Zuerst verschiebt die Laufrichtung (Nord/Ost/Süd/West) die Biom-Resonanz oben links:
+
+        // Laufrichtung verschiebt weiterhin die Biom-Resonanz oben links (für die Würfel, die man in den Räumen findet!):
         if (BiomeResonanceManager.Instance != null)
         {
             BiomeResonanceManager.Instance.OnPlayerMovedInDirection(exitDirection, !wasAlreadyVisited);
-        }
-
-        // 2. Danach wird die neue Karte für den neuen Raum gezogen (mit den neuen Prozenten!):
-        if (!wasAlreadyVisited)
-        {
-            if (GameManager.Instance != null && GameManager.Instance.inventoryManager != null)
-            {
-                GameManager.Instance.inventoryManager.AddRandomShape();
-                GameManager.Instance.inventoryManager.RefreshAllPreviews();
-            }
-        }
-
-        if (!wasAlreadyVisited)
-        {
-            if (GameManager.Instance != null && GameManager.Instance.inventoryManager != null)
-            {
-                GameManager.Instance.inventoryManager.AddRandomShape();
-                GameManager.Instance.inventoryManager.RefreshAllPreviews();
-                Debug.Log($"[Clear-Draw] Neuer Raum {targetCoord} betreten -> +1 Karte auf die Hand gezogen!");
-            }
         }
 
         if (GameManager.Instance != null && entryTickCost > 0)
@@ -3224,6 +3501,11 @@ public class MacroGridManager : MonoBehaviour
         grid.Remove(coord);
         roomPrefabs.Remove(coord);
         visitedRooms.Remove(coord);
+
+        if (CubeLootManager.Instance != null)
+        {
+            CubeLootManager.Instance.OnRoomDestroyedByBoss(coord);
+        }
 
         if (GridManager.Instance != null && GridManager.Instance.grid != null &&
             coord.x >= 0 && coord.x < GridManager.Instance.width &&
@@ -3697,10 +3979,14 @@ public class PlacementManager : MonoBehaviour
             int cardTickCost = currentShape.tickCost;
             int shrineCount = currentShape.CountModifier(BlockModifier.Shrine);
 
+            List<Vector2Int> newlyPlacedCoords = new List<Vector2Int>();
+
             foreach (ShapeCell cell in currentShape.cells)
             {
                 int x = startX + cell.localPosition.x;
                 int y = startY + cell.localPosition.y;
+                Vector2Int coord = new Vector2Int(x, y);
+                newlyPlacedCoords.Add(coord);
 
                 ZoneType blockBiome = cell.hasAssignedZone ? cell.assignedZone : ZoneType.Forest;
                 gridManager.PlaceBiomeBlockAt(x, y, blockBiome);
@@ -3712,9 +3998,14 @@ public class PlacementManager : MonoBehaviour
 
                 if (MacroGridManager.Instance != null)
                 {
-                    Vector2Int coord = new Vector2Int(x, y);
                     MacroGridManager.Instance.RegisterRoom(coord, null);
                 }
+            }
+
+            // WICHTIG: Dem CubeLootManager die 6 neuen Räume melden, damit er 1 garantierten + 1 versteckten Würfel darin platziert!
+            if (CubeLootManager.Instance != null)
+            {
+                CubeLootManager.Instance.RegisterPlacedCluster(newlyPlacedCoords);
             }
 
             if (MacroGridManager.Instance != null)
@@ -3740,7 +4031,7 @@ public class PlacementManager : MonoBehaviour
 
             if (useFocusCost && gameManager != null && cardTickCost > 0)
             {
-                gameManager.AdvanceTicks(cardTickCost, $"Karte '{placedName}' ({cardTickCost} Tick)");
+                gameManager.AdvanceTicks(cardTickCost, $"Würfel '{placedName}' gebaut ({cardTickCost} Tick)");
             }
         }
     }
@@ -4059,6 +4350,96 @@ public class ShapePreviewUI : MonoBehaviour
 }
 </file>
 
+<file path="Rooms/CubePickup.cs">
+using UnityEngine;
+
+[RequireComponent(typeof(Collider2D))]
+public class CubePickup : MonoBehaviour
+{
+    [Header("Visuelles Schweben")]
+    [SerializeField] private float bobAmplitude = 0.18f;
+    [SerializeField] private float bobFrequency = 2.8f;
+    [SerializeField] private float rotateSpeed = 25f;
+
+    [Header("Farb-Hinweis")]
+    [SerializeField] private SpriteRenderer spriteRenderer;
+    [SerializeField] private Color normalCubeTint = new Color(0.35f, 0.95f, 1f, 1f);
+    [SerializeField] private Color secretCubeTint = new Color(1f, 0.82f, 0.2f, 1f);
+
+    private Vector2Int roomCoordinate;
+    private bool isSecretCube;
+    private Vector3 baseLocalPos;
+    private bool isInitialized = false;
+    private bool isCollected = false;
+
+    private void Awake()
+    {
+        if (spriteRenderer == null)
+        {
+            spriteRenderer = GetComponentInChildren<SpriteRenderer>();
+        }
+
+        Collider2D col = GetComponent<Collider2D>();
+        if (col != null)
+        {
+            col.isTrigger = true;
+        }
+    }
+
+    public void Initialize(Vector2Int coord, bool secret)
+    {
+        roomCoordinate = coord;
+        isSecretCube = secret;
+        baseLocalPos = transform.localPosition;
+        isInitialized = true;
+        isCollected = false;
+
+        if (spriteRenderer != null)
+        {
+            spriteRenderer.color = isSecretCube ? secretCubeTint : normalCubeTint;
+        }
+    }
+
+    private void Start()
+    {
+        if (!isInitialized)
+        {
+            baseLocalPos = transform.localPosition;
+        }
+    }
+
+    private void Update()
+    {
+        // Sanftes Auf- und Abschweben im Raum
+        float offsetY = Mathf.Sin(Time.time * bobFrequency) * bobAmplitude;
+        transform.localPosition = baseLocalPos + new Vector3(0f, offsetY, 0f);
+
+        if (rotateSpeed != 0f)
+        {
+            transform.Rotate(0f, 0f, rotateSpeed * Time.deltaTime);
+        }
+    }
+
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (isCollected) return;
+
+        bool isPlayer = other.CompareTag("Player") || other.GetComponent<PlatformerSlimeController>() != null;
+        if (!isPlayer) return;
+
+        if (CubeLootManager.Instance != null)
+        {
+            bool pickedUp = CubeLootManager.Instance.TryCollectCubeFromRoom(roomCoordinate, isSecretCube);
+            if (pickedUp)
+            {
+                isCollected = true;
+                Destroy(gameObject);
+            }
+        }
+    }
+}
+</file>
+
 <file path="Rooms/Direction.cs">
 public enum Direction
 {
@@ -4102,6 +4483,13 @@ public class Room : MonoBehaviour
     [Header("Exits & Spawns")]
     [SerializeField] private DoorSetup[] doors;
 
+    [Header("Würfel-Spawnpunkte (Es wird maximal 1 pro Kategorie aktiv!)")]
+    [Tooltip("Lege hier mehrere mögliche Plätze für den normalen Würfel im Raum an.")]
+    [SerializeField] private Transform[] normalCubeSpawnPoints;
+
+    [Tooltip("Lege hier Plätze für versteckte / schwer erreichbare Bonus-Würfel im Raum an.")]
+    [SerializeField] private Transform[] secretCubeSpawnPoints;
+
     [Header("Kamera-Begrenzung")]
     [Tooltip("Der Trigger-Collider (Box oder Polygon) für CinemachineConfiner2D")]
     [SerializeField] private Collider2D cameraBounds;
@@ -4113,10 +4501,14 @@ public class Room : MonoBehaviour
     [SerializeField] private bool debugForceOpenSouth;
     [SerializeField] private bool debugForceOpenWest;
 
-    // Automatisch erzeugte Fallback-Warnlichter pro Himmelsrichtung (falls warningRenderer leer ist)
     private readonly Dictionary<Direction, SpriteRenderer> runtimeWarningGlows = new Dictionary<Direction, SpriteRenderer>();
     private readonly HashSet<Direction> activeWarningDirections = new HashSet<Direction>();
+    private readonly List<CubePickup> activePickups = new List<CubePickup>();
     private static Sprite fallbackGlowSprite;
+
+    // Falls noch keine Spawnpunkte im Inspector eingetragen sind, zählt zumindest die Raummitte als 1 Punkt
+    public int NormalSpawnPointCount => (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0) ? normalCubeSpawnPoints.Length : 1;
+    public int SecretSpawnPointCount => (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0) ? secretCubeSpawnPoints.Length : 1;
 
     private void Awake()
     {
@@ -4138,7 +4530,6 @@ public class Room : MonoBehaviour
     {
         if (activeWarningDirections.Count == 0) return;
 
-        // Sanftes rotes Pulsieren für alle bedrohten Nachbartüren
         float pulse = Mathf.PingPong(Time.time * 4.5f, 0.55f) + 0.25f;
         Color warnColor = new Color(1f, 0.15f, 0.1f, pulse);
 
@@ -4149,6 +4540,61 @@ public class Room : MonoBehaviour
             {
                 sr.color = warnColor;
             }
+        }
+    }
+
+    public Transform GetNormalSpawnPoint(int index)
+    {
+        if (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, normalCubeSpawnPoints.Length - 1);
+            if (normalCubeSpawnPoints[safeIndex] != null)
+            {
+                return normalCubeSpawnPoints[safeIndex];
+            }
+        }
+        return transform;
+    }
+
+    public Transform GetSecretSpawnPoint(int index)
+    {
+        if (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, secretCubeSpawnPoints.Length - 1);
+            if (secretCubeSpawnPoints[safeIndex] != null)
+            {
+                return secretCubeSpawnPoints[safeIndex];
+            }
+        }
+        return transform;
+    }
+
+    public void RegisterSpawnedPickup(CubePickup pickup)
+    {
+        if (pickup != null)
+        {
+            activePickups.Add(pickup);
+        }
+    }
+
+    public void ClearSpawnedPickups()
+    {
+        for (int i = activePickups.Count - 1; i >= 0; i--)
+        {
+            if (activePickups[i] != null)
+            {
+                Destroy(activePickups[i].gameObject);
+            }
+        }
+        activePickups.Clear();
+    }
+
+    [ContextMenu("Nächsten Spawnpunkt in diesem Raum testen (Switch)")]
+    public void DebugSwitchSpawnPoint()
+    {
+        if (CubeLootManager.Instance != null)
+        {
+            CubeLootManager.Instance.CycleActiveRoomSpawnPoint(this);
         }
     }
 
@@ -4169,10 +4615,6 @@ public class Room : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Schaltet die rote Umwelt-Telegrafie an einer Tür an oder aus,
-    /// wenn der Nachbarraum in dieser Richtung vom Boss anvisiert wird.
-    /// </summary>
     public void SetDoorWarning(Direction direction, bool warn)
     {
         if (warn)
@@ -4213,13 +4655,11 @@ public class Room : MonoBehaviour
                     return doors[i].warningRenderer;
                 }
 
-                // Kein eigenes Sprite zugewiesen -> Automatischen Warn-Schein am SpawnPoint erzeugen
                 Transform anchor = doors[i].spawnPoint != null ? doors[i].spawnPoint : transform;
                 GameObject glowObj = new GameObject($"DoorWarningGlow_{direction}");
                 glowObj.transform.SetParent(anchor, false);
                 glowObj.transform.localPosition = Vector3.zero;
 
-                // Je nach Tür-Ausrichtung als schmalen Warn-Streifen im Durchgang skalieren
                 bool isVerticalDoor = (direction == Direction.East || direction == Direction.West);
                 glowObj.transform.localScale = isVerticalDoor ? new Vector3(1.4f, 5.2f, 1f) : new Vector3(5.2f, 1.4f, 1f);
 
@@ -4281,6 +4721,37 @@ public class Room : MonoBehaviour
     public void TriggerExit(Direction dir)
     {
         OnExitTriggered?.Invoke(this, dir);
+    }
+
+    private void OnDrawGizmos()
+    {
+        // Türkise Markierungen für normale Würfel-Spawnpunkte
+        if (normalCubeSpawnPoints != null)
+        {
+            Gizmos.color = Color.cyan;
+            for (int i = 0; i < normalCubeSpawnPoints.Length; i++)
+            {
+                if (normalCubeSpawnPoints[i] != null)
+                {
+                    Gizmos.DrawWireSphere(normalCubeSpawnPoints[i].position, 0.45f);
+                    Gizmos.DrawWireCube(normalCubeSpawnPoints[i].position, new Vector3(0.5f, 0.5f, 0.5f));
+                }
+            }
+        }
+
+        // Goldene Markierungen für versteckte Bonus-Würfel-Spawnpunkte
+        if (secretCubeSpawnPoints != null)
+        {
+            Gizmos.color = new Color(1f, 0.8f, 0.1f, 1f);
+            for (int i = 0; i < secretCubeSpawnPoints.Length; i++)
+            {
+                if (secretCubeSpawnPoints[i] != null)
+                {
+                    Gizmos.DrawWireSphere(secretCubeSpawnPoints[i].position, 0.5f);
+                    Gizmos.DrawWireCube(secretCubeSpawnPoints[i].position, new Vector3(0.6f, 0.6f, 0.6f));
+                }
+            }
+        }
     }
 
 #if UNITY_EDITOR
@@ -4401,30 +4872,74 @@ public class PlatformerAirborneState : PlatformerSlimeState
     public override void Enter()
     {
         jumpCutApplied = false;
+        Abilities.IsBalloonFloating = false;
+    }
+
+    public override void Exit()
+    {
+        Abilities.IsBalloonFloating = false;
     }
 
     public override void FrameUpdate()
     {
-        // 1. Coyote-Time-Sprung: Falls man gerade erst von einer Kante gefallen ist und noch innerhalb der Kulanzzeit springt
-        if (controller.HasBufferedJump && controller.HasCoyoteTime)
+        // 1. Air-Dash prüfen (Shift / R2 / Viereck)
+        if (Input.HasBufferedDash && Abilities.CanUseDash(isGrounded: false))
         {
-            controller.ConsumeJumpBuffer();
-            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f
-                ? controller.MoveInput.x * data.moveSpeed
-                : controller.Velocity.x;
-
-            controller.Velocity = new Vector2(moveX, data.jumpVelocity);
-            jumpCutApplied = false;
+            stateMachine.ChangeState(controller.DashState);
             return;
         }
 
-        // 2. Sanfte Dämpfung nur dann, wenn die Taste sehr früh im Aufstieg losgelassen wird
-        if (!jumpCutApplied && !controller.JumpHeld && controller.Velocity.y > data.jumpVelocity * 0.5f)
+        if (!Input.DashHeld)
+        {
+            Abilities.IsSprinting = false;
+        }
+
+        // 2. Coyote-Time-Sprung (kurz nach Verlassen einer Kante)
+        if (controller.HasBufferedJump && controller.HasCoyoteTime)
+        {
+            controller.ConsumeJumpBuffer();
+            ExecuteAirJump(data.jumpVelocity);
+            return;
+        }
+
+        // 3. Doppelsprung in der Luft
+        if (controller.HasBufferedJump && Abilities.CanUseDoubleJump())
+        {
+            controller.ConsumeJumpBuffer();
+            Abilities.ConsumeDoubleJump();
+
+            float dblJumpVel = (data != null && data.doubleJumpVelocity > 1f) ? data.doubleJumpVelocity : 12.8f;
+            ExecuteAirJump(dblJumpVel);
+            return;
+        }
+
+        // 4. Sanfte Dämpfung bei sehr frühem Loslassen der Sprungtaste im Aufstieg
+        if (!jumpCutApplied && !Input.JumpHeld && controller.Velocity.y > data.jumpVelocity * 0.5f)
         {
             float cutMultiplier = (data != null && data.jumpCutMultiplier > 0.5f) ? data.jumpCutMultiplier : 0.85f;
             controller.Velocity = new Vector2(controller.Velocity.x, controller.Velocity.y * cutMultiplier);
             jumpCutApplied = true;
         }
+
+        Abilities.UpdateFacingDirection(Input.MoveInput, Vector2.right, 0f);
+    }
+
+    private void ExecuteAirJump(float verticalVelocity)
+    {
+        float stretch = (data != null) ? data.jumpStretchAmount : 0.16f;
+        Visuals.ApplySquashAndStretch(1f - stretch * 0.8f, 1f + stretch * 1.1f);
+
+        float speedMult = (Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+            ? data.sprintSpeedMultiplier
+            : 1f;
+
+        float moveX = Mathf.Abs(Input.MoveInput.x) > 0.1f
+            ? Input.MoveInput.x * data.moveSpeed * speedMult
+            : controller.Velocity.x;
+
+        controller.Velocity = new Vector2(moveX, verticalVelocity);
+        jumpCutApplied = false;
+        Abilities.IsBalloonFloating = false;
     }
 
     public override void PhysicsUpdate()
@@ -4432,27 +4947,46 @@ public class PlatformerAirborneState : PlatformerSlimeState
         float apexThreshold = (data != null && data.apexVelocityThreshold > 0.1f) ? data.apexVelocityThreshold : 2.5f;
         bool isNearApex = Mathf.Abs(controller.Velocity.y) <= apexThreshold;
 
-        // 1. Schwerkraft:
-        // - Hält der Spieler Sprung NICHT mehr gedrückt während der Slime noch steigt -> sanft erhöhte Schwerkraft für runden Bogen
-        // - Nahe am Scheitelpunkt bei gehaltener Taste -> leichte Apex-Hang-Time
-        float gravMult = 1f;
-        if (controller.Velocity.y > 0f && !controller.JumpHeld)
+        // --- BALLON-SCHWEBEN PRÜFEN ---
+        // Aktiviert sich, sobald der Slime den Scheitelpunkt erreicht hat (Velocity.y <= 0.35f)
+        // und der Spieler die Sprungtaste gedrückt hält.
+        bool wantsToFloat = Input.JumpHeld && controller.Velocity.y <= 0.35f && Abilities.CanUseBalloonFloat();
+
+        if (wantsToFloat)
         {
-            gravMult = (data != null && data.lowJumpGravityMultiplier > 1f) ? data.lowJumpGravityMultiplier : 1.75f;
+            Abilities.IsBalloonFloating = true;
+            Abilities.ConsumeFloatTime(Time.fixedDeltaTime);
+
+            float targetFloatFall = (data != null && data.floatFallSpeed >= 0f) ? -data.floatFallSpeed : -0.6f;
+            float brakeRate = (data != null && data.floatBrakeAcceleration > 1f) ? data.floatBrakeAcceleration : 85f;
+
+            Vector2 floatVel = controller.Velocity;
+            floatVel.y = Mathf.MoveTowards(floatVel.y, targetFloatFall, brakeRate * Time.fixedDeltaTime);
+            controller.Velocity = floatVel;
         }
-        else if (isNearApex && controller.JumpHeld && data != null && data.apexGravityMultiplier > 0.1f)
+        else
         {
-            gravMult = data.apexGravityMultiplier;
+            Abilities.IsBalloonFloating = false;
+
+            // Reguläre Schwerkraft (inkl. Low-Jump-Parabel und Apex-Hang-Time)
+            float gravMult = 1f;
+            if (controller.Velocity.y > 0f && !Input.JumpHeld)
+            {
+                gravMult = (data != null && data.lowJumpGravityMultiplier > 1f) ? data.lowJumpGravityMultiplier : 1.75f;
+            }
+            else if (isNearApex && Input.JumpHeld && data != null && data.apexGravityMultiplier > 0.1f)
+            {
+                gravMult = data.apexGravityMultiplier;
+            }
+
+            Vector2 vel = controller.Velocity;
+            vel.y += (data.gravity * gravMult) * Time.fixedDeltaTime;
+            vel.y = Mathf.Max(vel.y, -data.maxFallSpeed);
+            controller.Velocity = vel;
         }
 
-        Vector2 vel = controller.Velocity;
-        vel.y += (data.gravity * gravMult) * Time.fixedDeltaTime;
-        vel.y = Mathf.Max(vel.y, -data.maxFallSpeed);
-        controller.Velocity = vel;
-
-        // 2. Horizontale Luftsteuerung:
-        // Volle Beschleunigung beim Steuern, aber minimaler Luftwiderstand (airDeceleration) beim Loslassen!
-        float airBoost = isNearApex && data != null && data.apexAirAccelerationMultiplier > 0.5f
+        // --- HORIZONTALE LUFTSTEUERUNG ---
+        float airBoost = (isNearApex || Abilities.IsBalloonFloating) && data != null && data.apexAirAccelerationMultiplier > 0.5f
             ? data.apexAirAccelerationMultiplier
             : 1f;
 
@@ -4460,6 +4994,145 @@ public class PlatformerAirborneState : PlatformerSlimeState
         float decel = (data != null && data.airDeceleration >= 0f) ? data.airDeceleration : 5f;
 
         ApplyHorizontalMovement(accel, decel);
+    }
+}
+</file>
+
+<file path="Slime/PlatformerDashState.cs">
+using UnityEngine;
+
+public class PlatformerDashState : PlatformerSlimeState
+{
+    private float dashTimer;
+    private Vector2 dashDirection;
+
+    public PlatformerDashState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data)
+        : base(controller, stateMachine, data) { }
+
+    public override void Enter()
+    {
+        bool startedGrounded = controller.IsGrounded;
+        Vector2 startNormal = controller.EffectiveSurfaceNormal;
+
+        Input.ConsumeDashBuffer();
+        Abilities.ConsumeDash(startedGrounded);
+        Abilities.IsDashing = true;
+
+        dashDirection = Abilities.CalculateDashDirection(
+            Input.MoveInput,
+            startedGrounded,
+            startNormal,
+            controller.IsOnOuterCorner,
+            controller.OuterCornerDiagonalTangent
+        );
+
+        dashTimer = (data != null && data.dashDuration > 0.02f) ? data.dashDuration : 0.15f;
+
+        // Optischer Stretch in Dash-Richtung
+        Visuals.ApplySquashAndStretch(1.28f, 0.76f);
+
+        // Wenn wir von einer Fläche weg-dashen (z. B. von einer Wand weg oder schräg nach oben),
+        // lösen wir uns mit kurzem Cooldown von dieser Fläche.
+        if (startedGrounded)
+        {
+            if (Vector2.Dot(dashDirection, startNormal) > 0.15f)
+            {
+                controller.TriggerDetach(startNormal, 0.12f);
+            }
+            else
+            {
+                // Dash parallel zur Fläche: Nur Eckenstatus klären, ohne Re-Attach zu blockieren
+                controller.ClearCornerState();
+                controller.IsGrounded = false;
+            }
+        }
+
+        float speed = (data != null && data.dashSpeed > 1f) ? data.dashSpeed : 22f;
+        controller.Velocity = dashDirection * speed;
+    }
+
+    public override void FrameUpdate()
+    {
+        // Falls wir während des Dashes frontal an einer neuen Wand einrasten, beendet das den Dash sauber
+        if (controller.IsGrounded)
+        {
+            FinishDash();
+            return;
+        }
+
+        // Sprung während des Boden-Dashes (Dash-Jump für weite Sprünge!)
+        if (Input.HasBufferedJump && controller.HasCoyoteTime)
+        {
+            Input.ConsumeJumpBuffer();
+            controller.ConsumeJumpBuffer();
+
+            float sprintSpeed = data.moveSpeed * ((data != null && data.sprintSpeedMultiplier > 1f) ? data.sprintSpeedMultiplier : 1.45f);
+            float jumpHoriz = Mathf.Sign(dashDirection.x) * sprintSpeed;
+
+            Abilities.IsDashing = false;
+            Abilities.IsSprinting = Abilities.enableSprint && Input.DashHeld;
+            controller.Velocity = new Vector2(jumpHoriz, data.jumpVelocity);
+            stateMachine.ChangeState(controller.AirborneState);
+            return;
+        }
+
+        dashTimer -= Time.deltaTime;
+        if (dashTimer <= 0f)
+        {
+            FinishDash();
+        }
+    }
+
+    public override void PhysicsUpdate()
+    {
+        // Während des Dashes wirkt keine Schwerkraft
+        float speed = (data != null && data.dashSpeed > 1f) ? data.dashSpeed : 22f;
+        controller.Velocity = dashDirection * speed;
+    }
+
+    private void FinishDash()
+    {
+        Abilities.IsDashing = false;
+
+        // Prüfen, ob wir direkt an einer Fläche anliegen (z. B. nach einem Boden-Dash)
+        if (!controller.IsGrounded)
+        {
+            controller.TrySnapToNearbySurfaceAfterDash();
+        }
+
+        // Übergang in Sprint, falls die Dash-Taste weiter gehalten wird
+        Abilities.IsSprinting = Abilities.enableSprint && Input.DashHeld;
+
+        if (controller.IsGrounded)
+        {
+            float endSpeed = Abilities.IsSprinting
+                ? data.moveSpeed * data.sprintSpeedMultiplier
+                : data.moveSpeed;
+
+            Vector2 normal = controller.EffectiveSurfaceNormal;
+            Vector2 tangent = new Vector2(normal.y, -normal.x);
+            float tangentSign = Mathf.Sign(Vector2.Dot(dashDirection, tangent));
+
+            controller.Velocity = tangent * (tangentSign * endSpeed);
+            stateMachine.ChangeState(controller.GroundedState);
+        }
+        else
+        {
+            // Sanftes Auslaufen in der Luft nach dem Dash
+            float postDashAirSpeed = data.moveSpeed * (Abilities.IsSprinting ? data.sprintSpeedMultiplier : 1.1f);
+            Vector2 clampedVel = dashDirection * postDashAirSpeed;
+            if (clampedVel.y > data.jumpVelocity * 0.6f)
+            {
+                clampedVel.y = data.jumpVelocity * 0.6f;
+            }
+            controller.Velocity = clampedVel;
+            stateMachine.ChangeState(controller.AirborneState);
+        }
+    }
+
+    public override void Exit()
+    {
+        Abilities.IsDashing = false;
     }
 }
 </file>
@@ -4486,6 +5159,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
     {
         justEntered = true;
         controller.IsGrounded = true;
+        Abilities.ResetAllCharges();
 
         Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = controller.IsOnOuterCorner
@@ -4494,8 +5168,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         float preservedSpeed = Vector2.Dot(controller.Velocity, tangent);
 
-        // Landet man ohne aktive Richtungseingabe direkt auf einer äußeren Ecke, bleibt der Slime dort kontrolliert stehen
-        if (controller.IsOnOuterCorner && controller.MoveInput.sqrMagnitude < 0.04f)
+        if (controller.IsOnOuterCorner && Input.MoveInput.sqrMagnitude < 0.04f)
         {
             preservedSpeed = 0f;
         }
@@ -4521,6 +5194,24 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
+        // 1. Dash prüfen (Shift / R2 / Viereck)
+        if (Input.HasBufferedDash && Abilities.CanUseDash(isGrounded: true))
+        {
+            stateMachine.ChangeState(controller.DashState);
+            return;
+        }
+
+        // Sprint bleibt aktiv, solange die Dash-Taste gehalten wird
+        if (!Input.DashHeld || !Abilities.enableSprint)
+        {
+            Abilities.IsSprinting = false;
+        }
+        else if (Abilities.enableSprint && !Abilities.enableDash && Input.DashHeld)
+        {
+            // Falls Dash deaktiviert ist, aber Sprint erlaubt ist, kann man direkt per Halten sprinten
+            Abilities.IsSprinting = true;
+        }
+
         Vector2 surfaceNormal = controller.EffectiveSurfaceNormal;
         bool isOuterCorner = controller.IsOnOuterCorner;
         bool isCeiling = !isOuterCorner && surfaceNormal.y < -0.5f;
@@ -4528,10 +5219,10 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 1. Dropdown an der Decke via Hold-Timer mit striktem Winkelkegel (nicht auf äußeren Ecken)
+        // 2. Dropdown an der Decke via Hold-Timer
         if (isCeiling && !isHoldingDownFromWall)
         {
-            Vector2 input = controller.MoveInput;
+            Vector2 input = Input.MoveInput;
             bool isStrictlyDown = input.y <= -0.8f && Mathf.Abs(input.x) <= 0.25f;
 
             if (isStrictlyDown)
@@ -4547,7 +5238,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
                     downHoldTimer = 0f;
                     controller.TriggerDetach(surfaceNormal);
 
-                    float airMoveX = controller.MoveInput.x * data.moveSpeed;
+                    float airMoveX = Input.MoveInput.x * data.moveSpeed;
                     controller.Velocity = new Vector2(airMoveX, -3f);
 
                     stateMachine.ChangeState(controller.AirborneState);
@@ -4564,7 +5255,7 @@ public class PlatformerGroundedState : PlatformerSlimeState
             downHoldTimer = 0f;
         }
 
-        // 2. Sprung von der Fläche (Boden, Wand, Decke, Äußere Ecke oder Innere Ecke)
+        // 3. Sprung von der Fläche
         if (controller.HasBufferedJump)
         {
             ExecuteJump(surfaceNormal, isOuterCorner, isCeiling, isWall);
@@ -4576,7 +5267,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
         controller.ConsumeJumpBuffer();
 
         float stretch = (data != null) ? data.jumpStretchAmount : 0.16f;
-        controller.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+        Visuals.ApplySquashAndStretch(1f - stretch * 0.7f, 1f + stretch);
+
+        float sprintMult = (Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+            ? data.sprintSpeedMultiplier
+            : 1f;
+        float currentMoveSpeed = data.moveSpeed * sprintMult;
 
         // FALL A: Absprung direkt von einer äußeren Ecke (270°)
         if (isOuterCorner)
@@ -4585,9 +5281,9 @@ public class PlatformerGroundedState : PlatformerSlimeState
             controller.TriggerCornerDetach(controller.OuterCornerNormalA, controller.OuterCornerNormalB);
 
             Vector2 launchDir = (cornerNormal * 1.0f + Vector2.up * 0.55f).normalized;
-            if (controller.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(controller.MoveInput.normalized, cornerNormal) > -0.25f)
+            if (Input.MoveInput.sqrMagnitude > 0.1f && Vector2.Dot(Input.MoveInput.normalized, cornerNormal) > -0.25f)
             {
-                launchDir = (launchDir + controller.MoveInput.normalized * 0.45f).normalized;
+                launchDir = (launchDir + Input.MoveInput.normalized * 0.45f).normalized;
             }
 
             controller.Velocity = launchDir * data.jumpVelocity;
@@ -4612,17 +5308,17 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         if (isCeiling)
         {
-            float airMoveX = Mathf.Abs(controller.MoveInput.x) > 0.1f
-                ? controller.MoveInput.x * data.moveSpeed
+            float airMoveX = Mathf.Abs(Input.MoveInput.x) > 0.1f
+                ? Input.MoveInput.x * currentMoveSpeed
                 : controller.Velocity.x;
             float verticalDrop = -data.jumpVelocity * 0.55f;
             controller.Velocity = new Vector2(airMoveX, verticalDrop);
         }
         else if (isWall)
         {
-            float awayInput = Vector2.Dot(controller.MoveInput, surfaceNormal);
+            float awayInput = Vector2.Dot(Input.MoveInput, surfaceNormal);
             float horizontalWeight = awayInput > 0.25f ? 0.95f : 0.72f;
-            float verticalWeight = controller.MoveInput.y < -0.4f ? 0.55f : 1.15f;
+            float verticalWeight = Input.MoveInput.y < -0.4f ? 0.55f : 1.15f;
 
             Vector2 jumpDir = (surfaceNormal * horizontalWeight + Vector2.up * verticalWeight).normalized;
             controller.Velocity = jumpDir * data.jumpVelocity;
@@ -4630,8 +5326,8 @@ public class PlatformerGroundedState : PlatformerSlimeState
         else
         {
             float currentTangentSpeed = controller.Velocity.x * surfaceNormal.y;
-            float moveX = Mathf.Abs(controller.MoveInput.x) > 0.1f 
-                ? controller.MoveInput.x * data.moveSpeed 
+            float moveX = Mathf.Abs(Input.MoveInput.x) > 0.1f 
+                ? Input.MoveInput.x * currentMoveSpeed 
                 : currentTangentSpeed;
 
             controller.Velocity = new Vector2(moveX, data.jumpVelocity);
@@ -4642,14 +5338,12 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
     public override void PhysicsUpdate()
     {
-        // Auf äußeren Ecken nutzen wir die 45°-Diagonaltangente der Ecke,
-        // damit man an jeder Stelle der Ecke (0% bis 100%) sofort in beide Richtungen anfahren kann.
         Vector2 normal = controller.EffectiveSurfaceNormal;
         Vector2 tangent = controller.IsOnOuterCorner
             ? controller.OuterCornerDiagonalTangent
             : new Vector2(normal.y, -normal.x);
 
-        Vector2 input = controller.MoveInput;
+        Vector2 input = Input.MoveInput;
         float inputSqrMag = input.sqrMagnitude;
 
         float targetSpeed = 0f;
@@ -4706,9 +5400,15 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
             if (isTraversing)
             {
-                targetSpeed = currentTraverseSign * data.moveSpeed * controller.CornerSpeedMultiplier;
+                float sprintMult = (Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+                    ? data.sprintSpeedMultiplier
+                    : 1f;
+
+                targetSpeed = currentTraverseSign * data.moveSpeed * sprintMult * controller.CornerSpeedMultiplier;
             }
         }
+
+        Abilities.UpdateFacingDirection(input, tangent, currentTraverseSign);
 
         Vector2 vel = controller.Velocity;
         float accel = (Mathf.Abs(targetSpeed) > 0.01f) ? data.groundAcceleration : data.groundDeceleration;
@@ -4753,6 +5453,34 @@ public class PlatformerPhysicsData : ScriptableObject
     [Range(1.0f, 3.0f)] public float lowJumpGravityMultiplier = 1.75f;
     [Tooltip("Kulanzzeit in Sekunden, in der man kurz nach dem Verlassen einer Kante noch abspringen kann")]
     public float coyoteTimeDuration = 0.1f;
+
+    [Header("Fähigkeit 1: Doppelsprung")]
+    [Tooltip("Anzahl der erlaubten Zusatzsprünge in der Luft (1 = klassischer Doppelsprung)")]
+    public int maxAirJumps = 1;
+    [Tooltip("Sprungkraft des Doppelsprungs in der Luft")]
+    public float doubleJumpVelocity = 12.8f;
+
+    [Header("Fähigkeit 2: Dash & Sprint (Hollow Knight / Silksong Stil)")]
+    [Tooltip("Geschwindigkeit während des kurzen Dash-Stoßes")]
+    public float dashSpeed = 22f;
+    [Tooltip("Dauer des Dashes in Sekunden")]
+    public float dashDuration = 0.15f;
+    [Tooltip("Abklingzeit zwischen zwei Dashes in Sekunden")]
+    public float dashCooldown = 0.35f;
+    [Tooltip("Wie oft der Slime in der Luft dashen darf, bevor er wieder landen muss")]
+    public int maxAirDashes = 1;
+    [Tooltip("Geschwindigkeits-Multiplikator beim Weiterrennen (Sprint) nach dem Dash")]
+    [Range(1.1f, 2.2f)] public float sprintSpeedMultiplier = 1.45f;
+
+    [Header("Fähigkeit 3: Ballon-Schweben (Sprungtaste halten)")]
+    [Tooltip("Maximale Schwebezeit in Sekunden pro Sprungphase (wird beim Landen aufgeladen)")]
+    public float maxFloatDuration = 1.25f;
+    [Tooltip("Sinkgeschwindigkeit während des Ballon-Schwebens (0 = schwebt komplett auf einer Höhe, 0.8 = sanftes Gleiten)")]
+    [Range(0f, 5f)] public float floatFallSpeed = 0.6f;
+    [Tooltip("Wie schnell der Fall beim Aufblasen zum Ballon abgebremst wird")]
+    public float floatBrakeAcceleration = 85f;
+    [Tooltip("Wie stark sich der Slime beim Schweben optisch wie ein Ballon aufbläst")]
+    [Range(1.1f, 1.8f)] public float balloonScaleMultiplier = 1.35f;
 
     [Header("Äußere Ecken (270° Wrapping & Stehenbleiben)")]
     [Tooltip("Geschwindigkeits-Faktor beim Umrunden einer äußeren Ecke (kleiner = langsamer & kontrollierter)")]
@@ -4802,23 +5530,25 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
-    private SpriteRenderer visualRenderer;
-    private Color defaultSpriteColor = Color.white;
-    private Vector3 defaultVisualScale = Vector3.one;
-    private Vector2 currentScaleDeform = Vector2.one;
 
     private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
+
+    // --- Modulare Sub-Komponenten ---
+    public SlimeInputHandler InputHandler { get; private set; }
+    public SlimeAbilities Abilities { get; private set; }
+    public SlimeVisuals Visuals { get; private set; }
 
     // --- State Machine & Zustände ---
     public PlatformerStateMachine StateMachine { get; private set; }
     public PlatformerGroundedState GroundedState { get; private set; }
     public PlatformerAirborneState AirborneState { get; private set; }
+    public PlatformerDashState DashState { get; private set; }
 
-    // --- Zentralisierter Input ---
-    public Vector2 MoveInput { get; private set; }
-    public bool JumpTriggered { get; private set; }
-    public bool JumpHeld { get; private set; }
+    // --- Weitergeleitete Input-Properties (für Abwärtskompatibilität) ---
+    public Vector2 MoveInput => InputHandler != null ? InputHandler.MoveInput : Vector2.zero;
+    public bool JumpHeld => InputHandler != null && InputHandler.JumpHeld;
+    public bool HasBufferedJump => InputHandler != null && InputHandler.HasBufferedJump;
 
     // --- Kollisions- & Orientierungsstatus ---
     public Vector2 Velocity { get; set; }
@@ -4833,15 +5563,12 @@ public class PlatformerSlimeController : MonoBehaviour
     public Vector2 OuterCornerVertex { get; private set; }
     public Vector2 OuterCornerNormalA { get; private set; } = Vector2.up;
     public Vector2 OuterCornerNormalB { get; private set; } = Vector2.right;
-    [Range(0f, 1f)] public float OuterCornerProgress { get; private set; } // 0 = Fläche A, 0.5 = 45° Eckspitze, 1 = Fläche B
+    [Range(0f, 1f)] public float OuterCornerProgress { get; private set; }
 
     public bool IsInInnerCornerPocket { get; private set; }
     public Vector2 InnerCornerAdjacentNormal { get; private set; } = Vector2.zero;
     private float innerCornerSlowdownTimer = 0f;
 
-    /// <summary>
-    /// Gibt die aktuelle effektive Oberflächennormale zurück (auf äußeren Ecken stufenlos z.B. 45°).
-    /// </summary>
     public Vector2 EffectiveSurfaceNormal
     {
         get
@@ -4855,14 +5582,8 @@ public class PlatformerSlimeController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 45°-Winkelhalbierende der aktuellen äußeren Ecke (ideal für stabile Input-Projektion & Ecksprünge).
-    /// </summary>
     public Vector2 OuterCornerDiagonalNormal => (OuterCornerNormalA + OuterCornerNormalB).normalized;
 
-    /// <summary>
-    /// Zugehörige 45°-Tangente im Uhrzeigersinn auf einer äußeren Ecke.
-    /// </summary>
     public Vector2 OuterCornerDiagonalTangent
     {
         get
@@ -4872,9 +5593,6 @@ public class PlatformerSlimeController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Aktueller Geschwindigkeits-Multiplikator für sanfteres Tempo an Innen- und Außenecken.
-    /// </summary>
     public float CornerSpeedMultiplier
     {
         get
@@ -4901,49 +5619,44 @@ public class PlatformerSlimeController : MonoBehaviour
 
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
-    private float jumpBufferTimer;
     private float coyoteTimer;
 
-    [Header("Treffer & Unverwundbarkeit (Schritt 3)")]
-    [Tooltip("Kurze Schutzzeit nach einem Treffer, damit ein Hindernis nicht mehrfach pro Sekunde Fokus abzieht")]
+    [Header("Treffer & Unverwundbarkeit")]
     [SerializeField] private float damageInvincibilityDuration = 0.75f;
-    [Tooltip("Erlaubt das Simulieren eines Treffers über die Taste K auf der Tastatur")]
     [SerializeField] private bool enableDebugDamageKeyK = true;
     private float invincibilityTimer = 0f;
 
     [Header("Controller Settings")]
     [SerializeField] private float stickDeadzone = 0.2f;
 
-    public bool HasBufferedJump => jumpBufferTimer > 0f;
     public bool HasCoyoteTime => coyoteTimer > 0f;
     public bool IsInvincible => invincibilityTimer > 0f;
 
     public void ConsumeJumpBuffer()
     {
-        jumpBufferTimer = 0f;
+        if (InputHandler != null) InputHandler.ConsumeJumpBuffer();
         coyoteTimer = 0f;
+    }
+
+    public void ApplySquashAndStretch(float scaleX, float scaleY)
+    {
+        if (Visuals != null) Visuals.ApplySquashAndStretch(scaleX, scaleY);
     }
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
         boxCollider = GetComponent<BoxCollider2D>();
-
-        if (visualTransform != null)
-        {
-            defaultVisualScale = visualTransform.localScale;
-            visualRenderer = visualTransform.GetComponentInChildren<SpriteRenderer>();
-        }
-        if (visualRenderer == null)
-        {
-            visualRenderer = GetComponentInChildren<SpriteRenderer>();
-        }
-        if (visualRenderer != null)
-        {
-            defaultSpriteColor = visualRenderer.color;
-        }
-
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
+
+        // Modulare Komponenten automatisch holen oder anlegen
+        InputHandler = GetComponent<SlimeInputHandler>() ?? gameObject.AddComponent<SlimeInputHandler>();
+        Abilities = GetComponent<SlimeAbilities>() ?? gameObject.AddComponent<SlimeAbilities>();
+        Visuals = GetComponent<SlimeVisuals>() ?? gameObject.AddComponent<SlimeVisuals>();
+
+        InputHandler.Initialize(stickDeadzone, jumpBufferDuration);
+        Abilities.Initialize(data);
+        Visuals.Initialize(this, visualTransform, boxCollider, data);
 
         contactFilter = new ContactFilter2D
         {
@@ -4955,6 +5668,7 @@ public class PlatformerSlimeController : MonoBehaviour
         StateMachine = new PlatformerStateMachine();
         GroundedState = new PlatformerGroundedState(this, StateMachine, data);
         AirborneState = new PlatformerAirborneState(this, StateMachine, data);
+        DashState = new PlatformerDashState(this, StateMachine, data);
     }
 
     private void Start()
@@ -4970,14 +5684,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void OnDisable()
     {
-        if (visualRenderer != null)
-        {
-            visualRenderer.color = defaultSpriteColor;
-        }
-        if (visualTransform != null)
-        {
-            visualTransform.localScale = defaultVisualScale;
-        }
+        if (Visuals != null) Visuals.ResetVisuals();
     }
 
     private void Update()
@@ -4988,7 +5695,8 @@ public class PlatformerSlimeController : MonoBehaviour
             if (!enabled) return;
         }
 
-        ReadInput();
+        InputHandler.ReadInput(IsMeditating || IsViewingMap);
+        Abilities.TickTimers(Time.deltaTime);
 
         if (IsGrounded)
         {
@@ -5004,15 +5712,18 @@ public class PlatformerSlimeController : MonoBehaviour
             innerCornerSlowdownTimer -= Time.deltaTime;
         }
 
-        StateMachine.Update();
-        UpdateSurfaceRotationAndSquash();
-
         if (detachCooldownTimer > 0f)
         {
             detachCooldownTimer -= Time.deltaTime;
         }
 
-        UpdateInvincibilityVisuals();
+        if (invincibilityTimer > 0f)
+        {
+            invincibilityTimer -= Time.deltaTime;
+        }
+
+        StateMachine.Update();
+        Visuals.UpdateVisuals(invincibilityTimer);
     }
 
     private void FixedUpdate()
@@ -5021,47 +5732,25 @@ public class PlatformerSlimeController : MonoBehaviour
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
     }
 
-    private void UpdateInvincibilityVisuals()
-    {
-        if (invincibilityTimer > 0f)
-        {
-            invincibilityTimer -= Time.deltaTime;
-
-            if (visualRenderer != null)
-            {
-                if (invincibilityTimer <= 0f)
-                {
-                    visualRenderer.color = defaultSpriteColor;
-                }
-                else
-                {
-                    float blink = Mathf.PingPong(Time.time * 18f, 1f);
-                    visualRenderer.color = Color.Lerp(defaultSpriteColor, new Color(1f, 0.2f, 0.2f, 0.45f), blink);
-                }
-            }
-        }
-    }
-
-    public void ApplySquashAndStretch(float scaleX, float scaleY)
-    {
-        if (data != null && !data.enableSquashAndStretch) return;
-        currentScaleDeform = new Vector2(scaleX, scaleY);
-    }
-
     public void ZeroOutMomentum()
     {
         Velocity = Vector2.zero;
-        MoveInput = Vector2.zero;
-        jumpBufferTimer = 0f;
+        if (InputHandler != null) InputHandler.ClearAllInputs();
+        if (Abilities != null)
+        {
+            Abilities.IsDashing = false;
+            Abilities.IsSprinting = false;
+            Abilities.IsBalloonFloating = false;
+        }
 
         if (rb != null)
         {
             rb.linearVelocity = Vector2.zero;
         }
 
-        if (visualRenderer != null)
+        if (Visuals != null)
         {
-            visualRenderer.color = defaultSpriteColor;
+            Visuals.ResetVisuals();
         }
     }
 
@@ -5114,6 +5803,32 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.position += pushDir * (data.skinWidth * 4f + 0.045f);
     }
 
+    /// <summary>
+    /// Prüft unmittelbar nach einem Boden-Dash, ob direkt unter dem Slime eine Fläche zum nahtlosen Weiterrennen liegt.
+    /// </summary>
+    public void TrySnapToNearbySurfaceAfterDash()
+    {
+        Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
+        Vector2 origin = rb.position + boxCollider.offset;
+        Vector2 checkNormal = SnapToCardinal(CurrentSurfaceNormal);
+        Vector2 snapDir = -checkNormal;
+
+        int hits = Physics2D.BoxCast(origin, boxSize, 0f, snapDir, contactFilter, hitBuffer, 0.22f);
+        for (int i = 0; i < hits; i++)
+        {
+            Vector2 hitNormal = SnapToCardinal(hitBuffer[i].normal);
+            if (hitBuffer[i].distance > 0.0001f && CanAttachTo(hitNormal))
+            {
+                float dist = Mathf.Max(0f, hitBuffer[i].distance - data.skinWidth);
+                rb.position += snapDir * dist;
+                CurrentSurfaceNormal = hitNormal;
+                TargetSurfaceNormal = hitNormal;
+                IsGrounded = true;
+                return;
+            }
+        }
+    }
+
     public bool CanAttach() => detachCooldownTimer <= 0f;
 
     public bool CanAttachTo(Vector2 candidateNormal)
@@ -5142,10 +5857,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return new Vector2(0f, Mathf.Sign(rawNormal.y));
     }
 
-    /// <summary>
-    /// Berechnet die exakte Bogen-Position um eine äußere Ecke.
-    /// Clamp01 auf Cos/Sin verhindert zuverlässig NaN-Werte bei progress = 1f (Cos(pi/2) < 0 in float).
-    /// </summary>
     private Vector2 CalculateOuterCornerCenterPosition(Vector2 vertex, Vector2 normalA, Vector2 normalB, float progress)
     {
         float clampedT = Mathf.Clamp01(progress);
@@ -5164,9 +5875,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return vertex + normalA * (weightA * extentA) + normalB * (weightB * extentB);
     }
 
-    /// <summary>
-    /// Sucht über mehrere Prüftiefen zuverlässig die angrenzende 270°-Wand einer äußeren Ecke.
-    /// </summary>
     private bool TryFindAdjacentOuterCornerWall(
         Vector2 currentCenter,
         Vector2 tentativeCenter,
@@ -5296,9 +6004,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return found;
     }
 
-    /// <summary>
-    /// Prüft, ob die Mitte des Slimes knapp über eine äußere Kante hinausragt (z. B. beim Anhalten an der Kante oder nach einer Landung).
-    /// </summary>
     private bool TryDetectOuterCornerUnderneath(
         Vector2 center,
         Vector2 surfaceNormal,
@@ -5313,7 +6018,6 @@ public class PlatformerSlimeController : MonoBehaviour
         float extentNormal = GetColliderExtent(-surfaceNormal);
         float floorDist = extentNormal + Mathf.Max(0.25f, data.skinWidth * 8f);
 
-        // Wenn direkt unter dem Zentrum stabiler Boden mit passender Normale ist, stehen wir auf der Fläche
         RaycastHit2D centerFloorHit = Physics2D.Raycast(center, -surfaceNormal, floorDist, data.groundLayer);
         if (centerFloorHit.collider != null && centerFloorHit.distance > 0.0005f && Vector2.Dot(SnapToCardinal(centerFloorHit.normal), surfaceNormal) > 0.6f)
         {
@@ -5354,126 +6058,6 @@ public class PlatformerSlimeController : MonoBehaviour
         return false;
     }
 
-    private void ReadInput()
-    {
-        if (IsMeditating || IsViewingMap)
-        {
-            MoveInput = Vector2.zero;
-            jumpBufferTimer = 0f;
-            JumpHeld = false;
-            return;
-        }
-
-        Vector2 input = Vector2.zero;
-        bool jumpPressedThisFrame = false;
-        bool jumpIsHeld = false;
-
-        // --- 1. TASTATUR ---
-        var keyboard = Keyboard.current;
-        if (keyboard != null)
-        {
-            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
-            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
-            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
-            if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
-
-            if (keyboard.spaceKey.wasPressedThisFrame) jumpPressedThisFrame = true;
-            if (keyboard.spaceKey.isPressed) jumpIsHeld = true;
-        }
-
-        // --- 2. GAMEPAD / PS5 DUALSENSE ---
-        var gamepad = Gamepad.current;
-        if (gamepad != null)
-        {
-            Vector2 stick = Vector2.zero;
-            Vector2 rawStick = gamepad.leftStick.ReadValue();
-
-            if (rawStick.magnitude >= stickDeadzone)
-            {
-                Vector2 stickDir = rawStick.normalized;
-                float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
-
-                if (Mathf.Abs(stickDir.x) > 0.7f)
-                {
-                    stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
-                }
-                else if (Mathf.Abs(stickDir.y) > 0.7f)
-                {
-                    stick = new Vector2(0f, Mathf.Sign(stickDir.y) * stickMag);
-                }
-                else
-                {
-                    stick = stickDir * stickMag;
-                }
-            }
-
-            Vector2 dpad = gamepad.dpad.ReadValue();
-
-            if (dpad.sqrMagnitude > 0.1f)
-            {
-                input += dpad;
-            }
-            else if (stick.sqrMagnitude > 0.01f)
-            {
-                input += stick;
-            }
-
-            if (gamepad.buttonSouth.wasPressedThisFrame) jumpPressedThisFrame = true;
-            if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
-        }
-
-        input.x = Mathf.Clamp(input.x, -1f, 1f);
-        input.y = Mathf.Clamp(input.y, -1f, 1f);
-
-        if (jumpPressedThisFrame)
-        {
-            jumpBufferTimer = jumpBufferDuration;
-        }
-        else if (jumpBufferTimer > 0f)
-        {
-            jumpBufferTimer -= Time.deltaTime;
-        }
-
-        JumpHeld = jumpIsHeld;
-        MoveInput = input;
-    }
-
-    private void UpdateSurfaceRotationAndSquash()
-    {
-        transform.rotation = Quaternion.identity;
-
-        if (visualTransform != null)
-        {
-            Vector2 desiredVisualNormal = TargetSurfaceNormal;
-            if (IsOnOuterCorner)
-            {
-                desiredVisualNormal = EffectiveSurfaceNormal;
-            }
-            else if (IsInInnerCornerPocket && InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
-            {
-                desiredVisualNormal = (CurrentSurfaceNormal + InnerCornerAdjacentNormal * 0.75f).normalized;
-            }
-
-            float targetAngle = Mathf.Atan2(desiredVisualNormal.y, desiredVisualNormal.x) * Mathf.Rad2Deg - 90f;
-            Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
-
-            float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 680f;
-            visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
-
-            float halfColHeight = boxCollider.size.y * 0.5f;
-            Vector2 targetOffset = (Vector2)boxCollider.offset - desiredVisualNormal * (halfColHeight - 0.26f);
-            visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 20f * Time.deltaTime);
-
-            float recovery = (data != null && data.squashRecoverySpeed > 0f) ? data.squashRecoverySpeed : 12f;
-            currentScaleDeform = Vector2.MoveTowards(currentScaleDeform, Vector2.one, recovery * Time.deltaTime);
-            visualTransform.localScale = new Vector3(
-                defaultVisualScale.x * currentScaleDeform.x,
-                defaultVisualScale.y * currentScaleDeform.y,
-                defaultVisualScale.z
-            );
-        }
-    }
-
     private void MoveAndResolveCollisions(Vector2 deltaMovement)
     {
         IsGrounded = false;
@@ -5498,9 +6082,6 @@ public class PlatformerSlimeController : MonoBehaviour
             {
                 maxIterations--;
 
-                // =========================================================
-                // MODUS A: SLIME ROLLT GERADE UM EINE ÄUSSERE 270°-ECKE
-                // =========================================================
                 if (IsOnOuterCorner)
                 {
                     Vector2 tangentA = new Vector2(OuterCornerNormalA.y, -OuterCornerNormalA.x);
@@ -5513,7 +6094,6 @@ public class PlatformerSlimeController : MonoBehaviour
 
                     if (nextProgress >= 1f)
                     {
-                        // Ecke fertig umrundet -> stabiler Übergang auf Fläche B (inkl. kleinem Sicherheits-Einzug auf Fläche B)
                         float usedRatio = (1f - OuterCornerProgress) / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
                         remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
 
@@ -5531,7 +6111,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else if (nextProgress <= 0f)
                     {
-                        // Zurückgerollt -> stabiler Übergang auf Fläche A (inkl. kleinem Sicherheits-Einzug auf Fläche A)
                         float usedRatio = OuterCornerProgress / Mathf.Max(0.0001f, Mathf.Abs(deltaProgress));
                         remainingMove = Mathf.Max(0f, remainingMove * (1f - Mathf.Clamp01(usedRatio)));
 
@@ -5549,7 +6128,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else
                     {
-                        // Mitten auf dem Ecken-Bogen -> geschmeidig weiterrollen
                         OuterCornerProgress = nextProgress;
                         Vector2 arcCenter = CalculateOuterCornerCenterPosition(OuterCornerVertex, OuterCornerNormalA, OuterCornerNormalB, OuterCornerProgress);
                         position = arcCenter - boxCollider.offset;
@@ -5560,9 +6138,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                 }
 
-                // =========================================================
-                // MODUS B: REGULÄRE BEWEGUNG AUF FLÄCHE (INKL. ECKEN-CHECKS)
-                // =========================================================
                 Vector2 currentNormal = SnapToCardinal(CurrentSurfaceNormal);
                 Vector2 currentTangent = new Vector2(currentNormal.y, -currentNormal.x);
                 Vector2 moveDir = currentTangent * moveSign;
@@ -5571,7 +6146,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 float extentNormal = GetColliderExtent(-currentNormal);
                 float extentTangent = GetColliderExtent(moveDir);
 
-                // 1. INNENECKEN- & WAND-CHECK (90°)
                 float innerPreviewDist = (data != null && data.innerCornerBlendDistance > 0.05f) ? data.innerCornerBlendDistance : 0.40f;
                 float lookAheadDist = Mathf.Max(remainingMove, innerPreviewDist) + extentTangent + data.skinWidth * 2f;
 
@@ -5587,7 +6161,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 {
                     float actualDistToWall = Mathf.Max(0f, hitDist - data.skinWidth);
 
-                    // Sanftes Vorab-Neigen in die Innenecke kurz vor Kontakt
                     if (actualDistToWall <= innerPreviewDist && Mathf.Abs(Vector2.Dot(currentNormal, hitWallNormal)) < 0.35f)
                     {
                         float blendT = 1f - Mathf.Clamp01(actualDistToWall / innerPreviewDist);
@@ -5612,7 +6185,6 @@ public class PlatformerSlimeController : MonoBehaviour
                                 ? data.innerCornerSlowdownDuration
                                 : 0.06f;
 
-                            // Restbewegung flüssig auf die neue Wandfläche mitnehmen statt 1 Frame zu stocken
                             remainingMove = Mathf.Max(0f, remainingMove - actualDistToWall);
                             continue;
                         }
@@ -5626,7 +6198,6 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                 }
 
-                // 2. ÄUSSERE ECKEN-CHECK (270°) – SOBALD DAS ZENTRUM DIE KANTE ERREICHT!
                 float stepDist = remainingMove;
                 Vector2 tentativePos = position + moveDir * stepDist;
                 Vector2 tentativeCenter = tentativePos + boxCollider.offset;
@@ -5642,7 +6213,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
                 else
                 {
-                    // Das Zentrum hat die Kante erreicht -> Angrenzende 270°-Wand suchen
                     if (TryFindAdjacentOuterCornerWall(
                         currentCenter,
                         tentativeCenter,
@@ -5658,7 +6228,6 @@ public class PlatformerSlimeController : MonoBehaviour
                         float distToCornerVertex = Mathf.Max(0f, Vector2.Dot(cornerPoint - currentCenter, moveDir));
                         float pastVertexDist = Mathf.Max(0.002f, stepDist - distToCornerVertex);
 
-                        // Nahtloser Einstieg am Eckpunkt ohne Positions-Sprung (Progress startet bei 0f und läuft über pastVertexDist weiter)
                         IsOnOuterCorner = true;
                         OuterCornerVertex = cornerPoint;
                         OuterCornerNormalA = currentNormal;
@@ -5674,14 +6243,12 @@ public class PlatformerSlimeController : MonoBehaviour
                     }
                     else
                     {
-                        // Freie Kante ohne angrenzende 270°-Wand
                         position = tentativePos;
                         remainingMove = 0f;
                     }
                 }
             }
 
-            // 3. HAFTUNG ZUR FLÄCHE ODER ECKE (Surface & Corner Snap)
             if (IsOnOuterCorner)
             {
                 if (data != null && !data.allowStoppingOnOuterCorners && MoveInput.sqrMagnitude < 0.04f)
@@ -5724,7 +6291,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 Vector2 snapOrigin = position + boxCollider.offset;
                 float snapDist = Mathf.Max(0.20f, data.skinWidth * 8f);
 
-                // Wenn das Zentrum im Stillstand bereits über einer äußeren Ecke hängt, direkt in den Ecken-Zustand einrasten
                 if ((data == null || data.allowStoppingOnOuterCorners) &&
                     TryDetectOuterCornerUnderneath(snapOrigin, finalNormal, out Vector2 detectedVertex, out Vector2 detectedWallNormal, out float detectedProgress))
                 {
@@ -5781,7 +6347,6 @@ public class PlatformerSlimeController : MonoBehaviour
                         }
                         else if (groundHits > 0)
                         {
-                            // Box überlappt die Kante noch minimal -> Kontakt halten
                             IsGrounded = true;
                             CurrentSurfaceNormal = finalNormal;
                         }
@@ -5804,7 +6369,7 @@ public class PlatformerSlimeController : MonoBehaviour
         }
         else
         {
-            // --- FLUG-MODUS (Airborne) ---
+            // --- FLUG- & DASH-MODUS (Welt-Koordinaten) ---
 
             // Y-Achse
             Vector2 castOriginY = position + boxCollider.offset;
@@ -5857,7 +6422,7 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // X-Achse (nur falls nicht schon bei Y-Achse gelandet)
+            // X-Achse
             if (!IsGrounded)
             {
                 Vector2 castOriginX = position + boxCollider.offset;
@@ -5916,9 +6481,6 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.MovePosition(position);
     }
 
-    /// <summary>
-    /// Landet aus dem Sprung auf einer Fläche – und erkennt automatisch, wenn der Slime direkt auf einer äußeren Ecke landet.
-    /// </summary>
     private void AttachToSurfaceFromAir(ref Vector2 position, Vector2 landedNormal)
     {
         TargetSurfaceNormal = landedNormal;
@@ -5972,18 +6534,12 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void OnTriggerEnter2D(Collider2D other)
     {
-        if (other.CompareTag("Hazard"))
-        {
-            TakeDamage();
-        }
+        if (other.CompareTag("Hazard")) TakeDamage();
     }
 
     private void OnCollisionEnter2D(Collision2D collision)
     {
-        if (collision.collider.CompareTag("Hazard"))
-        {
-            TakeDamage();
-        }
+        if (collision.collider.CompareTag("Hazard")) TakeDamage();
     }
 
     private void OnDrawGizmos()
@@ -6006,7 +6562,6 @@ public class PlatformerSlimeController : MonoBehaviour
     public void TakeDamage()
     {
         if (IsInvincible) return;
-
         invincibilityTimer = damageInvincibilityDuration;
 
         if (GameManager.Instance != null)
@@ -6026,6 +6581,10 @@ public abstract class PlatformerSlimeState
     protected PlatformerStateMachine stateMachine;
     protected PlatformerPhysicsData data;
 
+    protected SlimeInputHandler Input => controller.InputHandler;
+    protected SlimeAbilities Abilities => controller.Abilities;
+    protected SlimeVisuals Visuals => controller.Visuals;
+
     public PlatformerSlimeState(PlatformerSlimeController controller, PlatformerStateMachine stateMachine, PlatformerPhysicsData data)
     {
         this.controller = controller;
@@ -6039,19 +6598,21 @@ public abstract class PlatformerSlimeState
     public virtual void PhysicsUpdate() { }
 
     /// <summary>
-    /// Berechnet die horizontale Bewegung und erhält bestehenden Sprung-Schwung in Flugrichtung.
+    /// Berechnet die horizontale Bewegung und erhält bestehenden Sprung-/Sprint-Schwung in Flugrichtung.
     /// </summary>
     protected void ApplyHorizontalMovement(float accel, float decel)
     {
-        float inputX = controller.MoveInput.x;
-        float targetSpeed = inputX * data.moveSpeed;
+        float inputX = Input.MoveInput.x;
+        float speedMult = (Abilities != null && Abilities.IsSprinting && data != null && data.sprintSpeedMultiplier > 1f)
+            ? data.sprintSpeedMultiplier
+            : 1f;
+
+        float targetSpeed = inputX * data.moveSpeed * speedMult;
         Vector2 vel = controller.Velocity;
 
         float rate;
         if (Mathf.Abs(inputX) > 0.05f)
         {
-            // Bewegt sich der Slime durch einen Wand-/Ecksprung bereits schneller in Eingaberichtung,
-            // bremsen wir ihn nicht hart auf moveSpeed ab, sondern lassen den Schwung sanft auslaufen.
             bool movingFasterInSameDir = (vel.x * inputX > 0f) && (Mathf.Abs(vel.x) > Mathf.Abs(targetSpeed));
             rate = movingFasterInSameDir ? decel : accel;
         }
@@ -6064,9 +6625,6 @@ public abstract class PlatformerSlimeState
         controller.Velocity = vel;
     }
 
-    /// <summary>
-    /// Wendet die konfigurierte Schwerkraft bis zum Geschwindigkeitslimit an.
-    /// </summary>
     protected void ApplyGravity()
     {
         Vector2 vel = controller.Velocity;
@@ -6103,6 +6661,500 @@ public class PlatformerStateMachine
     public void FixedUpdate()
     {
         CurrentState?.PhysicsUpdate();
+    }
+}
+</file>
+
+<file path="Slime/SlimeAbilities.cs">
+using UnityEngine;
+
+public enum DashDirectionMode
+{
+    HollowKnightHorizontal, // Klassisch: In der Luft links/rechts, an Flächen entlang der Fläche (oder von Wand weg)
+    EightWay,               // 8 Richtungen (Horizontal, Vertikal, 45°-Diagonalen)
+    Free360                 // Exakter 360°-Winkel des Analogsticks
+}
+
+public class SlimeAbilities : MonoBehaviour
+{
+    [Header("Fähigkeiten an- und ausschalten")]
+    [Tooltip("Erlaubt einen oder mehrere Zusatzsprünge in der Luft")]
+    public bool enableDoubleJump = true;
+
+    [Tooltip("Erlaubt den kurzen Dash-Stoß (Shift / R2 / Viereck)")]
+    public bool enableDash = true;
+
+    [Tooltip("Wenn aktiv, rennt der Slime nach dem Dash (oder beim Halten der Dash-Taste) schneller weiter")]
+    public bool enableSprint = true;
+
+    [Tooltip("Wenn aktiv, bläst sich der Slime beim Halten der Sprungtaste in der Luft auf und schwebt")]
+    public bool enableBalloonFloat = true;
+
+    [Header("Dash-Modus Auswahl")]
+    [Tooltip("HollowKnightHorizontal = Links/Rechts (bzw. entlang Fläche) | EightWay = 8 Richtungen | Free360 = Freier Stick-Winkel")]
+    public DashDirectionMode dashDirectionMode = DashDirectionMode.HollowKnightHorizontal;
+
+    // --- Laufzeit-Status ---
+    public int RemainingAirJumps { get; private set; }
+    public int RemainingAirDashes { get; private set; }
+    public float RemainingFloatTime { get; private set; }
+    public float DashCooldownTimer { get; private set; }
+
+    public bool IsDashing { get; set; }
+    public bool IsSprinting { get; set; }
+    public bool IsBalloonFloating { get; set; }
+
+    /// <summary>
+    /// Merkt sich die letzte Blick-/Bewegungsrichtung für neutrale Dashes ohne Richtungseingabe.
+    /// </summary>
+    public Vector2 LastFacingDirection { get; private set; } = Vector2.right;
+
+    private PlatformerPhysicsData data;
+
+    public void Initialize(PlatformerPhysicsData physicsData)
+    {
+        data = physicsData;
+        ResetAllCharges();
+    }
+
+    public void TickTimers(float deltaTime)
+    {
+        if (DashCooldownTimer > 0f)
+        {
+            DashCooldownTimer -= deltaTime;
+        }
+    }
+
+    public void UpdateFacingDirection(Vector2 moveInput, Vector2 currentTangent, float currentTraverseSign)
+    {
+        if (Mathf.Abs(currentTraverseSign) > 0.01f)
+        {
+            Vector2 dir = (currentTangent * Mathf.Sign(currentTraverseSign)).normalized;
+            if (dir.sqrMagnitude > 0.1f)
+            {
+                LastFacingDirection = dir;
+            }
+        }
+        else if (Mathf.Abs(moveInput.x) > 0.15f)
+        {
+            LastFacingDirection = new Vector2(Mathf.Sign(moveInput.x), 0f);
+        }
+    }
+
+    /// <summary>
+    /// Lädt Doppelsprung, Air-Dash und Ballon-Schwebezeit bei Flächenkontakt wieder voll auf.
+    /// </summary>
+    public void ResetAllCharges()
+    {
+        int maxJumps = (data != null) ? Mathf.Max(1, data.maxAirJumps) : 1;
+        int maxDashes = (data != null) ? Mathf.Max(1, data.maxAirDashes) : 1;
+        float maxFloat = (data != null && data.maxFloatDuration > 0f) ? data.maxFloatDuration : 1.2f;
+
+        RemainingAirJumps = maxJumps;
+        RemainingAirDashes = maxDashes;
+        RemainingFloatTime = maxFloat;
+        IsBalloonFloating = false;
+    }
+
+    // --- Doppelsprung ---
+    public bool CanUseDoubleJump()
+    {
+        return enableDoubleJump && RemainingAirJumps > 0;
+    }
+
+    public void ConsumeDoubleJump()
+    {
+        RemainingAirJumps = Mathf.Max(0, RemainingAirJumps - 1);
+    }
+
+    // --- Dash ---
+    public bool CanUseDash(bool isGrounded)
+    {
+        if (!enableDash || IsDashing || DashCooldownTimer > 0f) return false;
+        return isGrounded || RemainingAirDashes > 0;
+    }
+
+    public void ConsumeDash(bool isGrounded)
+    {
+        if (!isGrounded)
+        {
+            RemainingAirDashes = Mathf.Max(0, RemainingAirDashes - 1);
+        }
+
+        DashCooldownTimer = (data != null && data.dashCooldown > 0f) ? data.dashCooldown : 0.35f;
+        IsBalloonFloating = false;
+    }
+
+    // --- Ballon-Schweben ---
+    public bool CanUseBalloonFloat()
+    {
+        return enableBalloonFloat && RemainingFloatTime > 0f;
+    }
+
+    public void ConsumeFloatTime(float deltaTime)
+    {
+        RemainingFloatTime = Mathf.Max(0f, RemainingFloatTime - deltaTime);
+        if (RemainingFloatTime <= 0f)
+        {
+            IsBalloonFloating = false;
+        }
+    }
+
+    /// <summary>
+    /// Berechnet die Dash-Richtung abhängig vom gewählten DashDirectionMode.
+    /// </summary>
+    public Vector2 CalculateDashDirection(
+        Vector2 moveInput,
+        bool isGrounded,
+        Vector2 surfaceNormal,
+        bool isOnOuterCorner,
+        Vector2 outerCornerTangent)
+    {
+        Vector2 fallbackHorizontal = new Vector2(Mathf.Abs(LastFacingDirection.x) > 0.1f ? Mathf.Sign(LastFacingDirection.x) : 1f, 0f);
+
+        switch (dashDirectionMode)
+        {
+            case DashDirectionMode.Free360:
+            {
+                if (moveInput.sqrMagnitude > 0.1f)
+                {
+                    return moveInput.normalized;
+                }
+                return isGrounded ? LastFacingDirection.normalized : fallbackHorizontal;
+            }
+
+            case DashDirectionMode.EightWay:
+            {
+                if (moveInput.sqrMagnitude > 0.1f)
+                {
+                    float angle = Mathf.Atan2(moveInput.y, moveInput.x) * Mathf.Rad2Deg;
+                    float snappedAngle = Mathf.Round(angle / 45f) * 45f * Mathf.Deg2Rad;
+                    return new Vector2(Mathf.Cos(snappedAngle), Mathf.Sin(snappedAngle)).normalized;
+                }
+                return isGrounded ? LastFacingDirection.normalized : fallbackHorizontal;
+            }
+
+            case DashDirectionMode.HollowKnightHorizontal:
+            default:
+            {
+                // 1. An einer vertikalen Wand:
+                if (isGrounded && !isOnOuterCorner && Mathf.Abs(surfaceNormal.x) > 0.5f)
+                {
+                    // Drückt der Spieler von der Wand weg oder neutral -> Horizontaler Wall-Dash weg von der Wand (wie in Hollow Knight)
+                    if (moveInput.sqrMagnitude < 0.1f || Vector2.Dot(moveInput, surfaceNormal) > 0.2f)
+                    {
+                        LastFacingDirection = new Vector2(Mathf.Sign(surfaceNormal.x), 0f);
+                        return LastFacingDirection;
+                    }
+                    // Drückt der Spieler gezielt an der Wand hoch/runter -> Dash entlang der Wand
+                    if (Mathf.Abs(moveInput.y) > 0.25f)
+                    {
+                        return new Vector2(0f, Mathf.Sign(moveInput.y));
+                    }
+                }
+
+                // 2. Auf Boden, Decke oder in der Luft -> Strikt horizontal links/rechts
+                if (Mathf.Abs(moveInput.x) > 0.15f)
+                {
+                    LastFacingDirection = new Vector2(Mathf.Sign(moveInput.x), 0f);
+                    return LastFacingDirection;
+                }
+
+                return fallbackHorizontal;
+            }
+        }
+    }
+}
+</file>
+
+<file path="Slime/SlimeInputHandler.cs">
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class SlimeInputHandler : MonoBehaviour
+{
+    public Vector2 MoveInput { get; private set; }
+    public bool JumpPressedThisFrame { get; private set; }
+    public bool JumpHeld { get; private set; }
+    public bool DashPressedThisFrame { get; private set; }
+    public bool DashHeld { get; private set; }
+
+    private float stickDeadzone = 0.2f;
+    private float jumpBufferDuration = 0.12f;
+    private float dashBufferDuration = 0.12f;
+
+    private float jumpBufferTimer;
+    private float dashBufferTimer;
+
+    public bool HasBufferedJump => jumpBufferTimer > 0f;
+    public bool HasBufferedDash => dashBufferTimer > 0f;
+
+    public void Initialize(float deadzone, float jumpBuffer)
+    {
+        stickDeadzone = deadzone;
+        jumpBufferDuration = jumpBuffer;
+    }
+
+    public void ConsumeJumpBuffer()
+    {
+        jumpBufferTimer = 0f;
+    }
+
+    public void ConsumeDashBuffer()
+    {
+        dashBufferTimer = 0f;
+    }
+
+    public void ClearAllInputs()
+    {
+        MoveInput = Vector2.zero;
+        JumpPressedThisFrame = false;
+        JumpHeld = false;
+        DashPressedThisFrame = false;
+        DashHeld = false;
+        jumpBufferTimer = 0f;
+        dashBufferTimer = 0f;
+    }
+
+    public void ReadInput(bool blockInput)
+    {
+        if (blockInput)
+        {
+            ClearAllInputs();
+            return;
+        }
+
+        Vector2 input = Vector2.zero;
+        bool jumpPressed = false;
+        bool jumpIsHeld = false;
+        bool dashPressed = false;
+        bool dashIsHeld = false;
+
+        // --- 1. TASTATUR ---
+        var keyboard = Keyboard.current;
+        if (keyboard != null)
+        {
+            if (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed) input.x -= 1f;
+            if (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed) input.x += 1f;
+            if (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed) input.y += 1f;
+            if (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed) input.y -= 1f;
+
+            if (keyboard.spaceKey.wasPressedThisFrame) jumpPressed = true;
+            if (keyboard.spaceKey.isPressed) jumpIsHeld = true;
+
+            if (keyboard.leftShiftKey.wasPressedThisFrame) dashPressed = true;
+            if (keyboard.leftShiftKey.isPressed) dashIsHeld = true;
+        }
+
+        // --- 2. GAMEPAD / PS5 DUALSENSE ---
+        var gamepad = Gamepad.current;
+        if (gamepad != null)
+        {
+            Vector2 stick = Vector2.zero;
+            Vector2 rawStick = gamepad.leftStick.ReadValue();
+
+            if (rawStick.magnitude >= stickDeadzone)
+            {
+                Vector2 stickDir = rawStick.normalized;
+                float stickMag = Mathf.Clamp01((rawStick.magnitude - stickDeadzone) / (1f - stickDeadzone));
+
+                if (Mathf.Abs(stickDir.x) > 0.7f)
+                {
+                    stick = new Vector2(Mathf.Sign(stickDir.x) * stickMag, 0f);
+                }
+                else if (Mathf.Abs(stickDir.y) > 0.7f)
+                {
+                    stick = new Vector2(0f, Mathf.Sign(stickDir.y) * stickMag);
+                }
+                else
+                {
+                    stick = stickDir * stickMag;
+                }
+            }
+
+            Vector2 dpad = gamepad.dpad.ReadValue();
+            if (dpad.sqrMagnitude > 0.1f)
+            {
+                input += dpad;
+            }
+            else if (stick.sqrMagnitude > 0.01f)
+            {
+                input += stick;
+            }
+
+            // Sprung / Schweben auf Kreuz (Button South)
+            if (gamepad.buttonSouth.wasPressedThisFrame) jumpPressed = true;
+            if (gamepad.buttonSouth.isPressed) jumpIsHeld = true;
+
+            // Dash / Sprint auf R2 (Right Trigger) oder Viereck (Button West)
+            if (gamepad.rightTrigger.wasPressedThisFrame || gamepad.buttonWest.wasPressedThisFrame) dashPressed = true;
+            if (gamepad.rightTrigger.isPressed || gamepad.buttonWest.isPressed) dashIsHeld = true;
+        }
+
+        input.x = Mathf.Clamp(input.x, -1f, 1f);
+        input.y = Mathf.Clamp(input.y, -1f, 1f);
+
+        if (jumpPressed)
+        {
+            jumpBufferTimer = jumpBufferDuration;
+        }
+        else if (jumpBufferTimer > 0f)
+        {
+            jumpBufferTimer -= Time.deltaTime;
+        }
+
+        if (dashPressed)
+        {
+            dashBufferTimer = dashBufferDuration;
+        }
+        else if (dashBufferTimer > 0f)
+        {
+            dashBufferTimer -= Time.deltaTime;
+        }
+
+        MoveInput = input;
+        JumpPressedThisFrame = jumpPressed;
+        JumpHeld = jumpIsHeld;
+        DashPressedThisFrame = dashPressed;
+        DashHeld = dashIsHeld;
+    }
+}
+</file>
+
+<file path="Slime/SlimeVisuals.cs">
+using UnityEngine;
+
+public class SlimeVisuals : MonoBehaviour
+{
+    private PlatformerSlimeController controller;
+    private Transform visualTransform;
+    private BoxCollider2D boxCollider;
+    private PlatformerPhysicsData data;
+    private SpriteRenderer visualRenderer;
+
+    private Color defaultSpriteColor = Color.white;
+    private Vector3 defaultVisualScale = Vector3.one;
+    private Vector2 currentScaleDeform = Vector2.one;
+    private float currentBalloonScale = 1f;
+
+    public void Initialize(
+        PlatformerSlimeController slimeController,
+        Transform targetVisualTransform,
+        BoxCollider2D collider,
+        PlatformerPhysicsData physicsData)
+    {
+        controller = slimeController;
+        visualTransform = targetVisualTransform;
+        boxCollider = collider;
+        data = physicsData;
+
+        if (visualTransform != null)
+        {
+            defaultVisualScale = visualTransform.localScale;
+            visualRenderer = visualTransform.GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer == null)
+        {
+            visualRenderer = GetComponentInChildren<SpriteRenderer>();
+        }
+        if (visualRenderer != null)
+        {
+            defaultSpriteColor = visualRenderer.color;
+        }
+    }
+
+    public void ResetVisuals()
+    {
+        if (visualRenderer != null)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
+        if (visualTransform != null)
+        {
+            visualTransform.localScale = defaultVisualScale;
+        }
+        currentScaleDeform = Vector2.one;
+        currentBalloonScale = 1f;
+    }
+
+    public void ApplySquashAndStretch(float scaleX, float scaleY)
+    {
+        if (data != null && !data.enableSquashAndStretch) return;
+        currentScaleDeform = new Vector2(scaleX, scaleY);
+    }
+
+    public void UpdateVisuals(float invincibilityTimer)
+    {
+        transform.rotation = Quaternion.identity;
+
+        UpdateInvincibilityBlink(invincibilityTimer);
+
+        if (visualTransform == null || controller == null || boxCollider == null) return;
+
+        // 1. Ziel-Normale bestimmen (Beim Schweben in der Luft immer aufrecht!)
+        Vector2 desiredVisualNormal = controller.TargetSurfaceNormal;
+        bool isFloating = controller.Abilities != null && controller.Abilities.IsBalloonFloating;
+
+        if (isFloating)
+        {
+            desiredVisualNormal = Vector2.up;
+        }
+        else if (controller.IsOnOuterCorner)
+        {
+            desiredVisualNormal = controller.EffectiveSurfaceNormal;
+        }
+        else if (controller.IsInInnerCornerPocket && controller.InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
+        {
+            desiredVisualNormal = (controller.CurrentSurfaceNormal + controller.InnerCornerAdjacentNormal * 0.75f).normalized;
+        }
+
+        float targetAngle = Mathf.Atan2(desiredVisualNormal.y, desiredVisualNormal.x) * Mathf.Rad2Deg - 90f;
+        Quaternion targetRot = Quaternion.Euler(0f, 0f, targetAngle);
+
+        float rotSpeed = (data != null && data.alignRotationSpeed > 0f) ? data.alignRotationSpeed : 680f;
+        visualTransform.rotation = Quaternion.RotateTowards(visualTransform.rotation, targetRot, rotSpeed * Time.deltaTime);
+
+        // 2. Lokaler Offset zur Fläche
+        float halfColHeight = boxCollider.size.y * 0.5f;
+        Vector2 targetOffset = (Vector2)boxCollider.offset - desiredVisualNormal * (halfColHeight - 0.26f);
+        visualTransform.localPosition = Vector2.MoveTowards(visualTransform.localPosition, targetOffset, 20f * Time.deltaTime);
+
+        // 3. Squash & Stretch Rückfederung
+        float recovery = (data != null && data.squashRecoverySpeed > 0f) ? data.squashRecoverySpeed : 12f;
+        currentScaleDeform = Vector2.MoveTowards(currentScaleDeform, Vector2.one, recovery * Time.deltaTime);
+
+        // 4. Ballon-Aufblasen beim Schweben (inkl. leichtem Pulsieren)
+        float targetBalloon = 1f;
+        if (isFloating)
+        {
+            float baseInflate = (data != null && data.balloonScaleMultiplier > 1f) ? data.balloonScaleMultiplier : 1.35f;
+            float wobble = Mathf.Sin(Time.time * 14f) * 0.035f;
+            targetBalloon = baseInflate + wobble;
+        }
+
+        float inflateSpeed = isFloating ? 10f : 14f;
+        currentBalloonScale = Mathf.MoveTowards(currentBalloonScale, targetBalloon, inflateSpeed * Time.deltaTime);
+
+        visualTransform.localScale = new Vector3(
+            defaultVisualScale.x * currentScaleDeform.x * currentBalloonScale,
+            defaultVisualScale.y * currentScaleDeform.y * currentBalloonScale,
+            defaultVisualScale.z
+        );
+    }
+
+    private void UpdateInvincibilityBlink(float invincibilityTimer)
+    {
+        if (visualRenderer == null) return;
+
+        if (invincibilityTimer <= 0f)
+        {
+            visualRenderer.color = defaultSpriteColor;
+        }
+        else
+        {
+            float blink = Mathf.PingPong(Time.time * 18f, 1f);
+            visualRenderer.color = Color.Lerp(defaultSpriteColor, new Color(1f, 0.2f, 0.2f, 0.45f), blink);
+        }
     }
 }
 </file>
@@ -6222,19 +7274,16 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
         Color prevColor = GUI.color;
 
-        // 1. Oben links: Biom-Resonanzen + Albtraumleiste darunter
         if (showTopLeftResonanceAndNightmare)
         {
             DrawTopLeftResonanceAndNightmare();
         }
 
-        // 2. Oben rechts: Aktions-Symbole + Live-PiP-Fenster (mit sanftem Ausblenden)
         if (showTopRightThreatOrbs && tracker != null)
         {
             DrawTopRightThreatOrbsAndPiP();
         }
 
-        // 3. Unten: Kleine Kosten-Perle an den Formen
         if (showSmallCostBadgeOnSlots && gameManager.currentState == GameState.MacroPlan && inventoryManager != null)
         {
             DrawMinimalSlotCostBadges();
@@ -6243,27 +7292,33 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         GUI.color = prevColor;
     }
 
-    // =====================================================================
-    // 1. OBEN LINKS: BIOM-RESONANZEN (OBEN) + ALBTRAUMLEISTE (DARUNTER)
-    // =====================================================================
-
     private void DrawTopLeftResonanceAndNightmare()
     {
         float panelX = 16f;
         float panelY = 16f;
-        float panelWidth = 310f;
+        float panelWidth = 320f;
 
-        int biomeCount = (resonanceManager != null && resonanceManager.resonances != null) ? resonanceManager.resonances.Count : 0;
-        float resonanceSectionHeight = biomeCount > 0 ? 34f : 0f;
+        List<BiomeWeightEntry> visibleBiomes = new List<BiomeWeightEntry>();
+        if (resonanceManager != null && resonanceManager.resonances != null)
+        {
+            for (int i = 0; i < resonanceManager.resonances.Count; i++)
+            {
+                if (resonanceManager.resonances[i].percentage > 0)
+                {
+                    visibleBiomes.Add(resonanceManager.resonances[i]);
+                }
+            }
+        }
+
+        int biomeCount = visibleBiomes.Count;
+        float resonanceSectionHeight = biomeCount > 0 ? 32f : 0f;
         float totalHeight = resonanceSectionHeight + 36f;
 
-        // Hintergrund-Box oben links
         GUI.color = new Color(0.06f, 0.07f, 0.10f, 0.92f);
         GUI.Box(new Rect(panelX, panelY, panelWidth, totalHeight), GUIContent.none);
 
         float currentY = panelY + 6f;
 
-        // A. BIOM-RESONANZ-SYMBOLE & PROZENTE
         if (biomeCount > 0)
         {
             EnsureCircleTexture();
@@ -6271,31 +7326,32 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
 
             GUIStyle resStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 11,
+                fontSize = 12,
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft
             };
 
             for (int i = 0; i < biomeCount; i++)
             {
-                BiomeWeightEntry entry = resonanceManager.resonances[i];
+                BiomeWeightEntry entry = visibleBiomes[i];
                 float itemX = panelX + 8f + i * slotWidth;
 
-                // Farbiger Biom-Punkt (gleiche Farbe wie auf den Hand-Würfeln & dem Grid!)
                 Color biomeCol = GridManager.Instance != null ? GridManager.Instance.GetZoneColor(entry.zoneType) : Color.green;
                 GUI.color = biomeCol;
                 GUI.DrawTexture(new Rect(itemX, currentY + 4f, 16f, 16f), circleTex);
 
-                // Prozentzahl + in Klammern die Anzahl bereits gebauter Felder dieses Bioms
                 GUI.color = Color.white;
-                string text = $"{entry.displayName} {entry.percentage:0}% [{entry.builtTilesOnGrid}]";
+                string text = $"{entry.displayName} {entry.percentage}%";
+                if (entry.builtTilesOnGrid > 0)
+                {
+                    text += $" [{entry.builtTilesOnGrid}]";
+                }
                 GUI.Label(new Rect(itemX + 20f, currentY, slotWidth - 20f, 24f), text, resStyle);
             }
 
-            currentY += 30f;
+            currentY += 28f;
         }
 
-        // B. ALBTRAUMLEISTE DIREKT UNTER DEN RESONANZEN
         Rect barBgRect = new Rect(panelX + 8f, currentY, panelWidth - 16f, 22f);
         GUI.color = new Color(0.14f, 0.05f, 0.20f, 0.98f);
         GUI.Box(barBgRect, GUIContent.none);
@@ -6316,10 +7372,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         };
         GUI.Label(barBgRect, $"Albtraum: {gameManager.CurrentNightmare:0}%", barLabelStyle);
     }
-
-    // =====================================================================
-    // 2. OBEN RECHTS: GEFAHREN-SYMBOLE + LIVE-AUSSCHNITT MIT FADE-OUT
-    // =====================================================================
 
     private void DrawTopRightThreatOrbsAndPiP()
     {
@@ -6395,7 +7447,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
             GUI.Label(new Rect(orbRect.x, orbRect.y + 22f, orbRect.width, 34f), orb.countdown.ToString(), countStyle);
         }
 
-        // LIVE-KAMERA-AUSSCHNITT (Bleibt länger stehen und verblasst dann sanft über CurrentPipAlpha)
         float alpha = tracker.CurrentPipAlpha;
         ThreatOrbEntry inspectedOrb = tracker.SelectedOrb;
 
@@ -6430,10 +7481,6 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
             }
         }
     }
-
-    // =====================================================================
-    // 3. UNTEN: KLEINE KOSTEN-ZAHL UNTER DEN SLOTS
-    // =====================================================================
 
     private void DrawMinimalSlotCostBadges()
     {
@@ -6583,225 +7630,138 @@ public class TurnBannerUI : MonoBehaviour
 # tmp/
 </file>
 
-<file path="PROJEKT_KONTEXT_OLD.md">
-# Projekt-Kontext: Slimily
-
-## 1. High-Level Spielkonzept & Genre
-- **Genre:** Hybrid aus rundenbasiertem Makro-Dungeon-Builder (Grid/Deck) und kinetischem 2D-Mikro-Platformer ohne Kampfsystem (reines Geschicklichkeits-, Timing- und Movement-Gameplay).
-- **Kern-Gameplay-Loop:**
-  * **Makro-Ebene:** Aus dem Inventar Polyomino-/Tetris-förmige Raum-Shapes auf einem Raster platzieren, Pfade erschaffen und Rundenzüge verwalten, während ein Boss gegnerische Züge auf dem Grid ausführt.
-  * **Mikro-Ebene:** In Echtzeit mit dem Slime-Charakter durch die platzierten Räume navigieren, Hindernisse überwinden und Türen/Ausgänge (z. B. Nordtür) erreichen.
-
----
-
-## 2. Architektur & System-Aufteilung
-
-### Makro-Ebene (Grid / Planung / Runden)
-- **GameManager:** Zentraler State-Machine-Verwalter (`GameState`: u. a. `Placement`, `FreeRoam`, `EnemyTurn` und neu geplant: `MapView`).
-- **GridManager & GridCell:** Verwaltet das globale Daten-Raster, Zellzustände (`Empty`, `Occupied`, `Blocked`, `Built`) und Baufähigkeitsregeln.
-- **PlacementManager:** Handhabt das Auswählen, Rotieren, Vorschau-Rendern und finale Platzieren von `ShapeData`-Strukturen auf dem Grid inklusive Rundenlimit pro Zug.
-- **InventoryManager:** Verwaltet verfügbare Shapes im Deck/Inventar und sorgt für Nachschub.
-- **MacroGridManager:** Koppelt logische Grid-Koordinaten mit physischen Platformer-Raum-Instanzen (`RegisterRoom`, `UpdateActiveRooms`).
-- **EventManager:** Steuert die Rundenabfolge (Spielerzug abschließen, Gegner-/Bosszug initiieren, Reset der Platzierungslimits).
-- **BossController:** Führt in der Gegnerphase autonome Raster-Aktionen und Bewegungen in Richtung des Makro-Slime-Markers durch.
-
-### Mikro-Ebene (Platformer / Bewegung & Input)
-- **PlatformerSlimeController:** Zentrale Steuerungseinheit des spielbaren Slimes im 2D-Platformer.
-  * Arbeitet mit modularem State-Machine-Pattern (`PlatformerStateMachine`, `PlatformerSlimeState`).
-  * Deterministische, vollständig kinematisierte Auflösung via `BoxCast` und `Raycast` (Unity-Rigidbody auf `Kinematic` / `FreezeRotation`).
-  * Dynamische Berechnung von Oberflächennormalen und zyklischen Bewegungstangenten (`Vector2(normal.y, -normal.x)`) für unterbrechungsfreie 360°-Navigation im/gegen den Uhrzeigersinn.
-  * **Kardinales Normalen-Snapping (`SnapToCardinal`):** Rundet gemessene Treffernormalen hart auf Himmelsrichtungen ab, um Sprite-Unregelmäßigkeiten und Kanten-Dellen von Tilemaps auszugleichen.
-  * **Lookahead- & Prioritätsprüfung:** Frontale Wände/Decken (Innenecken) besitzen strikte Priorität vor Außenecken, um Fehlausrichtungen bei engen Eckenfolgen (z. B. U-Shapes) auszuschließen.
-  * **Zentralisierter Hybrid-Input (Unity New Input System):**
-    * Parallele Unterstützung von Tastatur und Gamepad (PS5 DualSense / `Gamepad.current`).
-    * **Radial Deadzone & Achsen-Snapping:** Filtert Schräglauf-Rauschen am Analogstick heraus, um versehentliche Richtungsabbrüche an Ecken zu verhindern; D-Pad und Stick arbeiten additiv/priorisierend.
-- **States:**
-  * **PlatformerGroundedState:** Kontinuierliche Bewegung entlang von Boden, Wänden und Decke. Enthält **Sticky Momentum**, **Corner-Wrapping** um $90^\circ$-Innen- und $270^\circ$-Außenwinkel.
-  * **PlatformerAirborneState:** Ballistische Flugphase mit Schwerkrafteinfluss, Carry-Over-Speed bei Landung/Absprung und selektivem Flächen-Snapping.
-- **PlatformerPhysicsData:** ScriptableObject zur Kapselung physischer Tuning-Parameter (Geschwindigkeiten, Sprungkräfte, Check-Distanzen, Skin-Breite, Hold-Timer).
-
-### Brücke / Transition (Makro $\leftrightarrow$ Mikro)
-- **Kamera-Wechsel:** Dynamische Umschaltung zwischen Makro-Ansicht (Karten-Übersicht) und Mikro-Ansicht (Slime-Platformer) über dedizierte Kameras (MacroCamera vs. Raum-/Slime-Kamera).
-- **Zwei Makro-Modi auf selbem Grid:**
-  1. **Schnelle Kartenansicht (`MapView`):** Reine Orientierungsübersicht (Position Slime, Boss, offene Türen) ohne Bau-Interaktion, dezent abgedunkelt.
-  2. **Baumodus (`Placement`):** Vollständiger Editor mit Handkarten, Shape-Rotation und Platzierung.
-- **Positions-Synchronisation:** Physische Slime-Position aktualisiert synchron den logischen Marker auf dem Makro-Raster (`MacroSlimeMarker`).
-
----
-
-## 3. Bereits gelöste / Etablierte Mechaniken
-
-- **Robuste 360°-Oberflächen-Physik:** Zitterfreies Klettern an Wänden und Decken ohne Abrutschen.
-- **Nahtlose Ecken-Navigation:** Automatisches Umlaufen von $90^\circ$-Innen- und $270^\circ$-Außenkanten mit mathematischer Scheitelpunkt-Berechnung.
-- **Sticky-Momentum-System:** Komplettes Umrunden geschlossener Geometrien mit einer einzigen gehaltenen Richtungseingabe.
-- **PS5 Controller-Support:**
-  * Vollständig eingebunden über Unitys New Input System.
-  * Stick-Deadzone ($0.2f$) und D-Pad-Präzision.
-- **Abgesichertes Decken-Lösen (Hold-Timer & Strict Angle):**
-  * Verhindert versehentliches Abreißen bei Seitwärtsbewegungen.
-  * Erfordert bewusstes Halten des Sticks strikt nach unten ($Y \le -0.8f$, $\vert{}X\vert{} \le 0.25f$) über eine im ScriptableObject konfigurierbare Zeit (`ceilingDetachHoldDuration`, ca. $0.25\text{ s}$).
-- **Flächen-relatives Springen & Lösen:**
-  * Regulärer Sprung am Boden, Wandabsprung schräg nach außen/oben, Deckenabstoß nach unten.
-  * **Richtungsabhängige Absprung-Sperre (`CanAttachTo`):** Verhindert Re-Sticking an der Absprungfläche, erlaubt aber sofortiges Anhaften an Decken oder Nachbarwänden.
-- **Responsives Jump-Buffering:** Pufferzeitfenster für Absprünge kurz vor Bodenkontakt.
-- **Saubere Projekt-Basis:** `.gitignore` für Unity bereinigt und Caches ausgeschlossen.
-
----
-
-## 4. Geplantes Controller-Tastenlayout (PS5 DualSense)
-
-### Mikro-Ebene (Slime Platformer)
-- **Linker Stick / D-Pad:** $360^\circ$-Movement entlang aller Flächen.
-- **Linker Stick strikt nach unten (Hold-Timer):** Decken-Dropdown / Fallenlassen.
-- **$\times$ (Cross):** Sprung / Wandabsprung / Deckenabstoß (später: Halten in der Luft = Schweben / Glide).
-- **R2 oder $\square$ (geplant):** Dash (kurzer Tap) / Sprint (Halten) nach Silksong-Prinzip.
-- **Touchpad:** Schnelle Kartenansicht toggeln / halten (`MapView`).
-- **$\triangle$ (Halten / Meditieren):** Wechsel in den Makro-Baumodus (`Placement`).
-- **R3 (Stick-Klick):** Spielerzug direkt aus dem Platformer beenden (schaltet Kamera hoch auf Makro, friert Slime ein, lässt Boss ziehen).
-
-### Makro-Ebene (Grid-Baumodus & Map)
-- **Linker Stick / D-Pad:** Virtueller Raster-Cursor von Zelle zu Zelle.
-- **L1 / R1:** Aktives Raum-Shape im Uhrzeigersinn / gegen den Uhrzeigersinn rotieren.
-- **$\times$ (Cross):** Shape auf Raster platzieren.
-- **L2 / R2 (oder D-Pad):** Durch Handkarten/Deck blättern.
-- **$\triangle$ oder R3:** Spielerzug beenden $\rightarrow$ Gegnerphase/Bosszug starten.
-- **$\bigcirc$ (Kreis) oder $\triangle$ (Tap):** Zurück zum Slime (Mikro-Ebene).
-
----
-
-## 5. Offene Baustellen & Nächste Schritte
-
-1. **Perspektiven- & Zustandswechsel (Fokus als Nächstes):**
-   * Saubere State-Trennung im `GameManager` (`MapView` vs. `Placement` vs. `FreeRoam`).
-   * Implementierung des „Meditieren“-Hold-Timers auf $\triangle$ zum Betreten des Baumodus.
-   * Einbindung des Touchpads für die reine Orientierungs-Karte (ohne Bau-Interaktion).
-   * R3-Kopplung für schnelles „Zug beenden“ mit automatischer Kamerafahrt zum Boss.
-2. **Controller-Navigation auf dem Makro-Grid:**
-   * Entkopplung des PlacementManagers von der PC-Maus hin zum zellbasierten Gamepad-Cursor.
-   * Rotation über Schultertasten (L1/R1).
-3. **Terrain-Spezifikationen & Kletterrouten:**
-   * Non-Stick- / Slippery-Surfaces (Eis/Metall), an denen der Slime nicht haften kann.
-4. **Gefahren- & Respawn-System:**
-   * Hazards (Stacheln, Säure) mit unmittelbarem Reset an den Raum-Spawn.
-5. **Erweiterte Mobilität:**
-   * Dash / Sprint auf R2, Schweben/Aufblähen auf $\times$.
-6. **Visuelles Feedback & UI-Polish:**
-   * 9-Sliced Panels, dezente Farben und universelles Grid-Feedback (Hologramm-/Blueprint-Look).
-</file>
-
 <file path="PROJEKT_KONTEXT.md">
-# Slimily (Puls-Edition) – Spieldesign-Konzept & Technische Roadmap
+# Slimily – Spieldesign-Konzept, Kern-Systeme & Entwicklungsstand
 
-Das überarbeitete Konzept von **Slimily** vereint die taktische Tiefe eines Grid-Deckbuilders mit dem unterbrechungsfreien Spielfluss eines präzisen 2D-Platformers. Durch den Wechsel vom starren „Zug beenden“-Rundenmodell auf das 4-Puls-Rhythmus-System entfallen künstliche Zwangspausen, geschlossene Türen vor der Nase und hektische Kamerawechsel.
-
----
-
-## 1. Das Gesamtkonzept
-
-### 1.1 Grundprinzip & 360°-Raum-Parcours (Dual-Layer ohne Waffen)
-
-* **Einheitliche Perspektive:** Makro-Übersichtskarte und Mikro-Platformer-Räume nutzen dieselbe orthogonale 2D-Ausrichtung (Norden auf dem Grid entspricht der oberen Tür im Raum).
-* **360°-Movement & Ecken-Kontrolle:** Der Slime klettert nahtlos an Böden, Wänden und Decken entlang, rollt kontrolliert um $90^\circ$-Innen- sowie $270^\circ$-Außenecken und kann direkt auf Kanten landen, dort im $45^\circ$-Winkel anhalten oder diagonal abspringen.
-* **Räume als 360°-Herausforderung:** Da Decken und Wände jederzeit begehbar sind, sind auch die oberen und seitlichen Raumflächen vollwertige Hindernis-Parcours (mit Decken-Gefahren, Non-Stick-Oberflächen und Engstellen), die präzises Ablösen und Springen verlangen.
-* **Waffenloses Gameplay:** Es gibt keine Angriffe oder Schadenswerte. Der Spieler überwindet Gefahren durch Bewegung und besiegt Bosse über Überlebensphasen, Raum-Mechanismen und kluge Grid-Verbindungen.
+Das Konzept von **Slimily** vereint die räumliche Taktik eines Grid-Builders mit dem nahtlosen Bewegungsfluss eines präzisen 2D-Platformers[cite: 1, 4]. Es gibt keine künstlichen Runden-Zwangsstopps, kein klassisches Kartendeck-Menü, keine Ladebildschirme zwischen Räumen und keine erzwungenen Kamerawechsel[cite: 1, 4].
 
 ---
 
-### 1.2 Das 4-Puls-Rhythmus-System (Statt „Zug beenden“ & Kamera-Unterbrechung)
+## 1. Dual-Layer-Prinzip & 360°-Platforming (Mikro-Ebene)
 
-Das Spiel verzichtet komplett auf einen manuellen „Zug beenden“-Button im Platformer. Stattdessen reagiert die Albtraumwelt im Takt deiner Aktionen über einen Puls-Zähler (Standard: 4 Pulse):
-
-#### Was kostet Pulse?
-* **1 Puls:** Einen 6er-Würfel auf das Makro-Grid legen.
-* **1 Puls:** Einen neuen (noch ungesäuberten) Raum zum ersten Mal betreten.
-* **1 Straf-Puls (+ Albtraum-Anstieg):** Im Platformer von einem Hindernis oder Gegner getroffen werden (`TakeDamage`).
-
-#### Was kostet 0 Pulse (Kostenlos)?
-* Freies Klettern, Springen und Interagieren innerhalb des aktuellen Raums.
-* Das Durchqueren von bereits gesäuberten/besuchten Räumen.
-
-#### Was passiert beim 4. Puls (Der Boss-Schlag)?
-* Sobald der 4. Puls verbraucht wird (egal ob durch Bauen, das Betreten eines neuen Raums oder einen Treffer im Platformer), setzt sich der Zähler sofort wieder auf 4/4 zurück und löst im Hintergrund automatisch genau 1 Boss-/Welt-Aktion aus (`ExecuteTurn`).
-* **Kein Einfrieren, kein Kamera-Zwang:** Der Slime läuft im Raum flüssig weiter; alle Türen zu gebauten Nachbarräumen bleiben jederzeit offen.
-
-#### Warum Stehenbleiben unmöglich / sinnlos ist:
-Da es kein passives „Zug beenden“ mit Gratis-Boni gibt, passiert beim Stehenbleiben im Raum nichts. Fortschritt entsteht nur durch Vorrücken, und jeder Boss-Puls erhöht zusätzlich den Grunddruck der globalen Albtraumleiste (0 % – 100 %). Erreicht die Albtraumleiste 100 %, scheitert der Run und der Slime wacht im Hub auf.
+* **Einheitliche Perspektive (Seitenansicht):** Makro-Übersichtskarte (Grid) und Mikro-Platformer-Räume nutzen dieselbe orthogonale 2D-Ausrichtung[cite: 1, 4]. Eine Kachel im Norden auf dem Grid entspricht exakt dem oberen Ausgang an der Raumdecke[cite: 1, 4].
+* **Nahtloses 360°-Klettern & Ecken-Kontrolle:** Der Slime haftet an Böden, Wänden und Decken, rollt kontrolliert um $90^\circ$-Innenecken sowie $270^\circ$-Außenecken und kann direkt auf scharfen Kanten im $45^\circ$-Winkel anhalten oder diagonal von ihnen abspringen[cite: 1, 4].
+* **Volles Movement-Repertoire:** Neben dem 360°-Oberflächen-Klettern und variablen Sprüngen (inkl. Coyote Time, Jump Buffering und Apex Control) verfügt der Slime über **Run (Sprint)**, **Dash**, **Double Jump (Doppelsprung)** und **Float (Schweben/Gleiten)**[cite: 1, 4].
+* **Räume als 360°-Parcours:** Da alle Flächen und der Luftraum durch Dash, Double Jump und Float voll nutzbar sind, fungieren auch Decken und Wände als vollwertige Hindernis-Routen (mit Non-Stick-Oberflächen, Stacheln, Geheimwänden und Engstellen)[cite: 1, 4].
+* **Waffenloses Gameplay:** Der Slime besitzt keine direkten Waffen oder Angriffswerte[cite: 1, 4]. Gefahren, Beute-Gegner und Bosse werden ausschließlich durch präzises Movement, Raum-Mechanismen, Überlebensphasen und kluges Bauen auf dem Grid überwunden[cite: 1, 4].
 
 ---
 
-### 1.3 Die Welt & Die visuelle 4-Ebenen-Hierarchie
+## 2. Das Tick- & Bedrohungssystem (Aktionssymbole oben rechts)
 
-Um ein „RGB-Disco-Chaos“ bei gleichzeitigen Zonenfarben, Raum-Modifikatoren und Boss-Effekten zu verhindern, nutzt das Grid eine düstere, handgezeichnete Ästhetik (verwitterter Stein, Tusche, Moos, Pergament) mit strikter Trennung in 4 visuelle Ebenen:
+Statt eines „Zug beenden“-Buttons reagiert die Welt im Takt deiner Aktionen über **dynamische Countdown-Symbole am oberen rechten Bildschirmrand**[cite: 4].
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ Ebene 3: Boss-Gefahren      -> Rote Riss-Schraffur, Fadenkreuz, Ketten  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 2: Akteure            -> Plastischer Slime-Marker & Boss-Monster  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 1: Raum-Eigenschaften -> Weiße/Kreideartige Gravur-Glyphen        │
-├─────────────────────────────────────────────────────────────────────────┤
-│ Ebene 0: Zone & Status      -> Erdfarbene Steinplatten (Nebel vs Gebaut)│
-└─────────────────────────────────────────────────────────────────────────┘
-```
+### 2.1 Die einheitliche Tick-Regel (Ohne „Besucht/Unbesucht“-Ballast)
+Um das Makro-Grid visuell sauber zu halten und jederzeit volle taktische Spannung (z. B. beim Entkommen aus einer $3\times 3$-Boss-Gefahrenzone) zu garantieren, gibt es keine Unterscheidung mehr zwischen „besuchten“ und „unbesuchten“ Räumen:
+* **0 Ticks (Kostenlos):** Freies Klettern, Dashen, Springen, Schweben und Looten innerhalb des aktuellen Raums[cite: 1, 4].
+* **1 Tick (Raumwechsel):** Jedes Durchschreiten einer Tür in einen Nachbarraum (egal ob zum ersten oder zweiten Mal).
+* **1 Tick (Standard-Bauen):** Einen 6er-Würfel aus dem Inventar auf das Makro-Grid setzen (spezielle Risiko- oder Fluch-Würfel können 0 bis 2 Ticks kosten)[cite: 1, 4].
+* **1 Tick (Schrein-Teleport):** Lokaler Sprung von einem aktiven Schrein zu einem anderen Schrein in Reichweite.
+* **1 Straf-Tick (+ Albtraum-Anstieg):** Im Platformer von einem Hindernis oder Gegner getroffen werden (`TakeDamage`)[cite: 1, 4].
 
-1. **Ebene 0 – Zone & Bauzustand (Farbe & Helligkeit):**
-   * Im Zentrum liegt der helle, sichere Hub. Darum gruppieren sich 3 Tier-1-Zonen (z. B. Wald = Moosgrün, Meer = Tiefsee-Blau, Ruinen = Ocker-Sandstein) sowie weiter außen bedingte Tier-2-Zonen (z. B. Sumpf am Wald) und der lila/schwarze Albtraum-Rand.
-   * Im Nebel schimmern die Zonenfarben dunkel durch den Rauch; gebaute Kacheln sind voll ausgeleuchtete, strukturierte Steinplatten in der jeweiligen Zonenfarbe.
-2. **Ebene 1 – Kachel-Modifikatoren (Monochrome Gravuren):**
-   * Eigenschaften wie Eis-Physik (Schneeflocke), Schalter-Räume (Zahnrad), Teleporter (Ringe) oder Schreine werden als einfarbige, helle Kreide-/Stein-Symbole auf der Kachel dargestellt und verändern niemals die Grundfarbe der Zone.
-3. **Ebene 2 – Akteure:**
-   * Der leuchtende Slime-Tropfen und die plastische $2\times 2$-Silhouette des Bosses heben sich durch klare Konturen und Schattenwurf vom Untergrund ab.
-4. **Ebene 3 – Boss-Gefahren & Manipulationen (Rahmen, Risse & Kanten):**
-   * **Angriffszonen:** Keine deckende rote Fläche, sondern ein rot glühender Rahmen mit diagonaler Schraffur und glimmenden Rissen, durch die Zone und Symbol voll sichtbar bleiben.
-   * **Entschärfungs-Epizentrum:** Ein pulsierendes rotes Fadenkreuz markiert das Feld, in dem der Angriff im Raum abgebrochen werden kann.
-   * **Verschiebungen & Sperren:** Kleine Doppelpfeile (`>>`) zeigen Kachel-Verschiebungen an; Ketten und Dornenrahmen auf der Kachel-Grenze markieren verriegelte Türen.
+> **Taktisches Beispiel ($3\times 3$-Boss-Zone):** Markiert der Boss ein $3\times 3$-Gebiet um den Slime mit einem Countdown von `4`, weiß der Spieler sofort: *„Ich brauche 2 Raumwechsel (`2 Ticks`), um den Rand zu erreichen – mir bleiben also genau `2 Ticks` Puffer, um noch einen rettenden Würfel anzubauen oder mir maximal einen Fahrfehler im Raum zu erlauben.“*
+
+### 2.2 Aufbau & Verhalten der Aktionssymbole
+* **Dynamische Anzahl (0 bis X):** Oben rechts werden nur dann Medaillons eingeblendet, wenn tatsächlich eine Aktion von Boss, Minion oder Umwelt angekündigt ist[cite: 4].
+* **Visuelle Kodierung (Wer, Was, Wann, Wo):**
+  * **Rahmenform = WER:** Gezacktes Wappen (Boss), runder Steinring (Minion/Scherge), Raute (Umwelteffekt)[cite: 4].
+  * **Innensymbol = WAS:** Zeigt den Effekt (z. B. Krater = Raum zerstören[cite: 1, 4], Ketten = Türen verriegeln[cite: 1, 4], Verschiebungs-Pfeile, Schrein-Korrumpierung).
+  * **Zahl = WANN:** Verbleibende Ticks bis zur Auslösung[cite: 4].
+  * **Farbe = WO:** Entspricht 1:1 der Farbmarkierung der Zielkacheln auf dem Makro-Grid[cite: 4].
+* **R2-Inspektor & Live-Kamera-Ausschnitt (Picture-in-Picture):**
+  * Mit `R2` (oder `Tab`) lassen sich die Symbole oben rechts durchschalten, um den Zielbereich im kleinen Kamera-Fenster zu inspizieren[cite: 1, 4].
+  * Fällt ein Zähler auf `0`, wird die Aktion nahtlos im Hintergrund ausgeführt[cite: 1, 4]. Gleichzeitig blendet sich oben rechts unter den Symbolen das **Live-PiP-Fenster** ein, zeigt für **2,5 Sekunden** live die Boss-Aktion auf dem Grid und blendet sich danach über **1,5 Sekunden sanft wieder aus (`Fade-Out`)**, während der Spieler im Raum weiterläuft[cite: 1, 4].
 
 ---
 
-### 1.4 Bausystem: 6er-Faltwürfel, Bau-Reichweite & Raum-Boni
+## 3. Biom-Resonanz, Dunkles Grid & Albtraumleiste (Oben links)
 
-* **11 echte 6er-Würfelnetze (Hexominos):** Karten falten sich beim Platzieren in 6 zusammenhängende Räume auf und nehmen jeweils die Zone des darunterliegenden Feldes an.
-* **Bau-Reichweite (Tether-Regel gegen den Hub-Autobahn-Exploit):** Ein neuer Würfel darf nur platziert werden, wenn mindestens eine seiner 6 Kacheln im Umkreis von maximal 2 Feldern um die aktuelle Position des Slimes (`MacroSlimeMarker`) liegt und an ein gebautes Feld andockt. Der Spieler muss im Platformer vorrücken, um weiter vorne neue Wege anzubauen.
-* **Aktive Kachel-Boni im Raum:** Legt man eine Kachel mit einem positiven Effekt (z. B. Schrein zur Albtraum-Senkung oder Teleporter), befindet sich dieser im Platformer-Raum an einer riskanten Position abseits des direkten Durchgangswegs.
+### 3.1 Ruhiges, dunkles Grid im Nebel
+* Unbebaute Felder im Nebel (`CellState.Empty`) sind einheitlich dunkelgrau gehalten[cite: 1, 4].
+* Nur der Start-Hub im Zentrum und der gefährliche lila/schwarze Außenrand (`PurpleNightmare` / `BlackVoid`) sind vorab sichtbar[cite: 1, 4].
+* Jede Kachelfarbe steht direkt für einen eigenen **Biom-Raumpool** (🌲 **Wald** = Grün, 🏛️ **Ruinen** = Gold-Ocker, 🌊 **Meer** = Blau, 🧪 **Sumpf** = Gift-Türkis, 🟣 **Albtraum** = Violett)[cite: 1]. Zusätzliche Element-Mods (Feuer/Eis) entfallen komplett, da das Biom bereits das Raum-Thema bestimmt.
 
----
+### 3.2 Biom-Resonanz in festen 20-%-Stufen
+* **Saubere Stufen & Ausblendung:** Die Resonanz oben links arbeitet in glatten **20-%-Schritten** (`0 %`, `20 %`, `40 %`, `60 %`, `80 %`, `100 %`). Biome mit `0 %` werden im HUD komplett ausgeblendet.
+* **Start im Hub:** Der Run startet im Hub mit `🌲 Wald 100%` (innerhalb eines Sicherheitsradius von 2 Feldern um den Hub bleibt der Wald dominant).
+* **Dynamische Trigger:**
+  1. **Laufrichtung außerhalb des Hub-Gürtels:** Jeder Raumschritt verschiebt die Resonanz um `+20 %` zugunsten der jeweiligen Himmelsrichtung (z. B. Norden = *Ruinen*, Osten = *Meer*, Westen = *Sumpf*, Süden = *Wald*) und zieht `20 %` vom aktuell stärksten anderen Biom ab.
+  2. **Boss-Einfluss:** Immer wenn der Boss oben rechts bei `0` zuschlägt, drückt er `+20 %` seines eigenen Bioms (bzw. *Lila Albtraum*) in die Resonanzleiste.
+  3. **Albtraum-Überlauf:** Steigt die Albtraumleiste über `60 %`, mischt sich automatisch `20 % Albtraum` in die Resonanz.
+* **`[Gebaut-Zähler]`:** Neben dem Prozentwert wird in eckigen Klammern angezeigt, wie viele Kacheln dieses Bioms bereits auf dem Grid liegen (dient als Trigger für Boss-Phasen und Events)[cite: 1, 4].
 
-### 1.5 Umwelt-Telegrafie im Raum & Die 4 Boss-Archetypen
-
-#### Wie der Spieler Boss-Aktionen spürt, OHNE dass die Kamera rauszoomt:
-* **Boss agiert in der Ferne:** Kurzes Raum-Beben, dumpfes Grollen und ein Partikel-/Schatten-Schauer aus der Himmelsrichtung des Bosses. Der Spieler läuft ohne Unterbrechung weiter und kann bei Bedarf selbst kurz die Schnellkarte (`MapView` per Touchpad / `M`) antippen.
-* **Nachbarraum ist rot markiert:** Die Tür (`RoomDoor`) in diese Himmelsrichtung glüht und raucht im aktuellen Raum rot.
-* **Aktueller Raum ist rot markiert:** Glühende Risse überziehen den Raumhintergrund, und oben im HUD warnt ein Countdown („Einschlag hier in X Pulsen!“).
-* **Aktives Entschärfen statt Weglaufen:** Da das bloße Zurückweichen in gesäuberte Räume 0 Pulse kostet, bestraft ein nicht verhinderter Boss-Einschlag deine Infrastruktur (zerstört gebaute Kacheln via `RemoveRoomAt` oder korrumpiert sie lila). Dringt der Spieler jedoch rechtzeitig in das Fadenkreuz-Epizentrum vor und betätigt den Unterbrecher im Raum, bricht er den Cast ab (`CancelCast`) und schwächt den Boss.
-
-#### Die 4 Boss-Archetypen (Kein stupides 1:1-Hinterherlaufen)
-1. **Die Festung / Der Belagerer (z. B. Ruinen):** Stationärer $2\times 2$-Turm. Nimmt alle 4 Pulse deine gebauten Straßen unter Beschuss, dreht Kacheln oder verriegelt Türen (`LockDoors`), bis du ihn erreichst und im Arena-Raum überlebst.
-2. **Der Saboteur / Jäger (z. B. Wald):** Bewegt sich auf deinen gebauten Kacheln gezielt zu deinen Knotenpunkten/Schreinen, um deine Route zu kappen – oder bricht bei Kontakt direkt in deinen aktuellen Platformer-Raum ein.
-3. **Das Myzel / Netzwerk (z. B. Sumpf):** Reiner Grid-Boss ohne Monster-Token. Besitzt 3 verteilte Herzkammern im Nebel, die der Spieler über eine durchgehende Kette aus 6er-Würfeln miteinander verbinden („kurzschließen“) und im Raum kappen muss.
-4. **Der Mahlstrom (z. B. Meer):** Zieht alle 4 Pulse die unterste Reihe deiner gebauten Kacheln (samt Slime) um 1 Feld Richtung Abgrund.
-
----
-
-### 1.6 Deckbuilding (Dual-Use-Karten) & Run-Struktur
-
-* **Dual-Use-Karten (Kein „Dead Draw“):** Jede Karte im Deck (Start: 8, Ausbau auf 14–18) kann entweder oben auf dem Grid als 6er-Würfel gebaut werden (1 Puls) oder unten im Platformer für 0 Pulse geopfert werden, um sofort einen Überlebens-Effekt im Raum auszulösen (z. B. Schild gegen nächsten Treffer/Straf-Puls, Türen knacken, Schwerkraft-Impuls).
-* **Run-Struktur & Adaptiver Endboss:** Ein Run dauert ca. 20–30 Minuten und führt durch 2–3 Zonen zum Endboss, der die Fähigkeiten genau jener Zonen-Bosse übernimmt, die der Spieler auf seiner Route besiegt hat.
+### 3.3 Die Albtraumleiste (0 % – 100 %): Traum-Stabilität & Schwierigkeitsgrad
+* **Klare Trennung zu den Ticks:** Die Albtraumleiste steigt **nicht** mehr passiv pro Runde, sondern misst deine tatsächliche Traum-Stabilität (Lebensleiste + Fieber-Barometer).
+* **Wann steigt sie?** Bei Treffern im Platformer-Raum, bei einem Volltreffer durch eine Boss-Zone auf dem Grid, bei Raumzerstörung unter dem Slime sowie beim Betreten des lila/schwarzen Kartenrands[cite: 1, 4].
+* **Was bewirkt sie?** Mit steigender Leiste (z. B. ab `40 %` und `70 %`) werden die Räume feindseliger, die Biom-Resonanz korrumpiert schneller und gefundene Würfel tragen häufiger gefährliche Raum-Mods. Bei **100 %** schreckt der Slime aus dem Traum hoch (Run-Ende / Erwachen im Hub)[cite: 1, 4].
 
 ---
 
-## 2. Abgleich: Was ist bereits umgesetzt vs. Was muss geändert werden?
+## 4. Physisches Würfel-Inventar, Raum-Beute & Situative Mods (Unten)
 
-Durch die Vorarbeit in Schritt 1–3 und das Ecken-Update steht bereits ein Großteil der Technik. Der Umbau auf das 4-Puls-System erfordert vor allem das Entfernen der alten Runden-Stopps in drei bestehenden Skripten:
+Das frühere Kartendeck (Nachziehstapel, Ablagestapel, Mulligan) ist komplett durch ein **physisches Würfel-Inventar** ersetzt:
 
-| System / Skript | Aktueller Stand im Code (inkl. Schritt 1–3) | Was jetzt geändert / noch umgesetzt werden muss |
+### 4.1 Großes Inventar & Farb-Zuweisung beim Finden
+* **Volle Auswahl für situatives Handeln:** Der Spieler startet im Hub mit Startwürfeln und kann im Inventar **5 bis 8 Würfel gleichzeitig** tragen[cite: 1], um je nach Grid-Situation zwischen verschiedenen Formen, Biom-Farben und Risiko-Mods abzuwägen.
+* **Farb-Snapshot:** Sobald ein Würfel im Platformer eingesammelt wird, würfelt jeder seiner 6 Blöcke anhand der aktuellen **Biom-Resonanz** (oben links) seine Biom-Farbe aus[cite: 1, 4]. Diese Farben sind unten im Inventar sofort sichtbar und drehen sich beim Rotieren (`L1`/`R1` oder `Q`/`E`) exakt mit[cite: 1, 4].
+* **Tether-Regel (Bau-Reichweite):** Ein neuer Würfel muss an ein gebautes Feld angrenzen und mindestens 1 Block muss im Umkreis von maximal 2 Feldern um den Slime liegen (`maxBuildDistanceFromSlime = 2`)[cite: 1, 4].
+
+### 4.2 Das „1 + 1“-Beutesystem pro gelegtem 6er-Würfel (`CubeLootManager`)
+Immer wenn ein 6er-Würfel auf das Grid gelegt wird, verteilt der `CubeLootManager` die Beute auf die 6 neuen Grid-Koordinaten:
+1. **1 Garantierter Weg-Würfel:** Spawnt in einem der 6 neuen Räume an einem regulären Spawnpunkt (`normalCubeSpawnPoints`).
+2. **1 Versteckter Risiko-/Bonus-Würfel:** Spawnt in einem anderen der 6 Räume an einer schwer erreichbaren Stelle (`secretCubeSpawnPoints` – z. B. hinter einer Fake-Wand oder über einen schweren Decken-Parcours mit Dash/Double Jump/Float).
+3. **Pool-Sicherheit:** Da der Beute-Status pro Grid-Koordinate (`Vector2Int`) gespeichert wird, funktionieren auch mehrfach verwendete Raum-Prefabs aus dem Biom-Pool jederzeit fehlerfrei.
+
+### 4.3 Situative Raum-Modifikatoren (Statt Element-Chaos)
+Auf einem 6er-Würfel tragen maximal 1–2 Blöcke ein einzelnes, klares weißes Symbol für eine besondere Raum-Bedingung:
+* 🌑 **Finsternis (Blackout):** Raum wird periodisch dunkel; nur Umrisse, Gefahren und der Slime glimmen.
+* ⏳ **Survival-Kammer:** Türen verriegeln sich beim Betreten für kurze Zeit; der Spieler muss im 360°-Parcours überleben, bis sie sich öffnen.
+* 👁️ **Wächter-Raum:** Enthält spezielle Beute-/Jäger-Gegner für hohes Risiko & zusätzliche Würfel-Ausbeute.
+* ⚡ **Instabil (Kollaps):** Raum bricht beim Verlassen hinter dem Spieler zusammen (Einbahnstraße).
+* ⛩️ **Schrein / Altar:** Baubarer Knotenpunkt für Heilung, Loot und lokalen Teleport[cite: 1, 4].
+
+---
+
+## 5. Schrein-Netzwerk (Lokale Teleporter, Cooldowns & Boss-Interaktion)
+
+Schreine befinden sich als Modifikator auf bestimmten Würfel-Blöcken und werden vom Spieler bewusst auf dem Grid platziert[cite: 1]:
+
+* **Spieler-Nutzen:** Das Aktivieren eines Schreins im Raum senkt den Albtraum[cite: 1, 4], spawnt einen frischen Würfel und schaltet den Schrein als Teleporter frei. Danach geht der Schrein für X **Ticks** auf Cooldown (oder verbraucht 1 seiner begrenzten Ladungen).
+* **Schutz gegen 50-Felder-Cheese (Lokales Kampfgebiet halten):**
+  1. **Begrenzte Sprung-Reichweite:** Ein Schrein kann nur zu anderen Schreinen innerhalb eines festen Radius (z. B. maximal **8 Grid-Felder**) teleportieren. Alte Schreine am anderen Ende der Karte sind außer Reichweite.
+  2. **Boss-Bannkreis (Arena-Lock):** Sobald sich der Spieler im Gebiet eines aktiven Bosses befindet, verhindert der Bannkreis jedes Heraus-Teleportieren in entfernte Regionen oder den Hub, bis der Boss besiegt ist. Innerhalb des Boss-Gebiets bleiben lokale Schreine als taktische Ausweich-Anker (z. B. aus $3\times 3$-Zonen) voll nutzbar.
+* **Boss-Interaktion:** Unbewachte, aufgeladene Schreine in Boss-Nähe können vom Boss selbst als Teleporter genutzt, ihrer Würfel beraubt oder **korrumpiert** werden (müssen dann im Platformer-Raum erst wieder freigekämpft werden).
+
+---
+
+## 6. Organischer Deadlock-Schutz (Ohne künstliche Kauf-Buttons)
+
+Damit der Spieler niemals handlungsunfähig wird – selbst wenn ihm die Würfel ausgehen oder der Boss durch Verschieben/Zerstören ein Schachbrettmuster erzeugt:
+
+### 6.1 Waffenlose „Würfel-Träger“-Gegner (Gegen Würfel-Mangel)
+* In den Räumen tauchen spezielle Wesen auf, die einen Würfel-Kern in sich tragen und rein über Movement besiegt werden (z. B. **Flucht-Schemen**, die man im Lauf mit dem **Dash** durchschlagen muss, oder **Panzer-Wirte**, die man gegen eine Wand ködert).
+* **Dynamische Gummiband-Spawnrate:** Hat der Spieler 5–7 Würfel im Inventar, tauchen diese Gegner selten auf. Sinkt der Gesamtvorrat (Inventar + erreichbare Raum-Würfel) jedoch auf `1` oder `0`, steigt die Spawn-Chance im nächsten betretenen Raum auf **100 %**.
+
+### 6.2 Würfel-Kompression auf $1\times 1$ / Kreuz (Gegen Schachbrett-Blockaden)
+* Verschiebt oder zerstört der Boss Räume auf dem Grid so ungünstig, dass rund um den Slime nur noch einzelne $1\times 1$-Lücken frei sind (in die kein 6er-Würfel mehr passt), kann der Spieler im Baumodus einen seiner 6er-Würfel **komprimieren / opfern**.
+* Statt 6 Räumen erzeugt dieser Würfel ein einzelnes **$1\times 1$-Brückenfeld** (oder ein kleines Plus-Kreuz direkt um die Slime-Position), das die Schachbrett-Lücke flickt und abgeschnittene Raum-Inseln wieder verbindet (spawnt dafür aber keinen neuen Beute-Würfel).
+
+### 6.3 Verfluchte Boss-Würfel als offensiver Boss-Skill
+* „Schlechte Würfel“ sind kein Notfall-Trostpflaster, sondern eine **aktive Boss-Attacke**: Der Boss kann dem Spieler einen lila verfluchten, verwinkelten Würfel ins Inventar zwingen, der im Inventar passiv Albtraum erzeugt, bis der Spieler ihn irgendwo auf dem Grid verbaut.
+
+---
+
+## 7. Entwicklungsstand: Was ist umgesetzt vs. Was fehlt noch?
+
+| Bereich / Modul | ✅ Bereits im Code umgesetzt | 🛠️ Noch offen / Nächste Schritte |
 | :--- | :--- | :--- |
-| **Steuerung & Ecken**<br>`PlatformerSlimeController.cs`<br>`GroundedState.cs`<br>`AirborneState.cs`<br>`PhysicsData.cs` | **Fertig umgesetzt:** 360°-Klettern, sanftes Rollen & Stehenbleiben auf $270^\circ$-Außenecken, $90^\circ$-Innenecken-Bremse, Variable Jump, Coyote Time, Apex Control, Squash & Stretch sowie `TakeDamage()` mit Blink-Unverwundbarkeit. | **Keine Änderung an der Physik nötig!**<br>Lediglich `TakeDamage()` friert den Slime bei 0 Fokus nicht mehr ein, sondern zieht einfach 1 Puls ab. |
-| **Puls-Zähler & Rundenfluss**<br>`GameManager.cs`<br>`EventManager.cs` | **Noch auf altem Stand (Zwangsstopp):** Zählt `currentFocus` von 4 auf 0 herunter. Bei 0 Fokus durch Treffer friert der Slime ein (`SetSlimeActive(false)`), die Kamera fährt zwangsweise hoch in `EnemyTurn` und zeigt `TurnBannerUI`-Banner (ZWANGSSTOPP / GEGNERPHASE / DEIN ZUG). | **Umbau auf 4-Puls-System (Wichtigste Änderung):**<br>1. Zwangsstopp, Slime-Einfrieren und Kamera-Rauszoomen aus dem `FreeRoam` entfernen.<br>2. Sobald `currentFocus` (Pulse) 0 erreicht, füllt er sich sofort wieder auf 4 auf und triggert im Hintergrund `ExecuteBossPulse()`.<br>3. Bist du im Platformer, läuft ein kurzes Kamera-Rumpeln ab statt des Kamerawechsels; bist du im Baumodus (`MacroPlan`), siehst du den Boss-Zug direkt auf dem Grid. |
-| **Raumübergänge & Türen**<br>`MacroGridManager.cs`<br>`Room.cs` | **Teilweise umgesetzt:** Merkt sich besuchte Räume in `visitedRooms` (neue Räume kosten 1, besuchte 0). Aber: Aktuell sperrt `UpdateRoomDoors()` alle Türen zu neuen Räumen physisch zu, sobald `currentFocus == 0` ist. | **Kleine Anpassung:**<br>1. Tür-Sperre bei 0 Fokus entfernen (`HasRoom` statt `CanEnterRoomAt`), da sich der Puls-Zähler bei 0 sofort wieder auf 4 zurücksetzt und den Boss-Tick auslöst.<br>2. Wenn ein Nachbarraum auf dem Grid `isTargeted` ist, Tür im Raum optisch rot einfärben (Umwelt-Telegrafie). |
-| **Bau-Regeln**<br>`PlacementManager.cs` | **Noch auf altem Stand:** Prüft in `CanPlaceShape()` nur, ob der Würfel irgendwo an ein bereits gebautes Feld (`CellState.Built`) angrenzt $\rightarrow$ erlaubt noch den „Hub-Autobahn-Exploit“. | **Kleine Ergänzung (ca. 10 Zeilen):**<br>Prüfung `maxBuildDistanceFromSlime = 2` in `CanPlaceShape()` einbauen: Mindestens eine Kachel des neuen 6er-Würfels muss $\le 2$ Felder vom aktuellen Raum des Slimes entfernt sein. |
-| **Grid, Zonen & 6er-Würfel**<br>`GridManager.cs`<br>`GridCell.cs`<br>`InventoryManager.cs` | **Grundfunktion umgesetzt:** Hub, Tier-1/Tier-2-Zonen, farbiger Nebel, lila/schwarzer Rand und die 6er-Würfelnetze (Hexominos) laufen bereits. | **Späteres Polish (für den ersten Test noch nicht zwingend):**<br>Weiße Modifikator-Icons auf `GridCell` anzeigen und das rote Warn-Overlay als Schraffur/Rahmen statt Vollfarbe darstellen. |
-| **Boss-Verhalten & Konter**<br>`BossBase.cs`<br>`BossController.cs` | **Noch auf altem Stand:** Boss läuft in `MoveTowardsSlimeRoutine()` 1 Feld auf den Slime zu und zerstört 1 Feld vor sich (`DestroyRoom`). Notfall-Schleudern bei Raumzerstörung unter dem Slime ist bereits drin. | **Mittelfristiger Ausbau:**<br>Boss markiert $3\times 3$-Gefahrenzonen mit 1 Epizentrum-Feld (Fadenkreuz). Betritt der Slime das Epizentrum vor Ablauf der Pulse, wird der Angriff abgebrochen (`CancelCast`) und der Boss geschwächt. |
+| **360°-Movement & Physik**<br>`PlatformerSlimeController.cs`<br>`GroundedState.cs` / `AirborneState.cs` | 360°-Wand-/Deckenklettern, $90^\circ$-Innen- & $270^\circ$-Außenecken (inkl. $45^\circ$-Stopp & Eck-Sprung), Coyote Time, Jump Buffer, Apex Control, Squash & Stretch sowie **Dash, Double Jump, Run & Float**[cite: 1, 4]. | Raum-Hindernisse für die neuen situativen Mods (z. B. *Blackout*-Lichtsteuerung, *Survival*-Türsperre). |
+| **Biom-Resonanz & HUD (Oben links)**<br>`BiomeResonanceManager.cs`<br>`ThreatOrbsAndPiPHUD.cs` | Feste **20-%-Schritte**, Ausblenden von `0 %`-Biomen, Hub-Schutzradius (`hubSafeRadius = 2`), Richtungs-Shift, Boss-Shift bei Puls (`+20 %`), Albtraum-Überlauf ab `60 %` und `[Gebaut-Zähler]`. | Visuelles Feedback im Raum passend zur Albtraum-Stufe; Biom-spezifische Raum-Pools beim Spawnen in `MacroGridManager` anbinden. |
+| **Aktionssymbole & Live-PiP (Oben rechts)**<br>`ThreatTrackerManager.cs`<br>`ThreatOrbsAndPiPHUD.cs` | Dynamische Countdown-Medaillons, `R2`-Inspektion, automatisches **Live-PiP-Kamera-Fenster** bei Countdown `0` inkl. **2,5 s Haltezeit + 1,5 s sanftem Fade-Out**[cite: 1, 4]. | Unterschiedliche Rahmen-Sprites (Boss/Minion/Umwelt) zuweisen; mehrere gleichzeitige Boss-Symbole pro Boss-Archetyp. |
+| **Physisches Inventar & Raum-Beute**<br>`InventoryManager.cs`<br>`CubeLootManager.cs`<br>`CubePickup.cs` / `Room.cs` | Kartendeck/Ablagestapel entfernt; reines Inventar (bis 8 Slots); pro gelegtem 6er-Würfel spawnen **1 garantierter + 1 versteckter Würfel** an `Room`-Spawnpunkten (inkl. Gizmos & Live-Switch per Taste `P`). | Höhere Standard-Kapazität (z. B. 6–8 Würfel) im Balancing testen; garantiertes Würfel-Symbol optional auf der Vorschau/Grid-Kachel anzeigen. |
+| **Tick-Regel & Albtraum-Trennung**<br>`GameManager.cs`<br>`MacroGridManager.cs`<br>`EventManager.cs` | Bauen = 1 Tick, Raum-Schaden = 1 Tick + Albtraum, rote Tür-Warnung (`SetDoorWarning`) vor Boss-Zielen[cite: 1, 4]. | `enterClearedRoomFocusCost` im Inspector fest auf `1` setzen (damit **jeder** Raumwechsel 1 Tick kostet und `visitedRooms` komplett entfallen kann); passiven `nightmarePerTurn` auf `0` setzen. |
+| **Schrein-Teleporter & Bannkreis**<br>`PlacementManager.cs` | Basis-Erkennung von `BlockModifier.Shrine` mit sofortiger Albtraum-Senkung beim Bauen[cite: 1]. | Interaktives Schrein-Objekt im Raum (Loot + Teleport-UI), Tick-Cooldown, **8-Felder-Reichweitenlimit**, **Boss-Bannkreis** und Boss-Korrumpierung. |
+| **Deadlock-Schutz (Gegner & $1\times 1$-Kompression)** | Zerstörungs-Backup (`FindNearestBuiltRoom`), falls der Boss den Raum direkt unter dem Slime sprengt[cite: 1]. | 1. Waffenloser **Würfel-Träger-Gegner** (Dash-Schemen) mit 100-%-Spawn bei 0 Vorrat.<br>2. **Würfel-Kompression** im `PlacementManager` (Taste drücken, um 6er-Würfel als $1\times 1$-Brücke oder Kreuz zu legen). |
 </file>
 
 <file path="repomix.config.json">

@@ -6,7 +6,7 @@ using UnityEngine.Tilemaps;
 public class PlatformerSlimeController : MonoBehaviour
 {
     [SerializeField] private PlatformerPhysicsData data;
-    [SerializeField] private Transform visualTransform; // Child mit dem SpriteRenderer
+    [SerializeField] private Transform visualTransform;
 
     private Rigidbody2D rb;
     private BoxCollider2D boxCollider;
@@ -14,31 +14,26 @@ public class PlatformerSlimeController : MonoBehaviour
     private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[8];
     private ContactFilter2D contactFilter;
 
-    // --- Modulare Sub-Komponenten ---
     public SlimeInputHandler InputHandler { get; private set; }
     public SlimeAbilities Abilities { get; private set; }
     public SlimeVisuals Visuals { get; private set; }
 
-    // --- State Machine & Zustände ---
     public PlatformerStateMachine StateMachine { get; private set; }
     public PlatformerGroundedState GroundedState { get; private set; }
     public PlatformerAirborneState AirborneState { get; private set; }
     public PlatformerDashState DashState { get; private set; }
 
-    // --- Weitergeleitete Input-Properties (für Abwärtskompatibilität) ---
     public Vector2 MoveInput => InputHandler != null ? InputHandler.MoveInput : Vector2.zero;
     public bool JumpHeld => InputHandler != null && InputHandler.JumpHeld;
     public bool HasBufferedJump => InputHandler != null && InputHandler.HasBufferedJump;
 
-    // --- Kollisions- & Orientierungsstatus ---
     public Vector2 Velocity { get; set; }
     public bool IsGrounded { get; set; }
     public bool HitCeiling { get; private set; }
     public bool HitWall { get; private set; }
     public Vector2 TargetSurfaceNormal { get; set; } = Vector2.up;
-    public Vector2 CurrentSurfaceNormal { get; private set; } = Vector2.up;
+    public Vector2 CurrentSurfaceNormal { get; set; } = Vector2.up;
 
-    // --- Äußere & Innere Ecken Status ---
     public bool IsOnOuterCorner { get; private set; }
     public Vector2 OuterCornerVertex { get; private set; }
     public Vector2 OuterCornerNormalA { get; private set; } = Vector2.up;
@@ -48,6 +43,16 @@ public class PlatformerSlimeController : MonoBehaviour
     public bool IsInInnerCornerPocket { get; private set; }
     public Vector2 InnerCornerAdjacentNormal { get; private set; } = Vector2.zero;
     private float innerCornerSlowdownTimer = 0f;
+
+    // Merkt sich die letzte stabile Kletter-Fläche für 0.12s, damit an der äußersten Tür-Tilemap-Kante
+    // niemals der Wand-/Deckenkontakt verloren geht, bevor OnTriggerEnter2D feuert!
+    private Vector2 lastFlatClimbingNormal = Vector2.up;
+    private float lastFlatClimbingTime = -10f;
+    private float lastIntentionalDetachTime = -10f;
+
+    // Schutz-Timer für den Hollow-Knight-Aufwärtssprung durch eine Nord-Tür
+    private float northExitHorizontalLockTimer = 0f;
+    private float northExitLockedVelX = 0f;
 
     public Vector2 EffectiveSurfaceNormal
     {
@@ -89,7 +94,6 @@ public class PlatformerSlimeController : MonoBehaviour
         }
     }
 
-    // --- Meditations- & Interaktionsstatus ---
     public bool IsViewingMap { get; set; }
     public bool IsMeditating { get; set; }
 
@@ -100,6 +104,14 @@ public class PlatformerSlimeController : MonoBehaviour
     [Header("Juice & Buffers")]
     [SerializeField] private float jumpBufferDuration = 0.12f;
     private float coyoteTimer;
+
+    [Header("Raumübergang (Hollow Knight Tuning)")]
+    [Tooltip("Konstante vertikale Auswurf-Geschwindigkeit beim Durchspringen einer Nord-Tür.")]
+    [SerializeField] private float northJumpExitVerticalSpeed = 14.5f;
+    [Tooltip("Garantierter horizontaler Schwung beim Durchspringen einer Nord-Tür, damit man sicher neben dem Loch landet.")]
+    [SerializeField] private float northJumpExitHorizontalSpeed = 7.8f;
+    [Tooltip("Wie lange (in Sek.) der Seitwärts-Schwung beim Nord-Aufstieg geschützt bleibt.")]
+    [SerializeField] private float northJumpHorizontalLockDuration = 0.22f;
 
     [Header("Treffer & Unverwundbarkeit")]
     [SerializeField] private float damageInvincibilityDuration = 0.75f;
@@ -129,7 +141,6 @@ public class PlatformerSlimeController : MonoBehaviour
         boxCollider = GetComponent<BoxCollider2D>();
         rb.constraints = RigidbodyConstraints2D.FreezeRotation;
 
-        // Modulare Komponenten automatisch holen oder anlegen
         InputHandler = GetComponent<SlimeInputHandler>() ?? gameObject.AddComponent<SlimeInputHandler>();
         Abilities = GetComponent<SlimeAbilities>() ?? gameObject.AddComponent<SlimeAbilities>();
         Visuals = GetComponent<SlimeVisuals>() ?? gameObject.AddComponent<SlimeVisuals>();
@@ -181,6 +192,12 @@ public class PlatformerSlimeController : MonoBehaviour
         if (IsGrounded)
         {
             coyoteTimer = (data != null && data.coyoteTimeDuration > 0f) ? data.coyoteTimeDuration : 0.1f;
+
+            if (!IsOnOuterCorner)
+            {
+                lastFlatClimbingNormal = SnapToCardinal(CurrentSurfaceNormal);
+                lastFlatClimbingTime = Time.time;
+            }
         }
         else if (coyoteTimer > 0f)
         {
@@ -197,6 +214,11 @@ public class PlatformerSlimeController : MonoBehaviour
             detachCooldownTimer -= Time.deltaTime;
         }
 
+        if (northExitHorizontalLockTimer > 0f)
+        {
+            northExitHorizontalLockTimer -= Time.deltaTime;
+        }
+
         if (invincibilityTimer > 0f)
         {
             invincibilityTimer -= Time.deltaTime;
@@ -209,12 +231,288 @@ public class PlatformerSlimeController : MonoBehaviour
     private void FixedUpdate()
     {
         StateMachine.FixedUpdate();
+
+        if (northExitHorizontalLockTimer > 0f && !IsGrounded)
+        {
+            bool steeringOpposite = (MoveInput.x * northExitLockedVelX) < -0.2f;
+            if (steeringOpposite)
+            {
+                northExitHorizontalLockTimer = 0f;
+            }
+            else
+            {
+                Velocity = new Vector2(northExitLockedVelX, Velocity.y);
+            }
+        }
+
         MoveAndResolveCollisions(Velocity * Time.fixedDeltaTime);
+
+        if (IsGrounded && !IsOnOuterCorner)
+        {
+            lastFlatClimbingNormal = SnapToCardinal(CurrentSurfaceNormal);
+            lastFlatClimbingTime = Time.time;
+        }
+    }
+
+    // =========================================================================
+    // TÜR-ZU-TÜR TELEPORT ÜBER DIE 4x2 DOOR-TUNNEL-BOUNDS
+    // =========================================================================
+
+    public Vector3 ExecuteRoomTransition(
+        Room fromRoom,
+        Room targetRoom,
+        Direction exitDirection,
+        Vector3 previousWorldPos)
+    {
+        Tilemap[] targetTilemaps = targetRoom.GetComponentsInChildren<Tilemap>();
+        for (int i = 0; i < targetTilemaps.Length; i++)
+        {
+            targetTilemaps[i].RefreshAllTiles();
+        }
+        Physics2D.SyncTransforms();
+
+        Vector2 forwardDir = MacroGridManager.DirectionToOffset(exitDirection);
+        Direction enterFromDir = MacroGridManager.GetOppositeDirection(exitDirection);
+
+        // Exakte 4x2-Türrahmen-Bounds im alten und im neuen Raum abrufen
+        Bounds exitTunnel = fromRoom != null
+            ? fromRoom.GetDoorTunnelWorldBounds(exitDirection)
+            : new Bounds(previousWorldPos, new Vector3(4f, 2f, 1f));
+
+        Bounds enterTunnel = targetRoom.GetDoorTunnelWorldBounds(enterFromDir);
+
+        // Relativer Versatz des Spielers zur Mitte des alten Türrahmens
+        Vector3 offsetInTunnel = previousWorldPos - exitTunnel.center;
+
+        // Prüfen, ob der Slime geklettert ist (inkl. 0.12s Puffer gegen das Tilemap-Ende an der Außenkante!)
+        bool didNotJustJumpOrDash = (Time.time - lastIntentionalDetachTime) > 0.12f && (Abilities == null || !Abilities.IsDashing);
+        bool wasClimbing = didNotJustJumpOrDash && (IsGrounded || (Time.time - lastFlatClimbingTime) <= 0.12f);
+
+        Vector2 attachNormal = IsGrounded && !IsOnOuterCorner
+            ? SnapToCardinal(CurrentSurfaceNormal)
+            : lastFlatClimbingNormal;
+
+        if (wasClimbing && IsOnOuterCorner)
+        {
+            attachNormal = ResolveTunnelNormalFromOuterCorner(exitDirection);
+        }
+
+        ClearCornerState();
+
+        // Prüfen, ob die Kletter-Fläche zum Tür-Tunnel gehört:
+        // Links/Rechts-Tür -> Decke (Vector2.down) oder Boden (Vector2.up)
+        // Oben/Unten-Tür   -> Linke Wand (Vector2.right) oder Rechte Wand (Vector2.left)
+        bool isValidTunnelSurface = false;
+        if (wasClimbing)
+        {
+            if (exitDirection == Direction.East || exitDirection == Direction.West)
+                isValidTunnelSurface = Mathf.Abs(attachNormal.y) > 0.5f;
+            else
+                isValidTunnelSurface = Mathf.Abs(attachNormal.x) > 0.5f;
+        }
+
+        float halfColX = GetColliderExtent(Vector2.right);
+        float halfColY = GetColliderExtent(Vector2.up);
+        float skin = (data != null) ? data.skinWidth : 0.015f;
+        float baseMoveSpeed = (data != null && data.moveSpeed > 1f) ? data.moveSpeed : 8f;
+
+        // =====================================================================
+        // FALL A: KLETTERN AN DECKE (Screenshot 1), WAND (Screenshot 2) ODER BODEN
+        // =====================================================================
+        if (wasClimbing && isValidTunnelSurface)
+        {
+            detachCooldownTimer = 0f;
+            northExitHorizontalLockTimer = 0f;
+
+            Vector3 climbTargetPos = enterTunnel.center;
+
+            if (exitDirection == Direction.East || exitDirection == Direction.West)
+            {
+                // X: In die innere Hälfte des 2-Tile-Türrahmens setzen (hinter den Trigger, aber noch UNTER die Türdecke!)
+                climbTargetPos.x = enterTunnel.center.x + forwardDir.x * (enterTunnel.extents.x * 0.25f);
+
+                // Y: Exakt an die Decke (Screenshot 1) oder den Boden des Türrahmens heften
+                if (attachNormal.y < -0.5f)
+                    climbTargetPos.y = enterTunnel.max.y - halfColY - skin + boxCollider.offset.y;
+                else
+                    climbTargetPos.y = enterTunnel.min.y + halfColY + skin - boxCollider.offset.y;
+            }
+            else
+            {
+                // Y: In die innere Hälfte des 2-Tile-Türrahmens setzen (hinter den Trigger, aber noch NEBEN die Türwand!)
+                climbTargetPos.y = enterTunnel.center.y + forwardDir.y * (enterTunnel.extents.y * 0.25f);
+
+                // X: Exakt an die linke (Screenshot 2) oder rechte Seitenwand des Türrahmens heften
+                if (attachNormal.x > 0.5f)
+                    climbTargetPos.x = enterTunnel.min.x + halfColX + skin - boxCollider.offset.x;
+                else
+                    climbTargetPos.x = enterTunnel.max.x - halfColX - skin + boxCollider.offset.x;
+            }
+
+            // Zusätzlich per kurzem Raycast exakt auf die echte Tilemap-Oberfläche im Türrahmen einrasten
+            climbTargetPos = SnapToDoorFrameSurface(climbTargetPos, attachNormal);
+
+            ApplyTeleportPosition(climbTargetPos);
+
+            CurrentSurfaceNormal = attachNormal;
+            TargetSurfaceNormal = attachNormal;
+            lastFlatClimbingNormal = attachNormal;
+            lastFlatClimbingTime = Time.time;
+            IsGrounded = true;
+
+            if (StateMachine.CurrentState != GroundedState)
+            {
+                StateMachine.ChangeState(GroundedState);
+            }
+
+            GroundedState.PreserveTraversalThroughDoor(forwardDir, baseMoveSpeed);
+            return climbTargetPos;
+        }
+
+        // =====================================================================
+        // FALL B: DURCHSPRINGEN NACH OBEN DURCH DIE NORD-TÜR (HOLLOW KNIGHT STIL)
+        // =====================================================================
+        if (exitDirection == Direction.North)
+        {
+            if (StateMachine.CurrentState == DashState)
+            {
+                StateMachine.ChangeState(AirborneState);
+            }
+
+            IsGrounded = false;
+            CurrentSurfaceNormal = Vector2.up;
+            TargetSurfaceNormal = Vector2.up;
+            if (Abilities != null) Abilities.ResetAllCharges();
+
+            // Direkt an der Oberkante des Süd-Türrahmens (Gras-Bodenniveau!) herauskommen,
+            // damit der Slime beim Seitwärts-Bogen nicht im Schacht gegen die Seitenwand prallt!
+            float maxOffsetX = Mathf.Max(0.4f, enterTunnel.extents.x - halfColX - 0.15f);
+            float clampedX = Mathf.Clamp(offsetInTunnel.x, -maxOffsetX, maxOffsetX);
+
+            Vector3 launchPos = new Vector3(
+                enterTunnel.center.x + clampedX,
+                enterTunnel.max.y + halfColY + 0.08f,
+                previousWorldPos.z
+            );
+
+            ApplyTeleportPosition(launchPos);
+
+            float sideSign = DetermineNorthExitHorizontalSide(offsetInTunnel.x);
+            float horizSpeed = Mathf.Max(Mathf.Abs(Velocity.x), northJumpExitHorizontalSpeed);
+            float finalVelX = sideSign * horizSpeed;
+
+            Velocity = new Vector2(finalVelX, northJumpExitVerticalSpeed);
+            northExitLockedVelX = finalVelX;
+            northExitHorizontalLockTimer = northJumpHorizontalLockDuration;
+
+            return launchPos;
+        }
+
+        // =====================================================================
+        // FALL C: LUFT-SPRUNG / FALL DURCH OST-, WEST- ODER SÜD-TÜR
+        // =====================================================================
+        Vector3 airTargetPos = enterTunnel.center;
+
+        if (exitDirection == Direction.East || exitDirection == Direction.West)
+        {
+            float maxOffsetY = Mathf.Max(0.3f, enterTunnel.extents.y - halfColY - 0.12f);
+            float clampedY = Mathf.Clamp(offsetInTunnel.y, -maxOffsetY, maxOffsetY);
+
+            airTargetPos.x = enterTunnel.center.x + forwardDir.x * (enterTunnel.extents.x * 0.45f);
+            airTargetPos.y = enterTunnel.center.y + clampedY;
+        }
+        else // Direction.South (Fall nach unten)
+        {
+            float maxOffsetX = Mathf.Max(0.4f, enterTunnel.extents.x - halfColX - 0.15f);
+            float clampedX = Mathf.Clamp(offsetInTunnel.x, -maxOffsetX, maxOffsetX);
+
+            airTargetPos.x = enterTunnel.center.x + clampedX;
+            airTargetPos.y = enterTunnel.min.y - halfColY - 0.05f;
+        }
+
+        ApplyTeleportPosition(airTargetPos);
+
+        IsGrounded = false;
+        CurrentSurfaceNormal = Vector2.up;
+        TargetSurfaceNormal = Vector2.up;
+
+        Vector2 airVel = Velocity;
+        if (exitDirection == Direction.East)
+        {
+            airVel.x = Mathf.Max(airVel.x, baseMoveSpeed);
+        }
+        else if (exitDirection == Direction.West)
+        {
+            airVel.x = Mathf.Min(airVel.x, -baseMoveSpeed);
+        }
+        else if (exitDirection == Direction.South)
+        {
+            airVel.y = Mathf.Clamp(airVel.y, -12f, -6f);
+        }
+
+        Velocity = airVel;
+        return airTargetPos;
+    }
+
+    private void ApplyTeleportPosition(Vector3 targetPos)
+    {
+        transform.position = targetPos;
+        if (rb != null)
+        {
+            rb.position = targetPos;
+            rb.MovePosition(targetPos);
+        }
+        Physics2D.SyncTransforms();
+    }
+
+    private Vector2 ResolveTunnelNormalFromOuterCorner(Direction exitDir)
+    {
+        if (exitDir == Direction.East || exitDir == Direction.West)
+        {
+            if (Mathf.Abs(OuterCornerNormalA.y) > 0.5f) return SnapToCardinal(OuterCornerNormalA);
+            if (Mathf.Abs(OuterCornerNormalB.y) > 0.5f) return SnapToCardinal(OuterCornerNormalB);
+            return lastFlatClimbingNormal;
+        }
+        else
+        {
+            if (Mathf.Abs(OuterCornerNormalA.x) > 0.5f) return SnapToCardinal(OuterCornerNormalA);
+            if (Mathf.Abs(OuterCornerNormalB.x) > 0.5f) return SnapToCardinal(OuterCornerNormalB);
+            return lastFlatClimbingNormal;
+        }
+    }
+
+    private Vector3 SnapToDoorFrameSurface(Vector3 candidatePos, Vector2 surfaceNormal)
+    {
+        Vector2 rayDir = -surfaceNormal;
+        float colliderExtentToSurface = GetColliderExtent(rayDir);
+        float skin = (data != null) ? data.skinWidth : 0.015f;
+
+        Vector2 rayOrigin = (Vector2)candidatePos + boxCollider.offset + surfaceNormal * 0.85f;
+        RaycastHit2D hit = Physics2D.Raycast(rayOrigin, rayDir, 2.2f, data.groundLayer);
+
+        if (hit.collider != null && hit.distance > 0.001f)
+        {
+            Vector2 snappedCenter = hit.point + surfaceNormal * (colliderExtentToSurface + skin);
+            Vector2 finalPos = snappedCenter - boxCollider.offset;
+            return new Vector3(finalPos.x, finalPos.y, candidatePos.z);
+        }
+
+        return candidatePos;
+    }
+
+    private float DetermineNorthExitHorizontalSide(float doorOffsetX)
+    {
+        if (Mathf.Abs(MoveInput.x) > 0.12f) return Mathf.Sign(MoveInput.x);
+        if (Mathf.Abs(Velocity.x) > 0.45f) return Mathf.Sign(Velocity.x);
+        if (Mathf.Abs(doorOffsetX) > 0.12f) return Mathf.Sign(doorOffsetX);
+        if (Abilities != null && Mathf.Abs(Abilities.LastFacingDirection.x) > 0.1f) return Mathf.Sign(Abilities.LastFacingDirection.x);
+        return 1f;
     }
 
     public void ZeroOutMomentum()
     {
         Velocity = Vector2.zero;
+        northExitHorizontalLockTimer = 0f;
         if (InputHandler != null) InputHandler.ClearAllInputs();
         if (Abilities != null)
         {
@@ -256,6 +554,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     public void TriggerDetach(Vector2 fromSurfaceNormal, float duration = 0.15f)
     {
+        lastIntentionalDetachTime = Time.time;
         detachCooldownTimer = duration;
         lastDetachedNormal = SnapToCardinal(fromSurfaceNormal);
         secondaryDetachedNormal = IsInInnerCornerPocket ? InnerCornerAdjacentNormal : Vector2.zero;
@@ -270,6 +569,7 @@ public class PlatformerSlimeController : MonoBehaviour
 
     public void TriggerCornerDetach(Vector2 normalA, Vector2 normalB, float duration = 0.16f)
     {
+        lastIntentionalDetachTime = Time.time;
         detachCooldownTimer = duration;
         lastDetachedNormal = SnapToCardinal(normalA);
         secondaryDetachedNormal = SnapToCardinal(normalB);
@@ -283,9 +583,6 @@ public class PlatformerSlimeController : MonoBehaviour
         rb.position += pushDir * (data.skinWidth * 4f + 0.045f);
     }
 
-    /// <summary>
-    /// Prüft unmittelbar nach einem Boden-Dash, ob direkt unter dem Slime eine Fläche zum nahtlosen Weiterrennen liegt.
-    /// </summary>
     public void TrySnapToNearbySurfaceAfterDash()
     {
         Vector2 boxSize = boxCollider.size - (Vector2.one * (data.skinWidth * 2f));
@@ -524,7 +821,7 @@ public class PlatformerSlimeController : MonoBehaviour
                     extentNormal,
                     extentTangent,
                     0.05f,
-                    floorDist,
+                    floorCheckDist: floorDist,
                     out cornerVertex,
                     out adjacentWallNormal))
                 {
@@ -849,9 +1146,7 @@ public class PlatformerSlimeController : MonoBehaviour
         }
         else
         {
-            // --- FLUG- & DASH-MODUS (Welt-Koordinaten) ---
-
-            // Y-Achse
+            // --- FLUG- & DASH-MODUS ---
             Vector2 castOriginY = position + boxCollider.offset;
             if (Mathf.Abs(deltaMovement.y) > 0.0001f)
             {
@@ -902,7 +1197,6 @@ public class PlatformerSlimeController : MonoBehaviour
                 }
             }
 
-            // X-Achse
             if (!IsGrounded)
             {
                 Vector2 castOriginX = position + boxCollider.offset;
@@ -963,8 +1257,11 @@ public class PlatformerSlimeController : MonoBehaviour
 
     private void AttachToSurfaceFromAir(ref Vector2 position, Vector2 landedNormal)
     {
+        northExitHorizontalLockTimer = 0f;
         TargetSurfaceNormal = landedNormal;
         CurrentSurfaceNormal = landedNormal;
+        lastFlatClimbingNormal = landedNormal;
+        lastFlatClimbingTime = Time.time;
         IsGrounded = true;
 
         float squash = (data != null) ? data.landSquashAmount : 0.18f;

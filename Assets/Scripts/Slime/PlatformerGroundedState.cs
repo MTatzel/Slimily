@@ -41,6 +41,35 @@ public class PlatformerGroundedState : PlatformerSlimeState
         downHoldTimer = 0f;
     }
 
+    /// <summary>
+    /// Sorgt beim Raumwechsel an Boden, Wand oder Decke dafür, dass die Kletterrichtung
+    /// und die Tangential-Geschwindigkeit nahtlos im neuen Raum weiterlaufen.
+    /// </summary>
+    public void PreserveTraversalThroughDoor(Vector2 worldForwardDir, float minSpeed)
+    {
+        Vector2 normal = controller.CurrentSurfaceNormal;
+        Vector2 tangent = new Vector2(normal.y, -normal.x);
+
+        float proj = Vector2.Dot(worldForwardDir, tangent);
+        float sign = Mathf.Abs(proj) > 0.01f ? Mathf.Sign(proj) : 1f;
+
+        isTraversing = true;
+        currentTraverseSign = sign;
+        if (Input != null && Input.MoveInput.sqrMagnitude > 0.04f)
+        {
+            initialInputVector = Input.MoveInput.normalized;
+        }
+        else
+        {
+            initialInputVector = worldForwardDir.normalized;
+        }
+
+        float currentSpeed = Mathf.Abs(controller.Velocity.x);
+        float targetSpeed = Mathf.Max(currentSpeed, minSpeed);
+        controller.Velocity = new Vector2(sign * targetSpeed, 0f);
+        downHoldTimer = 0f;
+    }
+
     public override void FrameUpdate()
     {
         if (justEntered)
@@ -54,21 +83,18 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        // 1. Dash prüfen (Shift / R2 / Viereck)
         if (Input.HasBufferedDash && Abilities.CanUseDash(isGrounded: true))
         {
             stateMachine.ChangeState(controller.DashState);
             return;
         }
 
-        // Sprint bleibt aktiv, solange die Dash-Taste gehalten wird
         if (!Input.DashHeld || !Abilities.enableSprint)
         {
             Abilities.IsSprinting = false;
         }
         else if (Abilities.enableSprint && !Abilities.enableDash && Input.DashHeld)
         {
-            // Falls Dash deaktiviert ist, aber Sprint erlaubt ist, kann man direkt per Halten sprinten
             Abilities.IsSprinting = true;
         }
 
@@ -79,7 +105,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
 
         bool isHoldingDownFromWall = isTraversing && initialInputVector.y < -0.5f;
 
-        // 2. Dropdown an der Decke via Hold-Timer
         if (isCeiling && !isHoldingDownFromWall)
         {
             Vector2 input = Input.MoveInput;
@@ -115,7 +140,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             downHoldTimer = 0f;
         }
 
-        // 3. Sprung von der Fläche
         if (controller.HasBufferedJump)
         {
             ExecuteJump(surfaceNormal, isOuterCorner, isCeiling, isWall);
@@ -134,7 +158,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             : 1f;
         float currentMoveSpeed = data.moveSpeed * sprintMult;
 
-        // FALL A: Absprung direkt von einer äußeren Ecke (270°)
         if (isOuterCorner)
         {
             Vector2 cornerNormal = controller.OuterCornerDiagonalNormal;
@@ -151,7 +174,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        // FALL B: Absprung direkt aus einer 90°-Innenecken-Nische
         if (controller.IsInInnerCornerPocket && controller.InnerCornerAdjacentNormal.sqrMagnitude > 0.1f)
         {
             Vector2 bisector = (surfaceNormal + controller.InnerCornerAdjacentNormal).normalized;
@@ -163,7 +185,6 @@ public class PlatformerGroundedState : PlatformerSlimeState
             return;
         }
 
-        // FALL C: Regulärer Absprung (Decke, Wand, Boden)
         controller.TriggerDetach(surfaceNormal);
 
         if (isCeiling)

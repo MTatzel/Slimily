@@ -17,8 +17,8 @@ public class MacroGridManager : MonoBehaviour
     [SerializeField] private List<RoomEntry> roomEntries = new List<RoomEntry>();
     [SerializeField] private Room defaultRoomPrefab;
 
-    [Header("Streaming & Platzierung")]
-    [SerializeField] private float roomSpacing = 100f;
+    [Header("Streaming & Platzierung (Weit getrennt gegen Überlappung)")]
+    [SerializeField] private float roomSpacing = 200f;
     [SerializeField] private Vector2Int startCoordinate = Vector2Int.zero;
     [SerializeField] private bool destroyFarRooms = false;
 
@@ -35,7 +35,7 @@ public class MacroGridManager : MonoBehaviour
 
     private Vector2Int currentCoordinate;
     private float lastTransitionTime = -1f;
-    private const float TransitionCooldown = 0.25f;
+    private const float TransitionCooldown = 0.18f;
 
     public Vector2Int CurrentCoordinate => currentCoordinate;
     public IReadOnlyDictionary<Vector2Int, Room> Grid => grid;
@@ -105,7 +105,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (config != null)
         {
-            roomSpacing = config.roomSpacing;
+            roomSpacing = Mathf.Max(100f, config.roomSpacing);
             if (config.defaultRoomPrefab != null)
             {
                 defaultRoomPrefab = config.defaultRoomPrefab;
@@ -192,6 +192,7 @@ public class MacroGridManager : MonoBehaviour
                     room.gameObject.SetActive(true);
                     room.transform.position = GetWorldPosition(coord);
                     room.GridCoordinate = coord;
+                    room.CacheAllDoorTunnelBounds();
 
                     if (wasInactive && CubeLootManager.Instance != null)
                     {
@@ -223,6 +224,7 @@ public class MacroGridManager : MonoBehaviour
         }
 
         RefreshActiveRoomDoors();
+        Physics2D.SyncTransforms();
     }
 
     public void RefreshActiveRoomDoors()
@@ -272,9 +274,9 @@ public class MacroGridManager : MonoBehaviour
             Room newRoom = Instantiate(prefabToSpawn, worldPos, Quaternion.identity, transform);
             newRoom.GridCoordinate = coord;
             newRoom.name = $"{prefabToSpawn.name}_[{coord.x},{coord.y}]";
+            newRoom.CacheAllDoorTunnelBounds();
             grid[coord] = newRoom;
 
-            // Sobald der Raum erstellt wird, prüft CubeLootManager, ob auf dieser Koordinate ein Würfel spawnen soll!
             if (CubeLootManager.Instance != null)
             {
                 CubeLootManager.Instance.RefreshRoomLoot(newRoom, coord);
@@ -321,7 +323,6 @@ public class MacroGridManager : MonoBehaviour
 
         if (!HasRoom(targetCoord))
         {
-            Debug.LogWarning($"[MacroGridManager] Kein Raum in Richtung {exitDirection} bei Koordinate {targetCoord} vorhanden!");
             return;
         }
 
@@ -330,6 +331,9 @@ public class MacroGridManager : MonoBehaviour
 
         lastTransitionTime = Time.time;
         visitedRooms.Add(targetCoord);
+
+        FindPlayerIfNeeded();
+        Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
 
         UpdateActiveRooms(targetCoord);
 
@@ -340,19 +344,17 @@ public class MacroGridManager : MonoBehaviour
 
         if (grid.TryGetValue(targetCoord, out Room targetRoom) && targetRoom != null)
         {
-            Direction enterFromDirection = GetOppositeDirection(exitDirection);
-            Transform spawnPoint = targetRoom.GetSpawnPoint(enterFromDirection);
+            Vector3 finalTargetPos = targetRoom.transform.position;
 
-            Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
-            Vector3 targetPos = (spawnPoint != null) ? spawnPoint.position : GetWorldPosition(currentCoordinate);
+            if (playerTransform != null && playerTransform.TryGetComponent<PlatformerSlimeController>(out var slimeController))
+            {
+                finalTargetPos = slimeController.ExecuteRoomTransition(fromRoom, targetRoom, exitDirection, previousPos);
+            }
 
-            TeleportPlayer(targetPos, exitDirection);
-
-            Vector3 deltaPosition = targetPos - previousPos;
+            Vector3 deltaPosition = finalTargetPos - previousPos;
             UpdateCameraForTransition(targetRoom, deltaPosition);
         }
 
-        // Laufrichtung verschiebt weiterhin die Biom-Resonanz oben links (für die Würfel, die man in den Räumen findet!):
         if (BiomeResonanceManager.Instance != null)
         {
             BiomeResonanceManager.Instance.OnPlayerMovedInDirection(exitDirection, !wasAlreadyVisited);
@@ -360,36 +362,7 @@ public class MacroGridManager : MonoBehaviour
 
         if (GameManager.Instance != null && entryTickCost > 0)
         {
-            GameManager.Instance.AdvanceTicks(entryTickCost, $"Neuen Raum {targetCoord} betreten");
-        }
-    }
-
-    private void TeleportPlayer(Vector3 targetPos, Direction exitDirection)
-    {
-        FindPlayerIfNeeded();
-
-        if (playerTransform == null)
-        {
-            Debug.LogError("[MacroGridManager] Kein Spieler gefunden zum Teleportieren!");
-            return;
-        }
-
-        playerTransform.position = targetPos;
-
-        if (playerTransform.TryGetComponent<Rigidbody2D>(out var rb))
-        {
-            rb.position = targetPos;
-
-            Vector2 forwardDir = DirectionToOffset(exitDirection);
-            if (Vector2.Dot(rb.linearVelocity, forwardDir) < 2f)
-            {
-                rb.linearVelocity = forwardDir * 4f;
-            }
-        }
-
-        if (playerTransform.TryGetComponent<PlatformerSlimeController>(out var slimeController))
-        {
-            slimeController.TriggerDetach(0.15f);
+            GameManager.Instance.AdvanceTicks(entryTickCost, $"Raum {targetCoord} betreten");
         }
     }
 
@@ -407,7 +380,6 @@ public class MacroGridManager : MonoBehaviour
     private void UpdateCameraForTransition(Room targetRoom, Vector3 deltaPosition)
     {
         FindCameraIfNeeded();
-
         UpdateCameraConfiner(targetRoom);
 
         if (cinemachineCam != null && playerTransform != null)
@@ -599,6 +571,7 @@ public class MacroGridManager : MonoBehaviour
     {
         if (slimeTransform == null) return;
 
+        Vector3 oldPos = slimeTransform.position;
         Vector3 targetPos = GetWorldPosition(coord) + new Vector3(0f, 2.5f, 0f);
         slimeTransform.position = targetPos;
 
@@ -611,7 +584,7 @@ public class MacroGridManager : MonoBehaviour
         FindCameraIfNeeded();
         if (cinemachineCam != null)
         {
-            cinemachineCam.OnTargetObjectWarped(slimeTransform, targetPos - slimeTransform.position);
+            cinemachineCam.OnTargetObjectWarped(slimeTransform, targetPos - oldPos);
         }
     }
 }
