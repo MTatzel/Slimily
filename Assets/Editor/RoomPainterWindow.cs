@@ -9,11 +9,12 @@ using UnityEngine.Tilemaps;
 [Serializable]
 public class RoomJsonData
 {
-    public string roomName = "Room_New";
+    public string roomName = "Room_Forest_01";
     public string biome = "Forest";
     public int width = 30;
     public int height = 20;
-    public int doorGap = 6;
+    public int doorGap = 4;
+    public int wallThickness = 2;
     public List<string> layout = new List<string>();
 }
 
@@ -28,27 +29,29 @@ public class RoomPainterWindow : EditorWindow
         SecretCube = 'X'
     }
 
-    // --- Raum-Einstellungen ---
+    // --- 1. Raum-Einstellungen (Standard passend zu Room1: 4er Tür, 2er Wanddicke) ---
     private string roomName = "Room_Forest_01";
     private string biomeName = "Forest";
+    private string basePrefabFolder = "Assets/Prefabs/Rooms";
     private int gridWidth = 30;
     private int gridHeight = 20;
-    private int doorGapSize = 6;
+    private int doorGapSize = 4;
+    private int outerWallThickness = 2;
 
-    // --- Vorlagen & Tiles ---
-    private Room templateRoomPrefab;
-    private TileBase groundTile;
-    private TileBase hazardTile;
+    // --- 2. Vorlage & Tileset / RuleTile ---
+    private Room referenceRoomPrefab;
+    private TileBase wallRuleTile;
+    private TileBase hazardRuleTile;
     private string groundLayerName = "Ground";
     private string hazardTagName = "Hazard";
 
-    // --- Zeichen-Status ---
+    // --- 3. Zeichen-Status ---
     private char[,] cells;
     private BrushType currentBrush = BrushType.Wall;
     private bool useRectTool = false;
     private Vector2Int? rectStartCell = null;
 
-    // --- UI Scroll & JSON ---
+    // --- 4. UI-Status ---
     private Vector2 canvasScroll;
     private Vector2 mainScroll;
     private bool showJsonSection = false;
@@ -58,16 +61,75 @@ public class RoomPainterWindow : EditorWindow
     [MenuItem("Tools/Slimily Room Painter")]
     public static void OpenWindow()
     {
-        RoomPainterWindow window = GetWindow<RoomPainterWindow>("Room Painter");
-        window.minSize = new Vector2(680, 560);
+        RoomPainterWindow window = GetWindow<RoomPainterWindow>("Slimily Room Painter");
+        window.minSize = new Vector2(720, 620);
         window.Show();
     }
 
     private void OnEnable()
     {
+        TryAutoDetectExistingRoomAndTiles();
+
         if (cells == null || cells.GetLength(0) != gridWidth || cells.GetLength(1) != gridHeight)
         {
-            InitializeGridWithFrame(gridWidth, gridHeight, doorGapSize);
+            InitializeGridWithFrame(gridWidth, gridHeight, doorGapSize, outerWallThickness);
+            SyncGridToJsonBuffer();
+        }
+    }
+
+    /// <summary>
+    /// Sucht beim Öffnen automatisch nach deinem bestehenden Room-Prefab (z. B. Room1),
+    /// um dessen echtes Tileset/RuleTile direkt voreinzustellen.
+    /// </summary>
+    private void TryAutoDetectExistingRoomAndTiles()
+    {
+        if (referenceRoomPrefab == null)
+        {
+            string[] guids = AssetDatabase.FindAssets("t:Prefab");
+            foreach (string guid in guids)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (prefab != null && prefab.GetComponent<Room>() != null)
+                {
+                    referenceRoomPrefab = prefab.GetComponent<Room>();
+                    if (prefab.name.Contains("Room1")) break;
+                }
+            }
+        }
+
+        if (referenceRoomPrefab != null && wallRuleTile == null)
+        {
+            ExtractTilesFromReferenceRoom(referenceRoomPrefab);
+        }
+    }
+
+    private void ExtractTilesFromReferenceRoom(Room refRoom)
+    {
+        if (refRoom == null) return;
+
+        Tilemap[] maps = refRoom.GetComponentsInChildren<Tilemap>(true);
+        foreach (Tilemap tm in maps)
+        {
+            bool isHazardMap = tm.name.ToLower().Contains("hazard");
+            BoundsInt bounds = tm.cellBounds;
+
+            foreach (Vector3Int pos in bounds.allPositionsWithin)
+            {
+                TileBase tile = tm.GetTile(pos);
+                if (tile != null)
+                {
+                    if (isHazardMap && hazardRuleTile == null)
+                    {
+                        hazardRuleTile = tile;
+                    }
+                    else if (!isHazardMap && wallRuleTile == null)
+                    {
+                        wallRuleTile = tile;
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -88,24 +150,39 @@ public class RoomPainterWindow : EditorWindow
         EditorGUILayout.EndScrollView();
     }
 
-    // =====================================================================
-    // 1. EINSTELLUNGEN (RAUMGRÖSSE, TÜREN, TILES)
-    // =====================================================================
+    // =========================================================================
+    // 1. EINSTELLUNGEN, MAßE & TILESET
+    // =========================================================================
 
     private void DrawTopSettingsBar()
     {
         EditorGUILayout.BeginVertical("box");
-        EditorGUILayout.LabelField("1. Raum-Maße & Tilemap-Setup (Jederzeit anpassbar)", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("1. Raum-Maße, Speicherort & Tileset / RuleTile", EditorStyles.boldLabel);
 
         EditorGUILayout.BeginHorizontal();
-        roomName = EditorGUILayout.TextField("Raum-Name", roomName);
-        biomeName = EditorGUILayout.TextField("Biom-Ordner", biomeName, GUILayout.MaxWidth(220));
+        roomName = EditorGUILayout.TextField("Prefab-Name", roomName);
+        biomeName = EditorGUILayout.TextField("Biom-Unterordner", biomeName, GUILayout.MaxWidth(220));
         EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.BeginHorizontal();
+        basePrefabFolder = EditorGUILayout.TextField("Basis-Ordner", basePrefabFolder);
+        if (GUILayout.Button("Ordner wählen...", GUILayout.Width(120)))
+        {
+            string selected = EditorUtility.OpenFolderPanel("Zielordner für Raum-Prefabs wählen", "Assets", "");
+            if (!string.IsNullOrEmpty(selected) && selected.Contains(Application.dataPath))
+            {
+                basePrefabFolder = "Assets" + selected.Substring(Application.dataPath.Length);
+            }
+        }
+        EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.Space(3);
 
         EditorGUILayout.BeginHorizontal();
         int newW = Mathf.Clamp(EditorGUILayout.IntField("Breite (Tiles)", gridWidth), 12, 120);
         int newH = Mathf.Clamp(EditorGUILayout.IntField("Höhe (Tiles)", gridHeight), 12, 120);
-        int newDoor = Mathf.Clamp(EditorGUILayout.IntField("Tür-Lücke (Tiles)", doorGapSize), 2, 16);
+        int newDoor = Mathf.Clamp(EditorGUILayout.IntField("Tür-Breite (Tiles)", doorGapSize), 2, 12);
+        int newWall = Mathf.Clamp(EditorGUILayout.IntField("Wand-Dicke (Tiles)", outerWallThickness), 1, 5);
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.BeginHorizontal();
@@ -114,45 +191,56 @@ public class RoomPainterWindow : EditorWindow
             gridWidth = newW;
             gridHeight = newH;
             doorGapSize = newDoor;
-            InitializeGridWithFrame(gridWidth, gridHeight, doorGapSize);
+            outerWallThickness = newWall;
+            InitializeGridWithFrame(gridWidth, gridHeight, doorGapSize, outerWallThickness);
             SyncGridToJsonBuffer();
         }
 
-        if (GUILayout.Button("Größe ändern (Zeichnung behalten)"))
+        if (GUILayout.Button("Größe/Türen anpassen (Innen-Zeichnung behalten)"))
         {
-            ResizeGridKeepContent(newW, newH, newDoor);
+            ResizeGridKeepContent(newW, newH, newDoor, newWall);
             SyncGridToJsonBuffer();
         }
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.Space(4);
-        EditorGUILayout.BeginHorizontal();
-        templateRoomPrefab = (Room)EditorGUILayout.ObjectField(
-            new GUIContent("Basis Room-Prefab (Optional)", "Wenn zugewiesen, werden Türen/Blocker aus diesem Prefab übernommen."),
-            templateRoomPrefab, typeof(Room), false);
 
-        groundLayerName = EditorGUILayout.TextField("Wand-Layer", groundLayerName, GUILayout.MaxWidth(200));
+        EditorGUILayout.BeginHorizontal();
+        EditorGUI.BeginChangeCheck();
+        referenceRoomPrefab = (Room)EditorGUILayout.ObjectField(
+            new GUIContent("Vorlage Room-Prefab (z.B. Room1)", "Übernimmt automatisch das verwendete RuleTile/Tile aus diesem Raum."),
+            referenceRoomPrefab, typeof(Room), false);
+        if (EditorGUI.EndChangeCheck() && referenceRoomPrefab != null)
+        {
+            ExtractTilesFromReferenceRoom(referenceRoomPrefab);
+        }
+
+        if (referenceRoomPrefab != null && GUILayout.Button("Tiles aus Vorlage holen", GUILayout.Width(150)))
+        {
+            wallRuleTile = null;
+            ExtractTilesFromReferenceRoom(referenceRoomPrefab);
+        }
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.BeginHorizontal();
-        groundTile = (TileBase)EditorGUILayout.ObjectField("Wand-Tile (Leer = Auto)", groundTile, typeof(TileBase), false);
-        hazardTile = (TileBase)EditorGUILayout.ObjectField("Hazard-Tile (Leer = Auto)", hazardTile, typeof(TileBase), false);
+        wallRuleTile = (TileBase)EditorGUILayout.ObjectField("Wand RuleTile / Tile", wallRuleTile, typeof(TileBase), false);
+        hazardRuleTile = (TileBase)EditorGUILayout.ObjectField("Hazard RuleTile / Tile", hazardRuleTile, typeof(TileBase), false);
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.EndVertical();
     }
 
-    // =====================================================================
-    // 2. WERKZEUGLEISTE (PINSEL & AKTIONEN)
-    // =====================================================================
+    // =========================================================================
+    // 2. PINSEL & WERKZEUGE
+    // =========================================================================
 
     private void DrawBrushToolbar()
     {
         EditorGUILayout.BeginVertical("box");
-        EditorGUILayout.LabelField("2. Pinsel (Linksklick = Malen | Rechtsklick = Radieren)", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("2. Pinsel (Linksklick ziehen = Malen | Rechtsklick ziehen = Radieren)", EditorStyles.boldLabel);
 
         EditorGUILayout.BeginHorizontal();
-        DrawBrushButton(BrushType.Wall, "⬛ Wand (#)", new Color(0.28f, 0.32f, 0.38f));
+        DrawBrushButton(BrushType.Wall, "⬛ Wand (#)", new Color(0.28f, 0.35f, 0.42f));
         DrawBrushButton(BrushType.Hazard, "🟥 Stacheln (^)", new Color(0.85f, 0.22f, 0.22f));
         DrawBrushButton(BrushType.NormalCube, "🟦 Würfel-Spawn (C)", new Color(0.15f, 0.75f, 0.90f));
         DrawBrushButton(BrushType.SecretCube, "🟨 Geheim-Spawn (X)", new Color(0.95f, 0.78f, 0.15f));
@@ -160,7 +248,7 @@ public class RoomPainterWindow : EditorWindow
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.BeginHorizontal();
-        useRectTool = GUILayout.Toggle(useRectTool, "📐 Rechteck-Füllen (Start- & Endpunkt klicken)", "Button", GUILayout.Height(22));
+        useRectTool = GUILayout.Toggle(useRectTool, "📐 Rechteck-Werkzeug (2 Ecken klicken)", "Button", GUILayout.Height(22));
 
         if (GUILayout.Button("↔ Horizontal spiegeln", GUILayout.Height(22)))
         {
@@ -168,7 +256,8 @@ public class RoomPainterWindow : EditorWindow
         }
         if (GUILayout.Button("↕ Außenrahmen + 4 Türen erneuern", GUILayout.Height(22)))
         {
-            ApplyOuterBorderAndDoors(doorGapSize);
+            ApplyOuterBorderAndDoors(doorGapSize, outerWallThickness);
+            Repaint();
         }
         cellPixelSize = EditorGUILayout.Slider("Zoom", cellPixelSize, 12f, 36f, GUILayout.MaxWidth(200));
         EditorGUILayout.EndHorizontal();
@@ -193,13 +282,12 @@ public class RoomPainterWindow : EditorWindow
             currentBrush = type;
             rectStartCell = null;
         }
-
         GUI.backgroundColor = prevBg;
     }
 
-    // =====================================================================
-    // 3. ZEICHENFLÄCHE (GRID-CANVAS)
-    // =====================================================================
+    // =========================================================================
+    // 3. ZEICHEN-RASTER (CANVAS)
+    // =========================================================================
 
     private void DrawPaintCanvas()
     {
@@ -231,13 +319,6 @@ public class RoomPainterWindow : EditorWindow
             }
         }
 
-        int halfW = gridWidth / 2;
-        int halfH = gridHeight / 2;
-        int doorMinX = halfW - doorGapSize / 2;
-        int doorMaxX = doorMinX + doorGapSize - 1;
-        int doorMinY = halfH - doorGapSize / 2;
-        int doorMaxY = doorMinY + doorGapSize - 1;
-
         for (int y = 0; y < gridHeight; y++)
         {
             int drawRow = (gridHeight - 1) - y;
@@ -251,11 +332,9 @@ public class RoomPainterWindow : EditorWindow
                 );
 
                 char c = cells[x, y];
-                bool isDoorGap = ((y == 0 || y == gridHeight - 1) && x >= doorMinX && x <= doorMaxX) ||
-                                 ((x == 0 || x == gridWidth - 1) && y >= doorMinY && y <= doorMaxY);
+                bool isDoorTunnel = IsCellInsideAnyDoorTunnel(x, y);
 
-                Color cellCol = GetColorForChar(c, isDoorGap);
-                EditorGUI.DrawRect(cellRect, cellCol);
+                EditorGUI.DrawRect(cellRect, GetColorForChar(c, isDoorTunnel));
 
                 if (c == 'C' || c == 'X' || c == '^')
                 {
@@ -269,21 +348,27 @@ public class RoomPainterWindow : EditorWindow
             }
         }
 
-        // Rechteck-Vorschau
         if (useRectTool && rectStartCell.HasValue)
         {
             int rx = rectStartCell.Value.x;
             int ry = (gridHeight - 1) - rectStartCell.Value.y;
-            Rect startMarker = new Rect(
-                gridOrigin.x + rx * cellPixelSize,
-                gridOrigin.y + ry * cellPixelSize,
-                cellPixelSize,
-                cellPixelSize
-            );
+            Rect startMarker = new Rect(gridOrigin.x + rx * cellPixelSize, gridOrigin.y + ry * cellPixelSize, cellPixelSize, cellPixelSize);
             EditorGUI.DrawRect(startMarker, new Color(1f, 1f, 1f, 0.45f));
         }
 
         EditorGUILayout.EndScrollView();
+    }
+
+    private bool IsCellInsideAnyDoorTunnel(int x, int y)
+    {
+        int doorMinX = (gridWidth / 2) - (doorGapSize / 2);
+        int doorMaxX = doorMinX + doorGapSize - 1;
+        int doorMinY = (gridHeight / 2) - (doorGapSize / 2);
+        int doorMaxY = doorMinY + doorGapSize - 1;
+
+        bool inNorthOrSouth = (y < outerWallThickness || y >= gridHeight - outerWallThickness) && (x >= doorMinX && x <= doorMaxX);
+        bool inWestOrEast = (x < outerWallThickness || x >= gridWidth - outerWallThickness) && (y >= doorMinY && y <= doorMaxY);
+        return inNorthOrSouth || inWestOrEast;
     }
 
     private void HandleCanvasMouseInput(Event e, Vector2Int cellPos)
@@ -322,38 +407,39 @@ public class RoomPainterWindow : EditorWindow
     {
         return c switch
         {
-            '#' => new Color(0.32f, 0.38f, 0.45f),
+            '#' => new Color(0.32f, 0.44f, 0.36f),
             '^' => new Color(0.92f, 0.22f, 0.22f),
             'C' => new Color(0.20f, 0.85f, 0.98f),
             'X' => new Color(1.00f, 0.82f, 0.18f),
-            _ => isDoorSlot ? new Color(0.14f, 0.24f, 0.16f) : new Color(0.13f, 0.14f, 0.18f)
+            _ => isDoorSlot ? new Color(0.16f, 0.28f, 0.18f) : new Color(0.13f, 0.14f, 0.18f)
         };
     }
 
-    // =====================================================================
-    // 4. GENERIEREN, AKTUALISIEREN & BESTEHENDE RÄUME EINLESEN
-    // =====================================================================
+    // =========================================================================
+    // 4. PREFAB GENERIEREN (EXAKTE ROOM1-STRUKTUR & SICHERES SPEICHERN)
+    // =========================================================================
 
     private void DrawBuildAndLoadSection()
     {
         EditorGUILayout.BeginVertical("box");
-        EditorGUILayout.LabelField("3. Raum erstellen oder bestehenden Raum nachträglich anpassen", EditorStyles.boldLabel);
+        string previewPath = $"{basePrefabFolder}/{biomeName}/{roomName}.prefab";
+        EditorGUILayout.LabelField($"3. Ziel-Pfad: {previewPath}", EditorStyles.boldLabel);
 
         EditorGUILayout.BeginHorizontal();
 
         GUI.backgroundColor = new Color(0.25f, 0.85f, 0.45f);
-        if (GUILayout.Button("✨ Neuen Raum in Szene + als Prefab bauen", GUILayout.Height(32)))
+        if (GUILayout.Button("✨ Raum-Prefab im Ordner erstellen (Saubere Room1-Struktur)", GUILayout.Height(36)))
         {
-            BuildOrUpdateRoom(targetExistingRoom: null, saveAsPrefab: true);
+            CreateAndSaveRoomPrefab();
         }
 
         GUI.backgroundColor = new Color(0.35f, 0.70f, 0.95f);
-        if (GUILayout.Button("🔄 Auf ausgewählten Raum in Szene anwenden", GUILayout.Height(32)))
+        if (GUILayout.Button("🔄 Ausgewählten Raum aktualisieren", GUILayout.Height(36)))
         {
             Room selected = Selection.activeGameObject != null ? Selection.activeGameObject.GetComponentInParent<Room>() : null;
             if (selected != null)
             {
-                BuildOrUpdateRoom(targetExistingRoom: selected, saveAsPrefab: false);
+                UpdateExistingRoomObject(selected);
             }
             else
             {
@@ -362,16 +448,21 @@ public class RoomPainterWindow : EditorWindow
         }
 
         GUI.backgroundColor = new Color(0.95f, 0.75f, 0.25f);
-        if (GUILayout.Button("📥 Ausgewählten Raum in Painter einlesen", GUILayout.Height(32)))
+        if (GUILayout.Button("📥 Ausgewählten Raum in Painter einlesen", GUILayout.Height(36)))
         {
             Room selected = Selection.activeGameObject != null ? Selection.activeGameObject.GetComponentInParent<Room>() : null;
+            if (selected == null && Selection.activeObject is GameObject go)
+            {
+                selected = go.GetComponent<Room>();
+            }
+
             if (selected != null)
             {
                 LoadFromExistingRoom(selected);
             }
             else
             {
-                EditorUtility.DisplayDialog("Kein Room ausgewählt", "Bitte wähle zuerst ein Room-Objekt in der Hierarchy oder im Projekt aus.", "OK");
+                EditorUtility.DisplayDialog("Kein Room ausgewählt", "Bitte wähle ein Room-Prefab im Projekt oder ein Room-Objekt in der Szene aus.", "OK");
             }
         }
 
@@ -380,48 +471,103 @@ public class RoomPainterWindow : EditorWindow
         EditorGUILayout.EndVertical();
     }
 
-    private void BuildOrUpdateRoom(Room targetExistingRoom, bool saveAsPrefab)
+    private void CreateAndSaveRoomPrefab()
     {
-        TileBase wallTileToUse = groundTile != null ? groundTile : GetOrCreateFallbackTile("Fallback_WallTile", new Color(0.35f, 0.42f, 0.48f));
-        TileBase spikeTileToUse = hazardTile != null ? hazardTile : GetOrCreateFallbackTile("Fallback_HazardTile", new Color(0.95f, 0.2f, 0.2f));
+        EnsureTagExists(hazardTagName);
 
-        Room roomInstance = targetExistingRoom;
+        string targetFolder = $"{basePrefabFolder.TrimEnd('/')}/{biomeName.Trim()}";
+        EnsureAssetFolderExists(targetFolder);
 
-        if (roomInstance == null)
+        GameObject tempRoot = new GameObject(roomName);
+        try
         {
-            if (templateRoomPrefab != null)
+            Room roomComp = tempRoot.AddComponent<Room>();
+            PopulateRoomHierarchy(roomComp);
+
+            string rawPrefabPath = $"{targetFolder}/{roomName}.prefab";
+            string uniquePrefabPath = AssetDatabase.GenerateUniqueAssetPath(rawPrefabPath);
+
+            bool saveSuccess;
+            GameObject savedAsset = PrefabUtility.SaveAsPrefabAsset(tempRoot, uniquePrefabPath, out saveSuccess);
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
+            if (saveSuccess && savedAsset != null)
             {
-                GameObject cloned = (GameObject)PrefabUtility.InstantiatePrefab(templateRoomPrefab.gameObject);
-                PrefabUtility.UnpackPrefabInstance(cloned, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
-                roomInstance = cloned.GetComponent<Room>();
-                roomInstance.name = roomName;
+                Selection.activeObject = savedAsset;
+                EditorGUIUtility.PingObject(savedAsset);
+                Debug.Log($"[RoomPainter] ✅ Raum-Prefab erfolgreich erstellt unter: {uniquePrefabPath}");
             }
             else
             {
-                GameObject newRoomObj = new GameObject(roomName);
-                roomInstance = newRoomObj.AddComponent<Room>();
+                Debug.LogError($"[RoomPainter] ❌ Konnte Prefab nicht unter '{uniquePrefabPath}' speichern!");
             }
         }
-
-        Undo.RegisterFullObjectHierarchyUndo(roomInstance.gameObject, "Build Room From Painter");
-
-        // 1. Grid sicherstellen
-        Grid grid = roomInstance.GetComponentInChildren<Grid>();
-        if (grid == null)
+        catch (Exception ex)
         {
-            GameObject gridObj = new GameObject("Grid");
-            gridObj.transform.SetParent(roomInstance.transform, false);
-            grid = gridObj.AddComponent<Grid>();
+            Debug.LogError($"[RoomPainter] ❌ Fehler beim Bauen des Raums: {ex.Message}\n{ex.StackTrace}");
+        }
+        finally
+        {
+            // Garantiert: Das temporäre Objekt wird IMMER aus der MainGame-Szene entfernt!
+            if (tempRoot != null)
+            {
+                DestroyImmediate(tempRoot);
+            }
+        }
+    }
+
+    private void UpdateExistingRoomObject(Room targetRoom)
+    {
+        EnsureTagExists(hazardTagName);
+        Undo.RegisterFullObjectHierarchyUndo(targetRoom.gameObject, "Update Room From Painter");
+
+        PopulateRoomHierarchy(targetRoom);
+        EditorUtility.SetDirty(targetRoom.gameObject);
+
+        if (PrefabUtility.IsPartOfPrefabInstance(targetRoom.gameObject))
+        {
+            PrefabUtility.RecordPrefabInstancePropertyModifications(targetRoom);
         }
 
-        // 2. Ground-Tilemap + Hazard-Tilemap getrennt aufbauen (jederzeit im Nachhinein änderbar!)
-        Tilemap groundMap = GetOrCreateChildTilemap(grid.transform, "Ground", groundLayerName, null, isTrigger: false);
-        Tilemap hazardMap = GetOrCreateChildTilemap(grid.transform, "Hazards", "Default", hazardTagName, isTrigger: true);
+        Debug.Log($"[RoomPainter] ✅ Bestehender Raum '{targetRoom.name}' wurde aktualisiert.");
+    }
+
+    /// <summary>
+    /// Baut die exakte Hierarchie wie in Room1 auf:
+    /// Room -> Grid (Doors/Door_..., Tilemap, Hazards), Exits (Exit_...), Spawns (Spawn_...), LevelBounds
+    /// </summary>
+private void PopulateRoomHierarchy(Room roomInstance)
+    {
+        if (wallRuleTile == null && referenceRoomPrefab != null)
+        {
+            ExtractTilesFromReferenceRoom(referenceRoomPrefab);
+        }
+
+        TileBase wallTileToUse = wallRuleTile != null
+            ? wallRuleTile
+            : GetOrCreateFallbackTile("Fallback_WallTile", new Color(0.35f, 0.48f, 0.38f));
+
+        TileBase spikeTileToUse = hazardRuleTile != null
+            ? hazardRuleTile
+            : GetOrCreateFallbackTile("Fallback_HazardTile", new Color(0.95f, 0.22f, 0.22f));
+
+        int groundLayer = LayerMask.NameToLayer(groundLayerName);
+        if (groundLayer < 0) groundLayer = 0;
+
+        // 1. GRID + DOORS + TILEMAP + HAZARDS
+        Transform gridTrans = GetOrCreateChild(roomInstance.transform, "Grid");
+        if (gridTrans.GetComponent<Grid>() == null) gridTrans.gameObject.AddComponent<Grid>();
+
+        Transform doorsFolder = GetOrCreateChild(gridTrans, "Doors");
+
+        Tilemap groundMap = GetOrCreateTilemapObject(gridTrans, "Tilemap", groundLayer, null, isTrigger: false, sortingOrder: 0);
+        Tilemap hazardMap = GetOrCreateTilemapObject(gridTrans, "Hazards", 0, hazardTagName, isTrigger: true, sortingOrder: 2);
 
         groundMap.ClearAllTiles();
         hazardMap.ClearAllTiles();
 
-        // Zentrierter Offset, damit (0,0) genau in der Raummitte liegt
         int offsetX = -gridWidth / 2;
         int offsetY = -gridHeight / 2;
 
@@ -433,7 +579,7 @@ public class RoomPainterWindow : EditorWindow
             for (int y = 0; y < gridHeight; y++)
             {
                 Vector3Int tilePos = new Vector3Int(x + offsetX, y + offsetY, 0);
-                Vector3 worldCenter = roomInstance.transform.TransformPoint(new Vector3(tilePos.x + 0.5f, tilePos.y + 0.5f, 0f));
+                Vector3 localCellCenter = new Vector3(tilePos.x + 0.5f, tilePos.y + 0.5f, 0f);
 
                 char c = cells[x, y];
                 if (c == '#')
@@ -446,11 +592,11 @@ public class RoomPainterWindow : EditorWindow
                 }
                 else if (c == 'C')
                 {
-                    normalSpawnPositions.Add(worldCenter);
+                    normalSpawnPositions.Add(localCellCenter);
                 }
                 else if (c == 'X')
                 {
-                    secretSpawnPositions.Add(worldCenter);
+                    secretSpawnPositions.Add(localCellCenter);
                 }
             }
         }
@@ -458,19 +604,79 @@ public class RoomPainterWindow : EditorWindow
         groundMap.RefreshAllTiles();
         hazardMap.RefreshAllTiles();
 
-        // 3. Würfel-Spawnpunkte anlegen & im Room-Skript verknüpfen
-        Transform spawnContainer = roomInstance.transform.Find("CubeSpawnPoints");
-        if (spawnContainer != null) DestroyImmediate(spawnContainer.gameObject);
+        // 2. EXITS & SPAWNS & DOORS
+        Transform exitsFolder = GetOrCreateChild(roomInstance.transform, "Exits");
+        Transform spawnsFolder = GetOrCreateChild(roomInstance.transform, "Spawns");
 
-        spawnContainer = new GameObject("CubeSpawnPoints").transform;
-        spawnContainer.SetParent(roomInstance.transform, false);
+        Direction[] dirs = { Direction.North, Direction.South, Direction.West, Direction.East };
+        List<Room.DoorSetup> doorSetups = new List<Room.DoorSetup>();
+
+        float halfW = gridWidth * 0.5f;
+        float halfH = gridHeight * 0.5f;
+        float wallThick = Mathf.Max(1, outerWallThickness);
+        float doorSpan = Mathf.Max(2, doorGapSize);
+
+        foreach (Direction dir in dirs)
+        {
+            GameObject doorBlockerObj = BuildDoorBlockerObject(doorsFolder, dir, wallTileToUse, groundLayer, offsetX, offsetY);
+
+            Transform exitTrans = GetOrCreateChild(exitsFolder, $"Exit_{dir}");
+            BoxCollider2D exitBox = exitTrans.GetComponent<BoxCollider2D>();
+            if (exitBox == null) exitBox = exitTrans.gameObject.AddComponent<BoxCollider2D>();
+            exitBox.isTrigger = true;
+            exitBox.offset = Vector2.zero;
+
+            RoomExitTrigger exitTrigger = exitTrans.GetComponent<RoomExitTrigger>();
+            if (exitTrigger == null) exitTrigger = exitTrans.gameObject.AddComponent<RoomExitTrigger>();
+            SerializeExitTriggerFields(exitTrigger, dir, roomInstance);
+
+            Transform spawnTrans = GetOrCreateChild(spawnsFolder, $"Spawn_{dir}");
+
+            switch (dir)
+            {
+                case Direction.North:
+                    exitTrans.localPosition = new Vector3(0f, halfH - 0.35f, 0f);
+                    exitBox.size = new Vector2(doorSpan, 0.7f);
+                    spawnTrans.localPosition = new Vector3(0f, halfH - wallThick + 0.5f, 0f);
+                    break;
+
+                case Direction.South:
+                    exitTrans.localPosition = new Vector3(0f, -halfH + 0.35f, 0f);
+                    exitBox.size = new Vector2(doorSpan, 0.7f);
+                    spawnTrans.localPosition = new Vector3(0f, -halfH + wallThick - 0.5f, 0f);
+                    break;
+
+                case Direction.West:
+                    exitTrans.localPosition = new Vector3(-halfW + 0.35f, 0f, 0f);
+                    exitBox.size = new Vector2(0.7f, doorSpan);
+                    spawnTrans.localPosition = new Vector3(-halfW + wallThick - 0.5f, 0f, 0f);
+                    break;
+
+                case Direction.East:
+                    exitTrans.localPosition = new Vector3(halfW - 0.35f, 0f, 0f);
+                    exitBox.size = new Vector2(0.7f, doorSpan);
+                    spawnTrans.localPosition = new Vector3(halfW - wallThick + 0.5f, 0f, 0f);
+                    break;
+            }
+
+            doorSetups.Add(new Room.DoorSetup
+            {
+                direction = dir,
+                wallBlocker = doorBlockerObj,
+                spawnPoint = spawnTrans,
+                warningRenderer = null
+            });
+        }
+
+        // 3. WÜRFEL-SPAWNPUNKTE
+        ClearOldGeneratedCubeSpawns(spawnsFolder);
 
         List<Transform> normalTransforms = new List<Transform>();
         for (int i = 0; i < normalSpawnPositions.Count; i++)
         {
             GameObject sp = new GameObject($"Spawn_Normal_{i + 1}");
-            sp.transform.SetParent(spawnContainer, false);
-            sp.transform.position = normalSpawnPositions[i];
+            sp.transform.SetParent(spawnsFolder, false);
+            sp.transform.localPosition = normalSpawnPositions[i];
             normalTransforms.Add(sp.transform);
         }
 
@@ -478,108 +684,200 @@ public class RoomPainterWindow : EditorWindow
         for (int i = 0; i < secretSpawnPositions.Count; i++)
         {
             GameObject sp = new GameObject($"Spawn_Secret_{i + 1}");
-            sp.transform.SetParent(spawnContainer, false);
-            sp.transform.position = secretSpawnPositions[i];
+            sp.transform.SetParent(spawnsFolder, false);
+            sp.transform.localPosition = secretSpawnPositions[i];
             secretTransforms.Add(sp.transform);
         }
 
-        // 4. CameraBounds automatisch auf Raumgröße anpassen
-        BoxCollider2D camBounds = roomInstance.GetComponent<BoxCollider2D>();
-        if (camBounds == null)
+        // 4. LEVELBOUNDS
+        Transform levelBoundsTrans = GetOrCreateChild(roomInstance.transform, "LevelBounds");
+        levelBoundsTrans.localPosition = Vector3.zero;
+        BoxCollider2D levelBoundsCol = levelBoundsTrans.GetComponent<BoxCollider2D>();
+        if (levelBoundsCol == null) levelBoundsCol = levelBoundsTrans.gameObject.AddComponent<BoxCollider2D>();
+        levelBoundsCol.isTrigger = true;
+        levelBoundsCol.offset = Vector2.zero;
+        levelBoundsCol.size = new Vector2(gridWidth, gridHeight);
+
+        // 5. SERIALISIEREN
+        SerializedObject roomSO = new SerializedObject(roomInstance);
+        roomSO.Update();
+
+        SerializedProperty camBoundsProp = roomSO.FindProperty("cameraBounds");
+        if (camBoundsProp != null) camBoundsProp.objectReferenceValue = levelBoundsCol;
+
+        SerializedProperty doorsProp = roomSO.FindProperty("doors");
+        if (doorsProp != null)
         {
-            camBounds = roomInstance.gameObject.AddComponent<BoxCollider2D>();
-        }
-        camBounds.isTrigger = true;
-        camBounds.offset = Vector2.zero;
-        camBounds.size = new Vector2(gridWidth, gridHeight);
-
-        // 5. Über SerializedObject die privaten Listen in Room.cs sauber befüllen
-        SerializedObject so = new SerializedObject(roomInstance);
-        so.Update();
-
-        SerializedProperty camProp = so.FindProperty("cameraBounds");
-        if (camProp != null) camProp.objectReferenceValue = camBounds;
-
-        FillTransformArrayProperty(so.FindProperty("normalCubeSpawnPoints"), normalTransforms);
-        FillTransformArrayProperty(so.FindProperty("secretCubeSpawnPoints"), secretTransforms);
-
-        // Falls der Raum komplett neu (ohne Template) erstellt wurde, Standard-Türen anlegen
-        SerializedProperty doorsProp = so.FindProperty("doors");
-        if (doorsProp != null && doorsProp.arraySize == 0)
-        {
-            SetupDefaultDoorsOnNewRoom(roomInstance, doorsProp, wallTileToUse);
-        }
-
-        so.ApplyModifiedProperties();
-        EditorUtility.SetDirty(roomInstance);
-
-        if (saveAsPrefab)
-        {
-            string folderPath = $"Assets/Prefabs/Rooms/{biomeName}";
-            if (!Directory.Exists(folderPath))
+            doorsProp.ClearArray();
+            for (int i = 0; i < doorSetups.Count; i++)
             {
-                Directory.CreateDirectory(folderPath);
+                doorsProp.InsertArrayElementAtIndex(i);
+                SerializedProperty dElem = doorsProp.GetArrayElementAtIndex(i);
+                dElem.FindPropertyRelative("direction").enumValueIndex = (int)doorSetups[i].direction;
+                dElem.FindPropertyRelative("wallBlocker").objectReferenceValue = doorSetups[i].wallBlocker;
+                dElem.FindPropertyRelative("spawnPoint").objectReferenceValue = doorSetups[i].spawnPoint;
             }
-
-            string prefabPath = AssetDatabase.GenerateUniqueAssetPath($"{folderPath}/{roomName}.prefab");
-            PrefabUtility.SaveAsPrefabAssetAndConnect(roomInstance.gameObject, prefabPath, InteractionMode.UserAction);
-            AssetDatabase.SaveAssets();
-            Debug.Log($"[RoomPainter] Raum '{roomName}' erfolgreich gebaut und gespeichert unter: {prefabPath}");
-        }
-        else
-        {
-            Debug.Log($"[RoomPainter] Bestehender Raum '{roomInstance.name}' wurde aktualisiert!");
         }
 
-        Selection.activeGameObject = roomInstance.gameObject;
+        FillTransformArrayProperty(roomSO.FindProperty("normalCubeSpawnPoints"), normalTransforms);
+        FillTransformArrayProperty(roomSO.FindProperty("secretCubeSpawnPoints"), secretTransforms);
+
+        roomSO.ApplyModifiedPropertiesWithoutUndo();
     }
 
     /// <summary>
-    /// Liest einen bereits gebauten Raum (Tilemaps + Spawnpunkte) wieder zurück in das Mal-Fenster!
+    /// Baut Door_North/South/West/East unter Grid/Doors so auf, dass die Tür im geschlossenen Zustand
+    /// die echte Wand-Tilemap + einen BoxCollider2D (z.B. 4x2) auf Layer 'Ground' besitzt!
     /// </summary>
+private GameObject BuildDoorBlockerObject(
+        Transform doorsFolder,
+        Direction dir,
+        TileBase wallTile,
+        int groundLayer,
+        int offsetX,
+        int offsetY)
+    {
+        Transform doorTrans = GetOrCreateChild(doorsFolder, $"Door_{dir}");
+        GameObject doorObj = doorTrans.gameObject;
+        doorObj.layer = groundLayer;
+        doorTrans.localPosition = Vector3.zero;
+
+        Tilemap doorMap = doorObj.GetComponent<Tilemap>();
+        if (doorMap == null) doorMap = doorObj.AddComponent<Tilemap>();
+
+        TilemapRenderer doorRenderer = doorObj.GetComponent<TilemapRenderer>();
+        if (doorRenderer == null) doorRenderer = doorObj.AddComponent<TilemapRenderer>();
+        doorRenderer.sortingOrder = 1;
+
+        BoxCollider2D doorCollider = doorObj.GetComponent<BoxCollider2D>();
+        if (doorCollider == null) doorCollider = doorObj.AddComponent<BoxCollider2D>();
+        doorCollider.isTrigger = false;
+
+        doorMap.ClearAllTiles();
+
+        int doorMinX = (gridWidth / 2) - (doorGapSize / 2);
+        int doorMaxX = doorMinX + doorGapSize - 1;
+        int doorMinY = (gridHeight / 2) - (doorGapSize / 2);
+        int doorMaxY = doorMinY + doorGapSize - 1;
+
+        float halfW = gridWidth * 0.5f;
+        float halfH = gridHeight * 0.5f;
+        float thick = Mathf.Max(1, outerWallThickness);
+
+        if (dir == Direction.North)
+        {
+            for (int x = doorMinX; x <= doorMaxX; x++)
+                for (int y = gridHeight - outerWallThickness; y < gridHeight; y++)
+                    doorMap.SetTile(new Vector3Int(x + offsetX, y + offsetY, 0), wallTile);
+
+            doorCollider.offset = new Vector2(0f, halfH - thick * 0.5f);
+            doorCollider.size = new Vector2(doorGapSize, thick);
+        }
+        else if (dir == Direction.South)
+        {
+            for (int x = doorMinX; x <= doorMaxX; x++)
+                for (int y = 0; y < outerWallThickness; y++)
+                    doorMap.SetTile(new Vector3Int(x + offsetX, y + offsetY, 0), wallTile);
+
+            doorCollider.offset = new Vector2(0f, -halfH + thick * 0.5f);
+            doorCollider.size = new Vector2(doorGapSize, thick);
+        }
+        else if (dir == Direction.West)
+        {
+            for (int x = 0; x < outerWallThickness; x++)
+                for (int y = doorMinY; y <= doorMaxY; y++)
+                    doorMap.SetTile(new Vector3Int(x + offsetX, y + offsetY, 0), wallTile);
+
+            doorCollider.offset = new Vector2(-halfW + thick * 0.5f, 0f);
+            doorCollider.size = new Vector2(thick, doorGapSize);
+        }
+        else if (dir == Direction.East)
+        {
+            for (int x = gridWidth - outerWallThickness; x < gridWidth; x++)
+                for (int y = doorMinY; y <= doorMaxY; y++)
+                    doorMap.SetTile(new Vector3Int(x + offsetX, y + offsetY, 0), wallTile);
+
+            doorCollider.offset = new Vector2(halfW - thick * 0.5f, 0f);
+            doorCollider.size = new Vector2(thick, doorGapSize);
+        }
+
+        doorMap.RefreshAllTiles();
+        return doorObj;
+    }
+
+    private void SerializeExitTriggerFields(RoomExitTrigger trigger, Direction dir, Room parentRoom)
+    {
+        SerializedObject triggerSO = new SerializedObject(trigger);
+        triggerSO.Update();
+
+        SerializedProperty dirProp = triggerSO.FindProperty("exitDirection");
+        if (dirProp != null) dirProp.enumValueIndex = (int)dir;
+
+        SerializedProperty roomProp = triggerSO.FindProperty("parentRoom");
+        if (roomProp != null) roomProp.objectReferenceValue = parentRoom;
+
+        triggerSO.ApplyModifiedPropertiesWithoutUndo();
+    }
+
+    private void ClearOldGeneratedCubeSpawns(Transform spawnsFolder)
+    {
+        for (int i = spawnsFolder.childCount - 1; i >= 0; i--)
+        {
+            Transform child = spawnsFolder.GetChild(i);
+            if (child.name.StartsWith("Spawn_Normal_") || child.name.StartsWith("Spawn_Secret_"))
+            {
+                DestroyImmediate(child.gameObject);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 5. BESTEHENDEN RAUM EINLESEN
+    // =========================================================================
+
     private void LoadFromExistingRoom(Room room)
     {
-        Tilemap[] maps = room.GetComponentsInChildren<Tilemap>();
-        if (maps.Length == 0)
-        {
-            EditorUtility.DisplayDialog("Keine Tilemap gefunden", "Dieser Raum enthält noch keine Tilemap.", "OK");
-            return;
-        }
+        ExtractTilesFromReferenceRoom(room);
 
         Tilemap groundMap = null;
         Tilemap hazardMap = null;
 
+        Tilemap[] maps = room.GetComponentsInChildren<Tilemap>(true);
         foreach (Tilemap tm in maps)
         {
-            if (tm.CompareTag(hazardTagName) || tm.name.ToLower().Contains("hazard"))
-                hazardMap = tm;
-            else if (groundMap == null)
-                groundMap = tm;
+            if (tm.transform.parent != null && tm.transform.parent.name == "Doors") continue;
+
+            if (tm.name.ToLower().Contains("hazard")) hazardMap = tm;
+            else if (groundMap == null) groundMap = tm;
         }
 
-        BoxCollider2D boundsCol = room.GetComponent<BoxCollider2D>();
-        if (boundsCol != null && boundsCol.size.x >= 12 && boundsCol.size.y >= 12)
+        if (groundMap == null)
         {
-            gridWidth = Mathf.RoundToInt(boundsCol.size.x);
-            gridHeight = Mathf.RoundToInt(boundsCol.size.y);
+            EditorUtility.DisplayDialog("Keine Tilemap gefunden", "In diesem Raum wurde keine Haupt-Tilemap gefunden.", "OK");
+            return;
+        }
+
+        groundMap.CompressBounds();
+        BoundsInt b = groundMap.cellBounds;
+        if (b.size.x >= 10 && b.size.y >= 10)
+        {
+            gridWidth = b.size.x;
+            gridHeight = b.size.y;
         }
 
         roomName = room.name;
         cells = new char[gridWidth, gridHeight];
-        int offsetX = -gridWidth / 2;
-        int offsetY = -gridHeight / 2;
+        int offsetX = b.xMin;
+        int offsetY = b.yMin;
 
         for (int x = 0; x < gridWidth; x++)
         {
             for (int y = 0; y < gridHeight; y++)
             {
                 Vector3Int tilePos = new Vector3Int(x + offsetX, y + offsetY, 0);
-                if (hazardMap != null && hazardMap.HasTile(tilePos))
-                    cells[x, y] = '^';
-                else if (groundMap != null && groundMap.HasTile(tilePos))
-                    cells[x, y] = '#';
-                else
-                    cells[x, y] = '.';
+                if (hazardMap != null && hazardMap.HasTile(tilePos)) cells[x, y] = '^';
+                else if (groundMap.HasTile(tilePos)) cells[x, y] = '#';
+                else cells[x, y] = '.';
             }
         }
 
@@ -589,12 +887,12 @@ public class RoomPainterWindow : EditorWindow
 
         SyncGridToJsonBuffer();
         Repaint();
-        Debug.Log($"[RoomPainter] Raum '{room.name}' ({gridWidth}x{gridHeight}) zum Bearbeiten geladen.");
+        Debug.Log($"[RoomPainter] Raum '{room.name}' ({gridWidth}x{gridHeight}) inkl. Tileset erfolgreich geladen!");
     }
 
-    // =====================================================================
-    // 5. JSON / KI-AUSTAUSCH & PRESET
-    // =====================================================================
+    // =========================================================================
+    // 6. JSON / KI-IMPORT & EXPORT
+    // =========================================================================
 
     private void DrawJsonSection()
     {
@@ -604,28 +902,14 @@ public class RoomPainterWindow : EditorWindow
         if (showJsonSection)
         {
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Aktualisiere JSON aus Zeichnung"))
-            {
-                SyncGridToJsonBuffer();
-            }
-            if (GUILayout.Button("JSON in Zwischenablage kopieren"))
-            {
-                SyncGridToJsonBuffer();
-                EditorGUIUtility.systemCopyBuffer = jsonBuffer;
-            }
-            if (GUILayout.Button("JSON aus Textfeld auf Raster anwenden"))
-            {
-                LoadGridFromJsonBuffer(jsonBuffer);
-            }
-            if (GUILayout.Button("🌲 Beispiel-Raum laden"))
-            {
-                LoadSampleCeilingVaultRoom();
-            }
+            if (GUILayout.Button("JSON aus Raster aktualisieren")) SyncGridToJsonBuffer();
+            if (GUILayout.Button("JSON kopieren")) { SyncGridToJsonBuffer(); EditorGUIUtility.systemCopyBuffer = jsonBuffer; }
+            if (GUILayout.Button("JSON auf Raster anwenden")) LoadGridFromJsonBuffer(jsonBuffer);
+            if (GUILayout.Button("🌲 Beispiel-Raum laden")) LoadSampleCeilingVaultRoom();
             EditorGUILayout.EndHorizontal();
 
             jsonBuffer = EditorGUILayout.TextArea(jsonBuffer, GUILayout.Height(140));
         }
-
         EditorGUILayout.EndVertical();
     }
 
@@ -637,26 +921,22 @@ public class RoomPainterWindow : EditorWindow
             biome = this.biomeName,
             width = this.gridWidth,
             height = this.gridHeight,
-            doorGap = this.doorGapSize
+            doorGap = this.doorGapSize,
+            wallThickness = this.outerWallThickness
         };
 
         for (int y = gridHeight - 1; y >= 0; y--)
         {
             char[] row = new char[gridWidth];
-            for (int x = 0; x < gridWidth; x++)
-            {
-                row[x] = cells[x, y];
-            }
+            for (int x = 0; x < gridWidth; x++) row[x] = cells[x, y];
             data.layout.Add(new string(row));
         }
-
         jsonBuffer = JsonUtility.ToJson(data, true);
     }
 
     private void LoadGridFromJsonBuffer(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return;
-
         try
         {
             RoomJsonData data = JsonUtility.FromJson<RoomJsonData>(json);
@@ -667,130 +947,127 @@ public class RoomPainterWindow : EditorWindow
             gridHeight = data.layout.Count;
             gridWidth = data.layout[0].Length;
             if (data.doorGap > 0) doorGapSize = data.doorGap;
+            if (data.wallThickness > 0) outerWallThickness = data.wallThickness;
 
             cells = new char[gridWidth, gridHeight];
-
             for (int rowIdx = 0; rowIdx < gridHeight; rowIdx++)
             {
                 int y = (gridHeight - 1) - rowIdx;
                 string line = data.layout[rowIdx];
-                for (int x = 0; x < gridWidth; x++)
-                {
-                    cells[x, y] = (x < line.Length) ? line[x] : '.';
-                }
+                for (int x = 0; x < gridWidth; x++) cells[x, y] = (x < line.Length) ? line[x] : '.';
             }
-
             Repaint();
         }
-        catch (Exception ex)
-        {
-            Debug.LogError($"[RoomPainter] Fehler beim Lesen des JSON: {ex.Message}");
-        }
+        catch (Exception ex) { Debug.LogError($"[RoomPainter] JSON-Fehler: {ex.Message}"); }
     }
 
-    // =====================================================================
-    // HILFSMETHODEN FÜR RASTER & TILEMAPS
-    // =====================================================================
+    // =========================================================================
+    // HILFSMETHODEN (ORDNER, TAGS, RASTER)
+    // =========================================================================
 
-    private void InitializeGridWithFrame(int w, int h, int doorGap)
+    private void InitializeGridWithFrame(int w, int h, int doorGap, int wallThick)
     {
         cells = new char[w, h];
         for (int x = 0; x < w; x++)
-        {
             for (int y = 0; y < h; y++)
-            {
                 cells[x, y] = '.';
-            }
-        }
-        ApplyOuterBorderAndDoors(doorGap);
+
+        ApplyOuterBorderAndDoors(doorGap, wallThick);
     }
 
-    private void ApplyOuterBorderAndDoors(int doorGap)
+    private void ApplyOuterBorderAndDoors(int doorGap, int wallThick)
     {
-        int halfW = gridWidth / 2;
-        int halfH = gridHeight / 2;
-        int doorMinX = halfW - doorGap / 2;
+        int doorMinX = (gridWidth / 2) - (doorGap / 2);
         int doorMaxX = doorMinX + doorGap - 1;
-        int doorMinY = halfH - doorGap / 2;
+        int doorMinY = (gridHeight / 2) - (doorGap / 2);
         int doorMaxY = doorMinY + doorGap - 1;
 
         for (int x = 0; x < gridWidth; x++)
         {
             bool isDoorX = (x >= doorMinX && x <= doorMaxX);
-            cells[x, 0] = isDoorX ? '.' : '#';
-            cells[x, gridHeight - 1] = isDoorX ? '.' : '#';
+            for (int t = 0; t < wallThick; t++)
+            {
+                if (t < gridHeight) cells[x, t] = isDoorX ? '.' : '#';
+                if (gridHeight - 1 - t >= 0) cells[x, gridHeight - 1 - t] = isDoorX ? '.' : '#';
+            }
         }
 
         for (int y = 0; y < gridHeight; y++)
         {
             bool isDoorY = (y >= doorMinY && y <= doorMaxY);
-            cells[0, y] = isDoorY ? '.' : '#';
-            cells[gridWidth - 1, y] = isDoorY ? '.' : '#';
+            for (int t = 0; t < wallThick; t++)
+            {
+                if (t < gridWidth) cells[t, y] = isDoorY ? '.' : '#';
+                if (gridWidth - 1 - t >= 0) cells[gridWidth - 1 - t, y] = isDoorY ? '.' : '#';
+            }
         }
     }
 
-    private void ResizeGridKeepContent(int newW, int newH, int newDoor)
+    private void ResizeGridKeepContent(int newW, int newH, int newDoor, int newWall)
     {
         char[,] newCells = new char[newW, newH];
+        int oldWall = outerWallThickness;
+
         for (int x = 0; x < newW; x++)
         {
             for (int y = 0; y < newH; y++)
             {
-                if (x > 0 && x < gridWidth - 1 && y > 0 && y < gridHeight - 1 && x < newW - 1 && y < newH - 1)
+                if (x >= oldWall && x < gridWidth - oldWall && y >= oldWall && y < gridHeight - oldWall &&
+                    x < newW - newWall && y < newH - newWall)
+                {
                     newCells[x, y] = cells[x, y];
+                }
                 else
+                {
                     newCells[x, y] = '.';
+                }
             }
         }
 
         gridWidth = newW;
         gridHeight = newH;
         doorGapSize = newDoor;
+        outerWallThickness = newWall;
         cells = newCells;
-        ApplyOuterBorderAndDoors(doorGapSize);
+        ApplyOuterBorderAndDoors(doorGapSize, outerWallThickness);
     }
 
     private void FillRect(Vector2Int a, Vector2Int b, char paintChar)
     {
-        int minX = Mathf.Min(a.x, b.x);
-        int maxX = Mathf.Max(a.x, b.x);
-        int minY = Mathf.Min(a.y, b.y);
-        int maxY = Mathf.Max(a.y, b.y);
-
+        int minX = Mathf.Min(a.x, b.x); int maxX = Mathf.Max(a.x, b.x);
+        int minY = Mathf.Min(a.y, b.y); int maxY = Mathf.Max(a.y, b.y);
         for (int x = minX; x <= maxX; x++)
-        {
             for (int y = minY; y <= maxY; y++)
-            {
                 cells[x, y] = paintChar;
-            }
-        }
     }
 
     private void MirrorHorizontal()
     {
         for (int y = 0; y < gridHeight; y++)
-        {
             for (int x = 0; x < gridWidth / 2; x++)
-            {
                 cells[gridWidth - 1 - x, y] = cells[x, y];
-            }
-        }
         Repaint();
     }
 
-    private Tilemap GetOrCreateChildTilemap(Transform gridParent, string childName, string layerName, string tagName, bool isTrigger)
+    private Transform GetOrCreateChild(Transform parent, string childName)
     {
-        Transform existing = gridParent.Find(childName);
-        GameObject mapObj = existing != null ? existing.gameObject : new GameObject(childName);
-        mapObj.transform.SetParent(gridParent, false);
+        Transform existing = parent.Find(childName);
+        if (existing != null) return existing;
 
-        int layerId = LayerMask.NameToLayer(layerName);
-        if (layerId >= 0) mapObj.layer = layerId;
+        GameObject childObj = new GameObject(childName);
+        childObj.transform.SetParent(parent, false);
+        return childObj.transform;
+    }
+
+private Tilemap GetOrCreateTilemapObject(Transform gridParent, string childName, int layerId, string tagName, bool isTrigger, int sortingOrder)
+    {
+        Transform mapTrans = GetOrCreateChild(gridParent, childName);
+        GameObject mapObj = mapTrans.gameObject;
+        mapObj.layer = layerId;
 
         if (!string.IsNullOrEmpty(tagName))
         {
-            try { mapObj.tag = tagName; }
-            catch { Debug.LogWarning($"[RoomPainter] Tag '{tagName}' existiert noch nicht in den Project Settings."); }
+            try { mapObj.tag = tagName; } catch { }
         }
 
         Tilemap tm = mapObj.GetComponent<Tilemap>();
@@ -798,12 +1075,60 @@ public class RoomPainterWindow : EditorWindow
 
         TilemapRenderer tr = mapObj.GetComponent<TilemapRenderer>();
         if (tr == null) tr = mapObj.AddComponent<TilemapRenderer>();
+        tr.sortingOrder = sortingOrder;
 
         TilemapCollider2D col = mapObj.GetComponent<TilemapCollider2D>();
         if (col == null) col = mapObj.AddComponent<TilemapCollider2D>();
         col.isTrigger = isTrigger;
 
         return tm;
+    }
+
+    /// <summary>
+    /// Stellt sicher, dass der Tag (z.B. "Hazard") in den ProjectSettings existiert,
+    /// damit Unity niemals mit einer Exception abbricht!
+    /// </summary>
+    private static void EnsureTagExists(string tagName)
+    {
+        if (string.IsNullOrEmpty(tagName)) return;
+
+        UnityEngine.Object[] asset = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/TagManager.asset");
+        if (asset == null || asset.Length == 0) return;
+
+        SerializedObject so = new SerializedObject(asset[0]);
+        SerializedProperty tags = so.FindProperty("tags");
+        if (tags == null) return;
+
+        for (int i = 0; i < tags.arraySize; i++)
+        {
+            if (tags.GetArrayElementAtIndex(i).stringValue == tagName) return;
+        }
+
+        tags.InsertArrayElementAtIndex(tags.arraySize);
+        tags.GetArrayElementAtIndex(tags.arraySize - 1).stringValue = tagName;
+        so.ApplyModifiedPropertiesWithoutUndo();
+        AssetDatabase.SaveAssets();
+    }
+
+    /// <summary>
+    /// Erstellt fehlende Projekt-Unterordner schrittweise über AssetDatabase.CreateFolder.
+    /// </summary>
+    private static void EnsureAssetFolderExists(string assetFolderPath)
+    {
+        string normalized = assetFolderPath.Replace("\\", "/").Trim('/');
+        string[] parts = normalized.Split('/');
+        if (parts.Length == 0 || parts[0] != "Assets") return;
+
+        string current = "Assets";
+        for (int i = 1; i < parts.Length; i++)
+        {
+            string next = $"{current}/{parts[i]}";
+            if (!AssetDatabase.IsValidFolder(next))
+            {
+                AssetDatabase.CreateFolder(current, parts[i]);
+            }
+            current = next;
+        }
     }
 
     private void FillTransformArrayProperty(SerializedProperty arrayProp, List<Transform> transforms)
@@ -824,7 +1149,6 @@ public class RoomPainterWindow : EditorWindow
         {
             Transform t = prop.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
             if (t == null) continue;
-
             Vector3 local = roomRoot.InverseTransformPoint(t.position);
             int gx = Mathf.Clamp(Mathf.FloorToInt(local.x) - offsetX, 0, gridWidth - 1);
             int gy = Mathf.Clamp(Mathf.FloorToInt(local.y) - offsetY, 0, gridHeight - 1);
@@ -832,48 +1156,10 @@ public class RoomPainterWindow : EditorWindow
         }
     }
 
-    private void SetupDefaultDoorsOnNewRoom(Room room, SerializedProperty doorsProp, TileBase wallTile)
-    {
-        Direction[] dirs = { Direction.North, Direction.East, Direction.South, Direction.West };
-        doorsProp.ClearArray();
-
-        Transform doorsRoot = new GameObject("Doors").transform;
-        doorsRoot.SetParent(room.transform, false);
-
-        for (int i = 0; i < dirs.Length; i++)
-        {
-            Direction dir = dirs[i];
-            GameObject doorHolder = new GameObject($"Door_{dir}");
-            doorHolder.transform.SetParent(doorsRoot, false);
-
-            GameObject spawnPt = new GameObject($"SpawnPoint_{dir}");
-            spawnPt.transform.SetParent(doorHolder.transform, false);
-
-            float halfW = gridWidth * 0.5f;
-            float halfH = gridHeight * 0.5f;
-
-            spawnPt.transform.localPosition = dir switch
-            {
-                Direction.North => new Vector3(0f, halfH - 2f, 0f),
-                Direction.South => new Vector3(0f, -halfH + 2f, 0f),
-                Direction.East => new Vector3(halfW - 2f, 0f, 0f),
-                Direction.West => new Vector3(-halfW + 2f, 0f, 0f),
-                _ => Vector3.zero
-            };
-
-            doorsProp.InsertArrayElementAtIndex(i);
-            SerializedProperty entry = doorsProp.GetArrayElementAtIndex(i);
-            entry.FindPropertyRelative("direction").enumValueIndex = (int)dir;
-            entry.FindPropertyRelative("spawnPoint").objectReferenceValue = spawnPt.transform;
-        }
-    }
-
     private TileBase GetOrCreateFallbackTile(string fileName, Color color)
     {
-        string dir = "Assets/Editor/GeneratedTiles";
-        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-        string tilePath = $"{dir}/{fileName}.asset";
+        EnsureAssetFolderExists("Assets/Editor/GeneratedTiles");
+        string tilePath = $"Assets/Editor/GeneratedTiles/{fileName}.asset";
         Tile existingTile = AssetDatabase.LoadAssetAtPath<Tile>(tilePath);
         if (existingTile != null) return existingTile;
 
@@ -891,7 +1177,7 @@ public class RoomPainterWindow : EditorWindow
         }
         tex.Apply();
 
-        string pngPath = $"{dir}/{fileName}.png";
+        string pngPath = $"Assets/Editor/GeneratedTiles/{fileName}.png";
         File.WriteAllBytes(pngPath, tex.EncodeToPNG());
         AssetDatabase.ImportAsset(pngPath);
 
@@ -916,17 +1202,15 @@ public class RoomPainterWindow : EditorWindow
 
     private void LoadSampleCeilingVaultRoom()
     {
-        InitializeGridWithFrame(30, 20, doorGapSize);
-
-        // Kleine 360°-Kletter-Insel in der Mitte + Stachelgrube + Geheim-Nische oben rechts
+        InitializeGridWithFrame(30, 20, doorGapSize, outerWallThickness);
         FillRect(new Vector2Int(9, 6), new Vector2Int(20, 7), '#');
         FillRect(new Vector2Int(13, 8), new Vector2Int(16, 13), '#');
-        FillRect(new Vector2Int(10, 1), new Vector2Int(19, 1), '^');
+        FillRect(new Vector2Int(10, outerWallThickness), new Vector2Int(19, outerWallThickness), '^');
         FillRect(new Vector2Int(22, 14), new Vector2Int(27, 14), '#');
 
         cells[11, 8] = 'C';
         cells[18, 8] = 'C';
-        cells[26, 16] = 'X';
+        cells[25, 16] = 'X';
 
         SyncGridToJsonBuffer();
         Repaint();
