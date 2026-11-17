@@ -64,6 +64,12 @@ public class PlacementManager : MonoBehaviour
         currentShape = shape.Clone();
         currentSlotIndex = slotIndex;
 
+        // Sicherheits-Check: Falls ein Würfel noch keine Resonanz-Biomfarben hatte, jetzt über BiomeResonanceManager zuweisen
+        if (BiomeResonanceManager.Instance != null)
+        {
+            BiomeResonanceManager.Instance.AssignBiomesToShape(currentShape);
+        }
+
         if (!CanPlaceMoreThisTurn())
         {
             currentShape = null;
@@ -257,21 +263,32 @@ public class PlacementManager : MonoBehaviour
                 Vector2Int coord = new Vector2Int(x, y);
                 newlyPlacedCoords.Add(coord);
 
-                ZoneType blockBiome = cell.hasAssignedZone ? cell.assignedZone : ZoneType.Forest;
-                gridManager.PlaceBiomeBlockAt(x, y, blockBiome);
+                // 1. Ausgewürfeltes Resonanz-Biom dieses Würfel-Blocks bestimmen
+                ZoneType resonanceBiome = cell.hasAssignedZone
+                    ? cell.assignedZone
+                    : (BiomeResonanceManager.Instance != null
+                        ? BiomeResonanceManager.Instance.RollBiomeForSingleCell()
+                        : ZoneType.Forest);
 
+                // 2. Biom-Farbe auf die Grid-Kachel übertragen
+                gridManager.PlaceBiomeBlockAt(x, y, resonanceBiome);
+                ZoneType placedCellBiome = gridManager.grid[x, y].zoneType;
+
+                // 3. Gebaut-Zähler in der Biom-Resonanz oben links erhöhen
                 if (BiomeResonanceManager.Instance != null)
                 {
-                    BiomeResonanceManager.Instance.RegisterBuiltTile(gridManager.grid[x, y].zoneType);
+                    BiomeResonanceManager.Instance.RegisterBuiltTile(placedCellBiome);
                 }
 
+                // 4. Passenden Raum aus dem entsprechenden Biom-Pool ziehen (mit Auto-Refill & Default-Fallback)
                 if (MacroGridManager.Instance != null)
                 {
-                    MacroGridManager.Instance.RegisterRoom(coord, null);
+                    Room chosenRoomPrefab = MacroGridManager.Instance.DrawRoomPrefabForBiome(placedCellBiome, resonanceBiome);
+                    MacroGridManager.Instance.RegisterRoom(coord, chosenRoomPrefab);
                 }
             }
 
-            // WICHTIG: Dem CubeLootManager die 6 neuen Räume melden, damit er 1 garantierten + 1 versteckten Würfel darin platziert!
+            // 5. Dem CubeLootManager die 6 neuen Räume melden (1 garantierter + 1 versteckter Würfel)
             if (CubeLootManager.Instance != null)
             {
                 CubeLootManager.Instance.RegisterPlacedCluster(newlyPlacedCoords);
