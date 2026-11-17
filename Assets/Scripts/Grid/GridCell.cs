@@ -29,7 +29,6 @@ public class GridCell : MonoBehaviour
     [SerializeField] private SpriteRenderer overlayRenderer;
 
     public bool isTargeted = false;
-    public bool isHovered = false;
     public float pulseSpeed = 4f;
 
     // Ruhiger, einheitlicher Schieferton für unbebaute Nebel-Felder
@@ -83,27 +82,6 @@ public class GridCell : MonoBehaviour
         UpdateOverlay();
     }
 
-    public void SetPreview(bool isValid)
-    {
-        isHovered = true;
-        if (overlayRenderer != null)
-        {
-            overlayRenderer.gameObject.SetActive(true);
-            overlayRenderer.color = isValid ? new Color(0f, 1f, 0f, 0.55f) : new Color(1f, 0f, 0f, 0.55f);
-        }
-        else if (baseRenderer != null)
-        {
-            baseRenderer.color = isValid ? new Color(0.2f, 0.9f, 0.2f, 1f) : new Color(0.9f, 0.2f, 0.2f, 1f);
-        }
-    }
-
-    public void RevertPreview()
-    {
-        isHovered = false;
-        UpdateBaseColor();
-        UpdateOverlay();
-    }
-
     public Color GetBaseColor()
     {
         switch (currentState)
@@ -129,7 +107,6 @@ public class GridCell : MonoBehaviour
                     return Color.Lerp(FogBaseColor, zoneColor, 0.25f);
                 }
 
-                // Unbebautes Grid ist komplett einheitlich dunkel (keine bunten Zonen mehr im Nebel!)
                 return FogBaseColor;
         }
     }
@@ -145,14 +122,12 @@ public class GridCell : MonoBehaviour
     private void UpdateOverlay()
     {
         if (overlayRenderer == null) return;
-        if (isHovered) return;
-
         overlayRenderer.gameObject.SetActive(isTargeted);
     }
 
     void Update()
     {
-        if (isHovered || !isTargeted || overlayRenderer == null) return;
+        if (!isTargeted || overlayRenderer == null) return;
 
         float alpha = Mathf.PingPong(Time.time * pulseSpeed, 0.5f) + 0.2f;
         Color pulsedColor = currentWarningColor;

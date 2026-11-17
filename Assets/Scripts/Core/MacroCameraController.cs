@@ -26,7 +26,7 @@ public class MacroCameraController : MonoBehaviour
     [SerializeField] private float basePanSpeed = 18f;
     [Tooltip("Skaliert die Schwenkgeschwindigkeit mit dem aktuellen Zoom (weiter rausgezoomt = schnelleres Schwenken).")]
     [SerializeField] private bool scalePanSpeedWithZoom = true;
-    [Tooltip("Wie weich die Kamera dem Fokus-Ziel (Spieler / Bauteil + Schwenk) folgt.")]
+    [Tooltip("Wie weich die Kamera der Zielposition folgt.")]
     [SerializeField] private float focusFollowSpeed = 14f;
 
     [Header("Zoom-Speicherung")]
@@ -44,12 +44,9 @@ public class MacroCameraController : MonoBehaviour
     private float targetZoomSize;
     private bool isZoomInitialized = false;
 
-    // Manueller Schwenk-Offset (Rechter Stick) relativ zum aktuellen Ankerpunkt
-    private Vector2 manualPanOffset = Vector2.zero;
-
-    // Fokus-Ziel während des Placement-Modus (folgt dem zu platzierenden Würfel)
-    private bool hasPlacementFocus = false;
-    private Vector3 placementFocusLocalPos = Vector3.zero;
+    // Persistente Zielposition auf dem Macro-Grid (bleibt nach dem Bauen dort, wo gebaut wurde)
+    private Vector3 targetFocusLocalPos = new Vector3(0f, 0f, -10f);
+    private bool hasInitializedFocusPos = false;
 
     private Coroutine activeCameraTransition;
     private Coroutine activeRumbleCoroutine;
@@ -102,8 +99,6 @@ public class MacroCameraController : MonoBehaviour
             maxZoomSize = Mathf.Max(maxZoomSize, fullGridHalfHeight);
         }
 
-        manualPanOffset = Vector2.zero;
-        hasPlacementFocus = false;
         SnapToMacroPlayerFocus(keepCurrentActiveState: true);
     }
 
@@ -123,9 +118,10 @@ public class MacroCameraController : MonoBehaviour
             return;
         }
 
-        if (state != GameState.Placement && hasPlacementFocus)
+        if (!hasInitializedFocusPos)
         {
-            hasPlacementFocus = false;
+            targetFocusLocalPos = GetPlayerFocusLocalPosition();
+            hasInitializedFocusPos = true;
         }
 
         inputHandler.ReadInput(state);
@@ -137,9 +133,10 @@ public class MacroCameraController : MonoBehaviour
     {
         if (inputHandler == null) return;
 
+        // R3 / Taste C zentriert die Kamera bei Bedarf manuell wieder auf das Spielerfeld
         if (inputHandler.ResetPanPressed)
         {
-            manualPanOffset = Vector2.zero;
+            targetFocusLocalPos = GetPlayerFocusLocalPosition();
         }
 
         if (inputHandler.ResetZoomPressed)
@@ -151,7 +148,6 @@ public class MacroCameraController : MonoBehaviour
         if (Mathf.Abs(inputHandler.ZoomDeltaInput) > 0.001f)
         {
             float zoomStep = inputHandler.ZoomDeltaInput * zoomInputSpeed * Time.deltaTime;
-            // Falls ein Mausrad-Impuls (> 1.5f) anliegt, direkt ohne Time.deltaTime-Bremse anwenden
             if (Mathf.Abs(inputHandler.ZoomDeltaInput) > 1.5f)
             {
                 zoomStep = Mathf.Sign(inputHandler.ZoomDeltaInput) * 1.8f;
@@ -159,7 +155,7 @@ public class MacroCameraController : MonoBehaviour
             SetSavedZoom(targetZoomSize + zoomStep);
         }
 
-        // 2. Freies Kamera-Schwenken (Rechter Stick / IJKL)
+        // 2. Freies Kamera-Schwenken (Rechter Stick / IJKL) verschiebt direkt die Zielposition
         if (inputHandler.PanInput.sqrMagnitude > 0.001f)
         {
             float zoomFactor = scalePanSpeedWithZoom
@@ -167,12 +163,7 @@ public class MacroCameraController : MonoBehaviour
                 : 1f;
 
             Vector2 panDelta = inputHandler.PanInput * (basePanSpeed * zoomFactor * Time.deltaTime);
-            manualPanOffset += panDelta;
-
-            // Innerhalb der Grid-Grenzen halten, damit man nicht ins Leere schwenkt
-            Vector3 anchorPos = GetCurrentAnchorLocalPosition();
-            Vector3 clampedTotal = ClampLocalPositionToGridBounds(anchorPos + (Vector3)manualPanOffset);
-            manualPanOffset = new Vector2(clampedTotal.x - anchorPos.x, clampedTotal.y - anchorPos.y);
+            targetFocusLocalPos = ClampLocalPositionToGridBounds(targetFocusLocalPos + (Vector3)panDelta);
         }
     }
 
@@ -186,39 +177,29 @@ public class MacroCameraController : MonoBehaviour
             Time.deltaTime * zoomSmoothSpeed
         );
 
-        Vector3 targetLocalPos = ClampLocalPositionToGridBounds(GetCurrentAnchorLocalPosition() + (Vector3)manualPanOffset);
+        Vector3 clampedTarget = ClampLocalPositionToGridBounds(targetFocusLocalPos);
         macroCamera.transform.localPosition = Vector3.Lerp(
             macroCamera.transform.localPosition,
-            targetLocalPos,
+            clampedTarget,
             Time.deltaTime * focusFollowSpeed
         );
     }
 
     /// <summary>
-    /// Wird vom PlacementManager aufgerufen, sobald ein Würfel zum Platzieren ausgewählt,
-    /// über das Grid bewegt oder gedreht wird.
+    /// Wird vom PlacementManager aufgerufen, wenn der zu platzierende Würfel bewegt oder gedreht wird.
     /// </summary>
     public void SetPlacementFocus(Vector3 shapeCenterLocalPos, bool resetManualPan = true)
     {
-        hasPlacementFocus = true;
-        placementFocusLocalPos = new Vector3(shapeCenterLocalPos.x, shapeCenterLocalPos.y, -10f);
-
-        if (resetManualPan)
-        {
-            manualPanOffset = Vector2.zero;
-        }
+        targetFocusLocalPos = ClampLocalPositionToGridBounds(new Vector3(shapeCenterLocalPos.x, shapeCenterLocalPos.y, -10f));
+        hasInitializedFocusPos = true;
     }
 
     /// <summary>
-    /// Wird beim Verlassen des Placement-Modus aufgerufen, damit der Fokus wieder auf den Spieler fällt.
+    /// Beim Beenden des Platzierens bleibt targetFocusLocalPos unverändert an der aktuellen Baustelle stehen!
     /// </summary>
     public void ClearPlacementFocus(bool resetManualPan = true)
     {
-        hasPlacementFocus = false;
-        if (resetManualPan)
-        {
-            manualPanOffset = Vector2.zero;
-        }
+        // Absichtlich kein Rücksprung zum Spieler: Die Kamera bleibt dort, wo zuletzt gebaut/geschaut wurde.
     }
 
     public void SetSavedZoom(float newZoom)
@@ -237,19 +218,6 @@ public class MacroCameraController : MonoBehaviour
     public void ResetZoomToDefault()
     {
         SetSavedZoom(defaultZoomSize);
-    }
-
-    /// <summary>
-    /// Liefert im Placement-Modus die Position des zu platzierenden Bauteils,
-    /// ansonsten die aktuelle Position des Spielers auf dem Grid.
-    /// </summary>
-    private Vector3 GetCurrentAnchorLocalPosition()
-    {
-        if (hasPlacementFocus && GameManager.Instance != null && GameManager.Instance.currentState == GameState.Placement)
-        {
-            return placementFocusLocalPos;
-        }
-        return GetPlayerFocusLocalPosition();
     }
 
     public Vector3 GetPlayerFocusLocalPosition()
@@ -288,14 +256,15 @@ public class MacroCameraController : MonoBehaviour
     }
 
     /// <summary>
-    /// Zentriert die Kamera sofort auf das Spielerfeld und übernimmt den gespeicherten Zoom.
+    /// Setzt die Macro-Kamera sofort auf das Spielerfeld und übernimmt den gespeicherten Zoom.
     /// </summary>
     public void SnapToMacroPlayerFocus(bool keepCurrentActiveState = false)
     {
         InitializeZoomValue();
         FindCamerasIfNeeded();
 
-        manualPanOffset = Vector2.zero;
+        targetFocusLocalPos = GetPlayerFocusLocalPosition();
+        hasInitializedFocusPos = true;
 
         if (!keepCurrentActiveState)
         {
@@ -304,7 +273,7 @@ public class MacroCameraController : MonoBehaviour
 
         if (macroCamera != null)
         {
-            macroCamera.transform.localPosition = GetCurrentAnchorLocalPosition();
+            macroCamera.transform.localPosition = targetFocusLocalPos;
             macroCamera.orthographicSize = savedZoomSize;
         }
     }
@@ -314,10 +283,9 @@ public class MacroCameraController : MonoBehaviour
         InitializeZoomValue();
         FindCamerasIfNeeded();
 
-        // Beim Wechsel von Micro auf Macro (egal ob selbst ausgelöst oder durch ein Event)
-        // immer direkt auf dem Feld des Spielers fokussieren!
-        manualPanOffset = Vector2.zero;
-        hasPlacementFocus = false;
+        // Beim Wechsel von Micro -> Macro wird der Fokus auf das aktuelle Spielerfeld gesetzt
+        targetFocusLocalPos = GetPlayerFocusLocalPosition();
+        hasInitializedFocusPos = true;
 
         if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
         activeCameraTransition = StartCoroutine(TransitionToMacroRoutine(onComplete));
@@ -328,9 +296,6 @@ public class MacroCameraController : MonoBehaviour
         InitializeZoomValue();
         FindCamerasIfNeeded();
 
-        manualPanOffset = Vector2.zero;
-        hasPlacementFocus = false;
-
         if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
         activeCameraTransition = StartCoroutine(TransitionToMicroRoutine(onComplete));
     }
@@ -338,6 +303,8 @@ public class MacroCameraController : MonoBehaviour
     private IEnumerator TransitionToMacroRoutine(Action onComplete)
     {
         Vector3 playerFocusPos = GetPlayerFocusLocalPosition();
+        targetFocusLocalPos = playerFocusPos;
+
         float startSize = Mathf.Min(transitionCloseUpSize, savedZoomSize * 0.85f);
 
         if (macroCamera != null)
@@ -355,6 +322,8 @@ public class MacroCameraController : MonoBehaviour
             float t = Mathf.SmoothStep(0f, 1f, elapsed / cameraTransitionDuration);
 
             playerFocusPos = GetPlayerFocusLocalPosition();
+            targetFocusLocalPos = playerFocusPos;
+
             if (macroCamera != null)
             {
                 macroCamera.transform.localPosition = playerFocusPos;
@@ -365,7 +334,7 @@ public class MacroCameraController : MonoBehaviour
 
         if (macroCamera != null)
         {
-            macroCamera.transform.localPosition = GetPlayerFocusLocalPosition();
+            macroCamera.transform.localPosition = targetFocusLocalPos;
             macroCamera.orthographicSize = savedZoomSize;
         }
 
@@ -375,7 +344,7 @@ public class MacroCameraController : MonoBehaviour
 
     private IEnumerator TransitionToMicroRoutine(Action onComplete)
     {
-        Vector3 startLocalPos = macroCamera != null ? macroCamera.transform.localPosition : GetPlayerFocusLocalPosition();
+        Vector3 startLocalPos = macroCamera != null ? macroCamera.transform.localPosition : targetFocusLocalPos;
         float startSize = macroCamera != null ? macroCamera.orthographicSize : savedZoomSize;
         float endSize = Mathf.Min(transitionCloseUpSize, savedZoomSize * 0.85f);
 

@@ -9,6 +9,9 @@ public class PlacementManager : MonoBehaviour
     public InventoryManager inventoryManager;
     public GameManager gameManager;
 
+    [Header("Vorschau-Visualisierung")]
+    [SerializeField] private PlacementPreviewVisualizer previewVisualizer;
+
     [Header("Tick-Kosten & Bau-Reichweite (Tether-Regel)")]
     public bool useFocusCost = true;
     public int maxPlacementsPerTurn = 99;
@@ -21,8 +24,6 @@ public class PlacementManager : MonoBehaviour
     private ShapeData currentShape = null;
     private int currentSlotIndex = -1;
 
-    private List<GridCell> lastHoveredCells = new List<GridCell>();
-
     [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
 
@@ -30,6 +31,23 @@ public class PlacementManager : MonoBehaviour
     [SerializeField] private Vector2Int cursorCoord;
     [SerializeField] private float moveRepeatDelay = 0.18f;
     private float moveRepeatTimer = 0f;
+
+    private void Awake()
+    {
+        EnsureVisualizer();
+    }
+
+    private void EnsureVisualizer()
+    {
+        if (previewVisualizer == null)
+        {
+            previewVisualizer = GetComponent<PlacementPreviewVisualizer>();
+            if (previewVisualizer == null)
+            {
+                previewVisualizer = gameObject.AddComponent<PlacementPreviewVisualizer>();
+            }
+        }
+    }
 
     private Camera GetActiveRaycastCamera()
     {
@@ -108,7 +126,6 @@ public class PlacementManager : MonoBehaviour
         if (gameManager == null) gameManager = GameManager.Instance;
         if (gameManager != null && gameManager.CameraController != null)
         {
-            // Kamera-Fokus im MacroPlan wieder zurück auf den Spieler geben
             gameManager.CameraController.ClearPlacementFocus(resetManualPan: true);
         }
     }
@@ -228,26 +245,16 @@ public class PlacementManager : MonoBehaviour
 
     private void UpdatePreviewAt(int startX, int startY)
     {
-        ClearHoverPreview();
-
-        if (gridManager == null || currentShape == null) return;
-
-        bool isValid = CanPlaceShape(startX, startY) && CanPlaceMoreThisTurn();
-
-        foreach (ShapeCell cell in currentShape.cells)
+        if (gridManager == null || currentShape == null)
         {
-            int checkX = startX + cell.localPosition.x;
-            int checkY = startY + cell.localPosition.y;
-
-            if (checkX >= 0 && checkX < gridManager.width && checkY >= 0 && checkY < gridManager.height)
-            {
-                GridCell hoverCell = gridManager.grid[checkX, checkY];
-                hoverCell.SetPreview(isValid);
-                lastHoveredCells.Add(hoverCell);
-            }
+            ClearHoverPreview();
+            return;
         }
 
-        // Kamera-Fokus automatisch mit dem geometrischen Mittelpunkt des Bauteils synchronisieren
+        EnsureVisualizer();
+        bool isValid = CanPlaceShape(startX, startY) && CanPlaceMoreThisTurn();
+
+        previewVisualizer.ShowPreview(gridManager, currentShape, startX, startY, isValid);
         SyncCameraFocusToCurrentShape(startX, startY);
     }
 
@@ -282,11 +289,10 @@ public class PlacementManager : MonoBehaviour
 
     private void ClearHoverPreview()
     {
-        foreach (GridCell cell in lastHoveredCells)
+        if (previewVisualizer != null)
         {
-            if (cell != null) cell.RevertPreview();
+            previewVisualizer.HidePreview();
         }
-        lastHoveredCells.Clear();
     }
 
     private void TryPlaceShapeAt(int startX, int startY)

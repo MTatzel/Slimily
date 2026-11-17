@@ -142,8 +142,13 @@ public class GameManager : MonoBehaviour
         RefillFocus();
         UpdateHoldUI(0f);
 
-        // Initialen Zustand sauber aktivieren (Fokus auf Spieler + gespeicherter Zoom)
-        EnterState(currentState, currentState);
+        // Immer auf der Macro-Ebene (MacroPlan) mit Fokus auf dem Spieler starten
+        currentState = GameState.MacroPlan;
+        if (cameraController != null)
+        {
+            cameraController.SnapToMacroPlayerFocus(keepCurrentActiveState: false);
+        }
+        EnterState(GameState.MacroPlan, GameState.MacroPlan);
     }
 
     public bool CanAffordFocus(int cost) => !isResettingRun;
@@ -259,14 +264,12 @@ public class GameManager : MonoBehaviour
         if (currentLevelConfig != null) LoadLevel(currentLevelConfig);
         RefillFocus();
 
-        if (currentState == GameState.MacroPlan)
+        currentState = GameState.MacroPlan;
+        if (cameraController != null)
         {
-            EnterState(GameState.MacroPlan, GameState.FreeRoam);
+            cameraController.SnapToMacroPlayerFocus(keepCurrentActiveState: false);
         }
-        else
-        {
-            ChangeState(GameState.MacroPlan);
-        }
+        EnterState(GameState.MacroPlan, GameState.MacroPlan);
 
         isResettingRun = false;
     }
@@ -480,9 +483,11 @@ public class GameManager : MonoBehaviour
         }
         else
         {
+            // Wechsel innerhalb der Macro-Ebene (z.B. Placement <-> MacroPlan):
+            // Nur sicherstellen, dass die Macro-Kamera aktiv ist, aber KEINEN Kamera-Snap zum Spieler auslösen!
             if (cameraController != null)
             {
-                cameraController.SnapToMacroPlayerFocus();
+                cameraController.SetCameraActive(macro: true, micro: false);
             }
 
             if (state == GameState.MapView)
