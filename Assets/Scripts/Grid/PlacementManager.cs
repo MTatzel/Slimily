@@ -33,6 +33,11 @@ public class PlacementManager : MonoBehaviour
 
     private Camera GetActiveRaycastCamera()
     {
+        if (gameManager != null && gameManager.CameraController != null && gameManager.CameraController.MacroCamera != null)
+        {
+            Camera ctrlCam = gameManager.CameraController.MacroCamera;
+            if (ctrlCam.gameObject.activeInHierarchy) return ctrlCam;
+        }
         if (macroCamera != null && macroCamera.gameObject.activeInHierarchy) return macroCamera;
         return Camera.main;
     }
@@ -64,7 +69,6 @@ public class PlacementManager : MonoBehaviour
         currentShape = shape.Clone();
         currentSlotIndex = slotIndex;
 
-        // Sicherheits-Check: Falls ein Würfel noch keine Resonanz-Biomfarben hatte, jetzt über BiomeResonanceManager zuweisen
         if (BiomeResonanceManager.Instance != null)
         {
             BiomeResonanceManager.Instance.AssignBiomesToShape(currentShape);
@@ -86,6 +90,7 @@ public class PlacementManager : MonoBehaviour
             cursorCoord = new Vector2Int(gridManager.width / 2, gridManager.height / 2);
         }
 
+        if (gameManager == null) gameManager = GameManager.Instance;
         if (gameManager != null)
         {
             gameManager.ChangeState(GameState.Placement);
@@ -99,6 +104,13 @@ public class PlacementManager : MonoBehaviour
         currentShape = null;
         currentSlotIndex = -1;
         ClearHoverPreview();
+
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (gameManager != null && gameManager.CameraController != null)
+        {
+            // Kamera-Fokus im MacroPlan wieder zurück auf den Spieler geben
+            gameManager.CameraController.ClearPlacementFocus(resetManualPan: true);
+        }
     }
 
     public void CancelSelection()
@@ -115,6 +127,7 @@ public class PlacementManager : MonoBehaviour
 
     void Update()
     {
+        if (gameManager == null) gameManager = GameManager.Instance;
         if (gameManager != null && gameManager.currentState != GameState.Placement) return;
         if (currentShape == null) return;
 
@@ -233,6 +246,38 @@ public class PlacementManager : MonoBehaviour
                 lastHoveredCells.Add(hoverCell);
             }
         }
+
+        // Kamera-Fokus automatisch mit dem geometrischen Mittelpunkt des Bauteils synchronisieren
+        SyncCameraFocusToCurrentShape(startX, startY);
+    }
+
+    private void SyncCameraFocusToCurrentShape(int startX, int startY)
+    {
+        if (gridManager == null || currentShape == null) return;
+        if (gameManager == null) gameManager = GameManager.Instance;
+        if (gameManager == null || gameManager.CameraController == null) return;
+
+        float offset = gridManager.offset > 0.01f ? gridManager.offset : 1.1f;
+
+        if (currentShape.cells == null || currentShape.cells.Count == 0)
+        {
+            Vector3 fallbackPos = new Vector3(startX * offset, startY * offset, -10f);
+            gameManager.CameraController.SetPlacementFocus(fallbackPos, resetManualPan: true);
+            return;
+        }
+
+        Vector2 sumCoords = Vector2.zero;
+        for (int i = 0; i < currentShape.cells.Count; i++)
+        {
+            Vector2Int cellPos = currentShape.cells[i].localPosition;
+            sumCoords.x += (startX + cellPos.x);
+            sumCoords.y += (startY + cellPos.y);
+        }
+
+        Vector2 avgGridCoord = sumCoords / currentShape.cells.Count;
+        Vector3 shapeCenterLocalPos = new Vector3(avgGridCoord.x * offset, avgGridCoord.y * offset, -10f);
+
+        gameManager.CameraController.SetPlacementFocus(shapeCenterLocalPos, resetManualPan: true);
     }
 
     private void ClearHoverPreview()
@@ -263,24 +308,20 @@ public class PlacementManager : MonoBehaviour
                 Vector2Int coord = new Vector2Int(x, y);
                 newlyPlacedCoords.Add(coord);
 
-                // 1. Ausgewürfeltes Resonanz-Biom dieses Würfel-Blocks bestimmen
                 ZoneType resonanceBiome = cell.hasAssignedZone
                     ? cell.assignedZone
                     : (BiomeResonanceManager.Instance != null
                         ? BiomeResonanceManager.Instance.RollBiomeForSingleCell()
                         : ZoneType.Forest);
 
-                // 2. Biom-Farbe auf die Grid-Kachel übertragen
                 gridManager.PlaceBiomeBlockAt(x, y, resonanceBiome);
                 ZoneType placedCellBiome = gridManager.grid[x, y].zoneType;
 
-                // 3. Gebaut-Zähler in der Biom-Resonanz oben links erhöhen
                 if (BiomeResonanceManager.Instance != null)
                 {
                     BiomeResonanceManager.Instance.RegisterBuiltTile(placedCellBiome);
                 }
 
-                // 4. Passenden Raum aus dem entsprechenden Biom-Pool ziehen (mit Auto-Refill & Default-Fallback)
                 if (MacroGridManager.Instance != null)
                 {
                     Room chosenRoomPrefab = MacroGridManager.Instance.DrawRoomPrefabForBiome(placedCellBiome, resonanceBiome);
@@ -288,7 +329,6 @@ public class PlacementManager : MonoBehaviour
                 }
             }
 
-            // 5. Dem CubeLootManager die 6 neuen Räume melden (1 garantierter + 1 versteckter Würfel)
             if (CubeLootManager.Instance != null)
             {
                 CubeLootManager.Instance.RegisterPlacedCluster(newlyPlacedCoords);

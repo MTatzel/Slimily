@@ -49,6 +49,7 @@ public class GameManager : MonoBehaviour
     private BossBase activeBossInstance;
 
     [Header("Kameras & UI")]
+    [SerializeField] private MacroCameraController cameraController;
     [SerializeField] private Camera macroCamera;
     [SerializeField] private Camera mainCamera;
     public GameObject inventoryScreen;
@@ -62,17 +63,11 @@ public class GameManager : MonoBehaviour
 
     [Header("Transition Settings")]
     [SerializeField] private float buildModeHoldDuration = 0.85f;
-    [SerializeField] private float cameraTransitionDuration = 0.35f;
 
     private float buildModeHoldTimer = 0f;
     private Vector2 cachedSlimeVelocity;
-    private Coroutine activeCameraTransition;
-    private Coroutine activeRumbleCoroutine;
     private bool isResettingRun = false;
     private int totalTicksElapsed = 0;
-
-    private Vector3 macroOverviewPosition;
-    private float macroOverviewSize;
 
     // Öffentliche Getter
     public int CurrentFocus => currentFocus;
@@ -98,6 +93,7 @@ public class GameManager : MonoBehaviour
 
     public float BuildHoldProgress => Mathf.Clamp01(buildModeHoldTimer / buildModeHoldDuration);
     public BossBase ActiveBoss => activeBossInstance;
+    public MacroCameraController CameraController => cameraController;
 
     public event Action<int, int> OnFocusChanged;
     public event Action<float, float> OnNightmareChanged;
@@ -124,6 +120,13 @@ public class GameManager : MonoBehaviour
         {
             gameObject.AddComponent<ThreatOrbsAndPiPHUD>();
         }
+
+        if (cameraController == null)
+        {
+            cameraController = GetComponent<MacroCameraController>();
+            if (cameraController == null) cameraController = gameObject.AddComponent<MacroCameraController>();
+        }
+        cameraController.SetupCamerasIfEmpty(macroCamera, mainCamera);
     }
 
     private void Start()
@@ -138,7 +141,9 @@ public class GameManager : MonoBehaviour
 
         RefillFocus();
         UpdateHoldUI(0f);
-        ChangeState(GameState.MacroPlan);
+
+        // Initialen Zustand sauber aktivieren (Fokus auf Spieler + gespeicherter Zoom)
+        EnterState(currentState, currentState);
     }
 
     public bool CanAffordFocus(int cost) => !isResettingRun;
@@ -185,33 +190,8 @@ public class GameManager : MonoBehaviour
 
     public void TriggerMicroCameraRumble(float intensity = 0.25f, float duration = 0.3f)
     {
-        if (currentState != GameState.FreeRoam || slimeController == null) return;
-
-        if (activeRumbleCoroutine != null) StopCoroutine(activeRumbleCoroutine);
-        activeRumbleCoroutine = StartCoroutine(MicroRumbleRoutine(intensity, duration));
-    }
-
-    private IEnumerator MicroRumbleRoutine(float intensity, float duration)
-    {
-        if (slimeController != null)
-        {
-            slimeController.ApplySquashAndStretch(1f + intensity * 0.45f, 1f - intensity * 0.35f);
-        }
-
-        Transform camTransform = mainCamera != null ? mainCamera.transform : null;
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float damper = 1f - (elapsed / duration);
-            if (camTransform != null)
-            {
-                Vector2 shake = UnityEngine.Random.insideUnitCircle * (intensity * damper * 0.15f);
-                camTransform.position += new Vector3(shake.x, shake.y, 0f);
-            }
-            yield return null;
-        }
-        activeRumbleCoroutine = null;
+        if (currentState != GameState.FreeRoam || slimeController == null || cameraController == null) return;
+        cameraController.TriggerMicroCameraRumble(slimeController, intensity, duration);
     }
 
     public void RefillFocus()
@@ -279,7 +259,15 @@ public class GameManager : MonoBehaviour
         if (currentLevelConfig != null) LoadLevel(currentLevelConfig);
         RefillFocus();
 
-        ChangeState(GameState.MacroPlan);
+        if (currentState == GameState.MacroPlan)
+        {
+            EnterState(GameState.MacroPlan, GameState.FreeRoam);
+        }
+        else
+        {
+            ChangeState(GameState.MacroPlan);
+        }
+
         isResettingRun = false;
     }
 
@@ -318,7 +306,12 @@ public class GameManager : MonoBehaviour
         }
 
         SetupLevelEncounter(config);
-        CalculateMacroOverviewParameters(config);
+
+        if (cameraController != null)
+        {
+            cameraController.InitializeForLevel(config);
+        }
+
         UpdateHUDTexts();
     }
 
@@ -344,23 +337,6 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    private void CalculateMacroOverviewParameters(LevelConfiguration config)
-    {
-        if (macroCamera == null) macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
-
-        float centerX = (config.gridWidth * config.cellOffset) / 2f - (config.cellOffset / 2f);
-        float centerY = (config.gridHeight * config.cellOffset) / 2f - (config.cellOffset / 2f);
-
-        macroOverviewPosition = new Vector3(centerX, centerY, -10f);
-        macroOverviewSize = (config.gridHeight * config.cellOffset) / 2f + 2f;
-
-        if (macroCamera != null)
-        {
-            macroCamera.transform.localPosition = macroOverviewPosition;
-            macroCamera.orthographicSize = macroOverviewSize;
-        }
-    }
-
     private void Update()
     {
         if (isResettingRun) return;
@@ -369,7 +345,7 @@ public class GameManager : MonoBehaviour
 
     private void HandleTransitionInputs()
     {
-        if (activeCameraTransition != null) return;
+        if (cameraController != null && cameraController.IsTransitioning) return;
 
         var gamepad = Gamepad.current;
         var keyboard = Keyboard.current;
@@ -468,8 +444,15 @@ public class GameManager : MonoBehaviour
         {
             SetUIActive(false);
             if (slimeController != null) slimeController.IsViewingMap = false;
-            if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
-            activeCameraTransition = StartCoroutine(TransitionToMicroRoutine());
+
+            if (cameraController != null)
+            {
+                cameraController.TransitionToMicro(() =>
+                {
+                    SetSlimeActive(true);
+                    if (MacroGridManager.Instance != null) MacroGridManager.Instance.RefreshActiveRoomDoors();
+                });
+            }
         }
         else if (isGoingToMacro && comingFromMicro)
         {
@@ -478,21 +461,39 @@ public class GameManager : MonoBehaviour
                 if (slimeController != null) { slimeController.enabled = true; slimeController.IsViewingMap = true; }
                 if (slimeRigidbody != null) slimeRigidbody.simulated = true;
             }
-            else SetSlimeActive(false);
+            else
+            {
+                SetSlimeActive(false);
+            }
 
             bool showInventory = (state == GameState.MacroPlan || state == GameState.Placement);
-            if (activeCameraTransition != null) StopCoroutine(activeCameraTransition);
-            activeCameraTransition = StartCoroutine(TransitionToMacroRoutine(showInventory));
+            SetUIActive(false);
+
+            if (cameraController != null)
+            {
+                cameraController.TransitionToMacro(() =>
+                {
+                    SetUIActive(showInventory);
+                    if (showInventory && inventoryManager != null) inventoryManager.ResetSelection();
+                });
+            }
         }
         else
         {
-            SetCameraActive(true, false);
+            if (cameraController != null)
+            {
+                cameraController.SnapToMacroPlayerFocus();
+            }
+
             if (state == GameState.MapView)
             {
                 if (slimeController != null) { slimeController.enabled = true; slimeController.IsViewingMap = true; }
                 if (slimeRigidbody != null) slimeRigidbody.simulated = true;
             }
-            else SetSlimeActive(false);
+            else
+            {
+                SetSlimeActive(false);
+            }
 
             SetUIActive(state == GameState.MacroPlan || state == GameState.Placement);
             if (state == GameState.MacroPlan && inventoryManager != null) inventoryManager.ResetSelection();
@@ -505,81 +506,6 @@ public class GameManager : MonoBehaviour
             slimeController.IsViewingMap = false;
         else if (oldState == GameState.Placement)
             FindAnyObjectByType<PlacementManager>()?.ClearSelection();
-    }
-
-    private IEnumerator TransitionToMacroRoutine(bool showInventory)
-    {
-        Vector3 startLocalPos = MacroSlimeMarker.Instance != null
-            ? new Vector3(MacroSlimeMarker.Instance.transform.localPosition.x, MacroSlimeMarker.Instance.transform.localPosition.y, -10f)
-            : macroOverviewPosition;
-
-        float closeUpSize = 6f;
-        if (macroCamera != null)
-        {
-            macroCamera.transform.localPosition = startLocalPos;
-            macroCamera.orthographicSize = closeUpSize;
-        }
-
-        SetCameraActive(true, false);
-        SetUIActive(false);
-
-        float elapsed = 0f;
-        while (elapsed < cameraTransitionDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.SmoothStep(0f, 1f, elapsed / cameraTransitionDuration);
-            if (macroCamera != null)
-            {
-                macroCamera.transform.localPosition = Vector3.Lerp(startLocalPos, macroOverviewPosition, t);
-                macroCamera.orthographicSize = Mathf.Lerp(closeUpSize, macroOverviewSize, t);
-            }
-            yield return null;
-        }
-
-        if (macroCamera != null)
-        {
-            macroCamera.transform.localPosition = macroOverviewPosition;
-            macroCamera.orthographicSize = macroOverviewSize;
-        }
-
-        SetUIActive(showInventory);
-        if (showInventory && inventoryManager != null) inventoryManager.ResetSelection();
-        activeCameraTransition = null;
-    }
-
-    private IEnumerator TransitionToMicroRoutine()
-    {
-        Vector3 targetLocalPos = MacroSlimeMarker.Instance != null
-            ? new Vector3(MacroSlimeMarker.Instance.transform.localPosition.x, MacroSlimeMarker.Instance.transform.localPosition.y, -10f)
-            : macroOverviewPosition;
-
-        float closeUpSize = 6f;
-        Vector3 startLocalPos = macroCamera != null ? macroCamera.transform.localPosition : macroOverviewPosition;
-        float startSize = macroCamera != null ? macroCamera.orthographicSize : macroOverviewSize;
-
-        float elapsed = 0f;
-        while (elapsed < cameraTransitionDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.SmoothStep(0f, 1f, elapsed / cameraTransitionDuration);
-            if (macroCamera != null)
-            {
-                macroCamera.transform.localPosition = Vector3.Lerp(startLocalPos, targetLocalPos, t);
-                macroCamera.orthographicSize = Mathf.Lerp(startSize, closeUpSize, t);
-            }
-            yield return null;
-        }
-
-        SetCameraActive(false, true);
-        SetSlimeActive(true);
-        if (MacroGridManager.Instance != null) MacroGridManager.Instance.RefreshActiveRoomDoors();
-        activeCameraTransition = null;
-    }
-
-    private void SetCameraActive(bool macro, bool micro)
-    {
-        if (macroCamera != null) macroCamera.gameObject.SetActive(macro);
-        if (mainCamera != null) mainCamera.gameObject.SetActive(micro);
     }
 
     private void SetUIActive(bool inventory)
@@ -613,12 +539,13 @@ public class GameManager : MonoBehaviour
     private void FindReferencesIfNeeded()
     {
         if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
-        if (macroCamera == null) macroCamera = GameObject.Find("MacroCamera")?.GetComponent<Camera>();
-        if (mainCamera == null)
+        if (cameraController == null)
         {
-            var camObj = GameObject.Find("Main Camera");
-            mainCamera = camObj != null ? camObj.GetComponent<Camera>() : Camera.main;
+            cameraController = GetComponent<MacroCameraController>();
+            if (cameraController == null) cameraController = gameObject.AddComponent<MacroCameraController>();
         }
+        cameraController.SetupCamerasIfEmpty(macroCamera, mainCamera);
+
         if (slimeController == null) slimeController = FindAnyObjectByType<PlatformerSlimeController>();
         if (slimeRigidbody == null && slimeController != null) slimeRigidbody = slimeController.GetComponent<Rigidbody2D>();
     }
