@@ -50,12 +50,35 @@ public class ShapePreviewUI : MonoBehaviour
                 }
                 else if (cell.hasAssignedZone && GridManager.Instance != null)
                 {
-                    // Zeigt direkt die ausgewürfelte Biom-Farbe des Blocks auf der Hand an!
                     img.color = GridManager.Instance.GetZoneColor(cell.assignedZone);
                 }
                 else
                 {
                     img.color = Color.white;
+                }
+            }
+
+            // Symbol/Attribut (Sanduhr, ?, Altar, Truhe) direkt auf dem UI-Block anzeigen
+            if (cell.attribute != RoomAttributeType.None && RoomAttributeManager.Instance != null)
+            {
+                Sprite attrSprite = RoomAttributeManager.Instance.GetIcon(cell.attribute);
+                if (attrSprite != null)
+                {
+                    GameObject iconObj = new GameObject("AttributeIcon", typeof(RectTransform), typeof(Image));
+                    iconObj.transform.SetParent(rt, false);
+
+                    RectTransform iconRt = iconObj.GetComponent<RectTransform>();
+                    iconRt.anchorMin = Vector2.zero;
+                    iconRt.anchorMax = Vector2.one;
+                    float pad = Mathf.Max(1f, blockSize * 0.1f);
+                    iconRt.offsetMin = new Vector2(pad, pad);
+                    iconRt.offsetMax = new Vector2(-pad, -pad);
+
+                    Image iconImg = iconObj.GetComponent<Image>();
+                    iconImg.sprite = attrSprite;
+                    iconImg.color = RoomAttributeManager.Instance.GetIconColor(cell.attribute);
+                    iconImg.preserveAspect = true;
+                    iconImg.raycastTarget = false;
                 }
             }
         }

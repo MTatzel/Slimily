@@ -209,6 +209,11 @@ public class InventoryManager : MonoBehaviour
             BiomeResonanceManager.Instance.AssignBiomesToShape(newCube);
         }
 
+        if (RoomAttributeManager.Instance != null)
+        {
+            RoomAttributeManager.Instance.AssignAttributesToShape(newCube);
+        }
+
         inventoryCubes.Add(newCube);
         SyncInventoryToHotbarSlots();
         RefreshAllPreviews();

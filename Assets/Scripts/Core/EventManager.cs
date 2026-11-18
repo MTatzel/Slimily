@@ -33,6 +33,28 @@ public class EventManager : MonoBehaviour
     public void EnqueueTimelinePulse() => EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
     public void TriggerEndTurn(bool forcedByZeroFocus = false) => EnqueueTimelineEvent(TimelineEventType.BossMajorPulse);
 
+    /// <summary>
+    /// Wird direkt vom ThreatTrackerManager aufgerufen, nachdem das PiP-Fenster eingeblendet
+    /// und die Wartezeit (pipPreActionDelay) abgelaufen ist.
+    /// </summary>
+    public IEnumerator ExecuteSingleEventRoutine(TimelineEventType eventType)
+    {
+        switch (eventType)
+        {
+            case TimelineEventType.MinionSlabTriggered:
+                yield return StartCoroutine(ExecuteMinionThreatRoutine());
+                break;
+
+            case TimelineEventType.AmbientNightmareRipple:
+                yield return StartCoroutine(ExecuteAmbientRippleRoutine());
+                break;
+
+            case TimelineEventType.BossMajorPulse:
+                yield return StartCoroutine(ExecuteBossPulseRoutine());
+                break;
+        }
+    }
+
     private IEnumerator ProcessEventQueueRoutine()
     {
         isPulseRunning = true;
@@ -40,21 +62,7 @@ public class EventManager : MonoBehaviour
         while (pendingEvents.Count > 0)
         {
             TimelineEventType nextEvent = pendingEvents.Dequeue();
-
-            switch (nextEvent)
-            {
-                case TimelineEventType.MinionSlabTriggered:
-                    yield return StartCoroutine(ExecuteMinionThreatRoutine());
-                    break;
-
-                case TimelineEventType.AmbientNightmareRipple:
-                    yield return StartCoroutine(ExecuteAmbientRippleRoutine());
-                    break;
-
-                case TimelineEventType.BossMajorPulse:
-                    yield return StartCoroutine(ExecuteBossPulseRoutine());
-                    break;
-            }
+            yield return StartCoroutine(ExecuteSingleEventRoutine(nextEvent));
         }
 
         isPulseRunning = false;
@@ -71,7 +79,7 @@ public class EventManager : MonoBehaviour
         }
 
         CheckHazardousStandingTile();
-        yield return new WaitForSeconds(0.1f);
+        yield return new WaitForSeconds(0.25f);
     }
 
     private IEnumerator ExecuteAmbientRippleRoutine()
@@ -86,7 +94,7 @@ public class EventManager : MonoBehaviour
         }
 
         CheckHazardousStandingTile();
-        yield return new WaitForSeconds(0.1f);
+        yield return new WaitForSeconds(0.25f);
     }
 
     private IEnumerator ExecuteBossPulseRoutine()

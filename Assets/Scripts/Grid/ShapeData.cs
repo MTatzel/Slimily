@@ -34,6 +34,7 @@ public class ShapeCell
     public Vector2Int localPosition;
     public ZoneType assignedZone = ZoneType.Forest;
     public bool hasAssignedZone = false;
+    public RoomAttributeType attribute = RoomAttributeType.None;
     public List<BlockModifier> modifiers = new List<BlockModifier>();
 
     public ShapeCell() { }
@@ -49,7 +50,17 @@ public class ShapeCell
         if (initialModifier != BlockModifier.None)
         {
             modifiers.Add(initialModifier);
+            if (initialModifier == BlockModifier.Shrine)
+            {
+                attribute = RoomAttributeType.Altar;
+            }
         }
+    }
+
+    public ShapeCell(Vector2Int pos, RoomAttributeType initialAttribute)
+    {
+        localPosition = pos;
+        attribute = initialAttribute;
     }
 }
 
@@ -89,7 +100,8 @@ public class ShapeData
             ShapeCell cellCopy = new ShapeCell(cell.localPosition)
             {
                 assignedZone = cell.assignedZone,
-                hasAssignedZone = cell.hasAssignedZone
+                hasAssignedZone = cell.hasAssignedZone,
+                attribute = cell.attribute
             };
             cellCopy.modifiers.AddRange(cell.modifiers);
             copy.cells.Add(cellCopy);
@@ -115,6 +127,17 @@ public class ShapeData
         foreach (ShapeCell cell in cells)
         {
             if (cell.modifiers.Contains(mod)) count++;
+            else if (mod == BlockModifier.Shrine && cell.attribute == RoomAttributeType.Altar) count++;
+        }
+        return count;
+    }
+
+    public int CountAttribute(RoomAttributeType attr)
+    {
+        int count = 0;
+        foreach (ShapeCell cell in cells)
+        {
+            if (cell.attribute == attr) count++;
         }
         return count;
     }

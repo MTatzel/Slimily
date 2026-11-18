@@ -320,7 +320,7 @@ public class PlacementManager : MonoBehaviour
                         ? BiomeResonanceManager.Instance.RollBiomeForSingleCell()
                         : ZoneType.Forest);
 
-                gridManager.PlaceBiomeBlockAt(x, y, resonanceBiome);
+                gridManager.PlaceBiomeBlockAt(x, y, resonanceBiome, cell.attribute);
                 ZoneType placedCellBiome = gridManager.grid[x, y].zoneType;
 
                 if (BiomeResonanceManager.Instance != null)

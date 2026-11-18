@@ -92,7 +92,6 @@ public class GridManager : MonoBehaviour
                 newCell.transform.localPosition = new Vector3(x * offset, y * offset, 0);
                 newCell.Initialize(x, y);
 
-                // Keine bunten Sektoren mehr im Nebel: Alle unbebauten Felder starten neutral!
                 AssignInitialNeutralOrBorderZone(newCell, x, y);
 
                 grid[x, y] = newCell;
@@ -121,27 +120,50 @@ public class GridManager : MonoBehaviour
             return;
         }
 
-        // Standardmäßig neutraler Nebel; das echte Biom wird erst beim Platzieren des Würfels übertragen!
         cell.SetZone(ZoneType.Forest, forestColor);
     }
 
     /// <summary>
-    /// Überträgt beim Bauen eines Würfel-Blocks dessen ausgewürfeltes Biom direkt auf die Grid-Kachel.
+    /// Überträgt beim Bauen eines Würfel-Blocks dessen Biom UND dessen Symbol/Attribut auf die Grid-Kachel.
     /// </summary>
-    public void PlaceBiomeBlockAt(int x, int y, ZoneType biome)
+    public void PlaceBiomeBlockAt(int x, int y, ZoneType biome, RoomAttributeType attribute = RoomAttributeType.None)
     {
         if (x < 0 || x >= width || y < 0 || y >= height) return;
 
         GridCell cell = grid[x, y];
         if (cell == null) return;
 
-        // Lila/Schwarzer Außenrand behält seine Gefahr, alle normalen Felder nehmen das Würfel-Biom an
         if (cell.zoneType != ZoneType.PurpleNightmare && cell.zoneType != ZoneType.BlackVoid)
         {
             cell.SetZone(biome, GetZoneColor(biome));
         }
 
         cell.SetOccupied();
+        cell.SetAttribute(attribute);
+    }
+
+    /// <summary>
+    /// Erlaubt dem Boss oder Raum-Events, das Symbol eines Feldes nachträglich zu ändern oder zu löschen.
+    /// </summary>
+    public void SetCellAttribute(Vector2Int coord, RoomAttributeType newAttribute)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return;
+        if (grid == null || grid[coord.x, coord.y] == null) return;
+
+        grid[coord.x, coord.y].SetAttribute(newAttribute);
+    }
+
+    public void ClearCellAttribute(Vector2Int coord)
+    {
+        SetCellAttribute(coord, RoomAttributeType.None);
+    }
+
+    public RoomAttributeType GetCellAttribute(Vector2Int coord)
+    {
+        if (coord.x < 0 || coord.x >= width || coord.y < 0 || coord.y >= height) return RoomAttributeType.None;
+        if (grid == null || grid[coord.x, coord.y] == null) return RoomAttributeType.None;
+
+        return grid[coord.x, coord.y].currentAttribute;
     }
 
     public void SetCellState(int x, int y, CellState newState)
@@ -177,12 +199,6 @@ public class GridManager : MonoBehaviour
         if (grid == null || grid[coord.x, coord.y] == null) return;
 
         grid[coord.x, coord.y].SetWarning(true, highlightColor);
-
-        var renderer = grid[coord.x, coord.y].GetComponentInChildren<SpriteRenderer>();
-        if (renderer != null)
-        {
-            renderer.color = highlightColor;
-        }
     }
 
     public void ResetCellHighlight(Vector2Int coord)

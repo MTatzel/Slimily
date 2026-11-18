@@ -4,16 +4,9 @@ using UnityEngine;
 public class PlacementPreviewVisualizer : MonoBehaviour
 {
     [Header("Transparenz & Größe der Vorschau")]
-    [Tooltip("Deckkraft der Biom-Farbe, wenn die Form gültig platziert werden kann.")]
     [Range(0.2f, 0.9f)] public float validFillAlpha = 0.58f;
-
-    [Tooltip("Deckkraft der Biom-Farbe, wenn die Position ungültig ist.")]
     [Range(0.1f, 0.7f)] public float invalidFillAlpha = 0.30f;
-
-    [Tooltip("Wie stark die Biom-Farbe bei ungültiger Position ausgegraut wird (0 = volle Farbe, 1 = komplett grau).")]
     [Range(0f, 0.85f)] public float invalidDesaturation = 0.50f;
-
-    [Tooltip("Größe der Vorschau-Kachel relativ zur Grid-Zelle (etwas kleiner hebt sie klar von gebauten Räumen ab).")]
     [Range(0.75f, 1.0f)] public float ghostCellScale = 0.88f;
 
     [Header("Pulsieren & Rahmen")]
@@ -30,7 +23,10 @@ public class PlacementPreviewVisualizer : MonoBehaviour
         public GameObject rootObj;
         public SpriteRenderer fillRenderer;
         public SpriteRenderer frameRenderer;
+        public SpriteRenderer iconRenderer;
         public Color baseBiomeColor;
+        public Color baseIconColor;
+        public bool hasIcon;
         public bool isOverallValid;
         public bool isIndividuallyBlocked;
     }
@@ -62,9 +58,6 @@ public class PlacementPreviewVisualizer : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Zeigt die aktuelle 6er-Form mit ihren echten Biom-Farben halbtransparent auf dem Grid an.
-    /// </summary>
     public void ShowPreview(GridManager gm, ShapeData shape, int startX, int startY, bool isOverallValid)
     {
         if (gm == null || shape == null || shape.cells == null)
@@ -121,6 +114,25 @@ public class PlacementPreviewVisualizer : MonoBehaviour
             ghost.frameRenderer.sortingOrder = baseSortingOrder + 6;
             ghost.frameRenderer.sprite = isOverallValid ? validFrameSprite : invalidCrossFrameSprite;
 
+            // Symbol/Attribut auf der Vorschau-Kachel einrichten
+            Sprite attrIcon = (cell.attribute != RoomAttributeType.None && RoomAttributeManager.Instance != null)
+                ? RoomAttributeManager.Instance.GetIcon(cell.attribute)
+                : null;
+
+            ghost.hasIcon = attrIcon != null;
+            if (ghost.hasIcon)
+            {
+                ghost.iconRenderer.gameObject.SetActive(true);
+                ghost.iconRenderer.sprite = attrIcon;
+                ghost.iconRenderer.sortingLayerID = sortingLayerID;
+                ghost.iconRenderer.sortingOrder = baseSortingOrder + 6;
+                ghost.baseIconColor = RoomAttributeManager.Instance.GetIconColor(cell.attribute);
+            }
+            else
+            {
+                ghost.iconRenderer.gameObject.SetActive(false);
+            }
+
             ghost.baseBiomeColor = biomeColor;
             ghost.isOverallValid = isOverallValid;
             ghost.isIndividuallyBlocked = isCellBlocked;
@@ -151,10 +163,16 @@ public class PlacementPreviewVisualizer : MonoBehaviour
             Color frameCol = validBorderColor;
             frameCol.a = Mathf.Clamp01(validBorderColor.a + pulseOffset * 0.5f);
             ghost.frameRenderer.color = frameCol;
+
+            if (ghost.hasIcon)
+            {
+                Color iconCol = ghost.baseIconColor;
+                iconCol.a = 0.92f;
+                ghost.iconRenderer.color = iconCol;
+            }
         }
         else
         {
-            // Biom-Farbe entsättigen, damit man das Biom noch erkennt, aber sofort sieht, dass es inaktiv ist
             float lum = ghost.baseBiomeColor.r * 0.299f + ghost.baseBiomeColor.g * 0.587f + ghost.baseBiomeColor.b * 0.114f;
             Color greyCol = new Color(lum, lum, lum, 1f);
             Color desaturatedFill = Color.Lerp(ghost.baseBiomeColor, greyCol, invalidDesaturation);
@@ -163,6 +181,13 @@ public class PlacementPreviewVisualizer : MonoBehaviour
             ghost.fillRenderer.color = desaturatedFill;
 
             ghost.frameRenderer.color = ghost.isIndividuallyBlocked ? blockedCellCrossColor : invalidCrossColor;
+
+            if (ghost.hasIcon)
+            {
+                Color iconCol = ghost.baseIconColor;
+                iconCol.a = 0.45f;
+                ghost.iconRenderer.color = iconCol;
+            }
         }
     }
 
@@ -186,11 +211,18 @@ public class PlacementPreviewVisualizer : MonoBehaviour
             SpriteRenderer frameSr = frameObj.AddComponent<SpriteRenderer>();
             frameSr.sprite = validFrameSprite;
 
+            GameObject iconObj = new GameObject("AttributeIcon");
+            iconObj.transform.SetParent(root.transform, false);
+            iconObj.transform.localPosition = new Vector3(0f, 0f, -0.05f);
+            SpriteRenderer iconSr = iconObj.AddComponent<SpriteRenderer>();
+            iconObj.SetActive(false);
+
             activeGhostCells.Add(new GhostCellVisual
             {
                 rootObj = root,
                 fillRenderer = fillSr,
-                frameRenderer = frameSr
+                frameRenderer = frameSr,
+                iconRenderer = iconSr
             });
         }
     }
@@ -201,7 +233,6 @@ public class PlacementPreviewVisualizer : MonoBehaviour
 
         const int size = 64;
 
-        // 1. Innere Biom-Füllung (mit leichtem Randabstand für den Rahmen)
         Texture2D fillTex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         fillTex.filterMode = FilterMode.Point;
         for (int y = 0; y < size; y++)
@@ -215,7 +246,6 @@ public class PlacementPreviewVisualizer : MonoBehaviour
         fillTex.Apply();
         fillSprite = Sprite.Create(fillTex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
 
-        // 2. Gültiger Rahmen (Durchgehender klarer Rand)
         Texture2D validTex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         validTex.filterMode = FilterMode.Point;
         for (int y = 0; y < size; y++)
@@ -229,7 +259,6 @@ public class PlacementPreviewVisualizer : MonoBehaviour
         validTex.Apply();
         validFrameSprite = Sprite.Create(validTex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
 
-        // 3. Ungültiger Rahmen (Gestrichelter Rand + Diagonales X-Kreuz in der Mitte)
         Texture2D invalidTex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         invalidTex.filterMode = FilterMode.Point;
         for (int y = 0; y < size; y++)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -30,34 +31,39 @@ public class ThreatTrackerManager : MonoBehaviour
     [Header("Optionale Test-Symbole (Inspector)")]
     public List<ThreatOrbEntry> manualInspectorThreats = new List<ThreatOrbEntry>();
 
-    [Header("Live-Kamera-Ausschnitt (PiP) & R2-Inspektion")]
+    [Header("Live-Kamera-Ausschnitt (PiP) & Timing")]
     [Tooltip("Zeigt bei Countdown = 0 automatisch das kleine Live-Grid-Fenster oben rechts an.")]
     public bool showPiPWindowOnZero = true;
-    [Tooltip("Wie lange das Live-Fenster voll sichtbar bleibt (in Sekunden), bevor es langsam verblasst.")]
-    public float pipHoldDuration = 2.5f;
-    [Tooltip("Wie lange das sanfte Ausblenden (Fade-Out) dauert (in Sekunden).")]
-    public float pipFadeDuration = 1.5f;
+    [Tooltip("1. Phase: Dauer des langsamen Einblendens (Fade-In) in Sekunden.")]
+    public float pipFadeInDuration = 0.8f;
+    [Tooltip("2. Phase: Wartezeit NACH dem Einblenden, BEVOR der Boss seine Aktion startet.")]
+    public float pipPreActionDelay = 1.5f;
+    [Tooltip("4. Phase: Wie lange das Fenster NACH der Boss-Aktion noch voll sichtbar bleibt.")]
+    public float pipHoldDuration = 2.0f;
+    [Tooltip("5. Phase: Wie lange das langsame Ausblenden (Fade-Out) am Ende dauert.")]
+    public float pipFadeDuration = 1.6f;
     public bool allowR2Inspection = true;
 
     private readonly List<ThreatOrbEntry> activeOrbs = new List<ThreatOrbEntry>();
+    private readonly Queue<ThreatOrbEntry> pendingZeroOrbs = new Queue<ThreatOrbEntry>();
     private int selectedOrbIndex = -1;
 
-    public float PipActiveTimer { get; private set; } = 0f;
+    private bool isPipSequenceRunning = false;
+    private float currentSequenceAlpha = 0f;
+    private Coroutine activeSequenceCoroutine;
+
+    // Bleibt > 0 solange die Sequenz läuft, damit ThreatOrbsAndPiPHUD die Kamera aktiviert
+    public float PipActiveTimer => isPipSequenceRunning ? 1f : 0f;
     public string PipEventTitle { get; private set; } = "";
     public Color PipFrameColor { get; private set; } = Color.red;
     public Vector2Int PipFocusCoord { get; private set; } = new Vector2Int(25, 25);
 
-    /// <summary>
-    /// Berechnet den aktuellen Alpha-Wert (1.0 während der Haltezeit, danach sanftes Ausblenden auf 0.0).
-    /// </summary>
     public float CurrentPipAlpha
     {
         get
         {
             if (SelectedOrb != null) return 1f;
-            if (PipActiveTimer <= 0f) return 0f;
-            if (pipFadeDuration <= 0.01f) return 1f;
-            return Mathf.Clamp01(PipActiveTimer / pipFadeDuration);
+            return isPipSequenceRunning ? currentSequenceAlpha : 0f;
         }
     }
 
@@ -67,8 +73,15 @@ public class ThreatTrackerManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else if (Instance != this) Destroy(this);
+        if (Instance == null)
+        {
+            Instance = this;
+        }
+        else if (Instance != this)
+        {
+            Debug.LogWarning($"[ThreatTrackerManager] Doppelte Komponente auf '{gameObject.name}' gefunden und entfernt. Aktiv ist die Instanz auf '{Instance.gameObject.name}'.");
+            Destroy(this);
+        }
     }
 
     private void Update()
@@ -88,11 +101,6 @@ public class ThreatTrackerManager : MonoBehaviour
             {
                 activeOrbs[i].pulseAnimTimer = Mathf.MoveTowards(activeOrbs[i].pulseAnimTimer, 0f, Time.deltaTime * 2.5f);
             }
-        }
-
-        if (PipActiveTimer > 0f)
-        {
-            PipActiveTimer = Mathf.MoveTowards(PipActiveTimer, 0f, Time.deltaTime);
         }
 
         SyncBossTargetCoordinate();
@@ -118,10 +126,18 @@ public class ThreatTrackerManager : MonoBehaviour
 
     public void InitializeOrbs(int bossInterval = 4)
     {
+        if (activeSequenceCoroutine != null)
+        {
+            StopCoroutine(activeSequenceCoroutine);
+            activeSequenceCoroutine = null;
+        }
+
         ClearManualHighlights();
         activeOrbs.Clear();
+        pendingZeroOrbs.Clear();
         selectedOrbIndex = -1;
-        PipActiveTimer = 0f;
+        isPipSequenceRunning = false;
+        currentSequenceAlpha = 0f;
 
         int safeBossInterval = Mathf.Max(1, bossInterval);
 
@@ -196,30 +212,115 @@ public class ThreatTrackerManager : MonoBehaviour
 
                 if (orb.countdown <= 0)
                 {
-                    TriggerOrbZeroEffect(orb, eventManager);
                     orb.countdown = Mathf.Max(1, orb.maxInterval);
                     orb.pulseAnimTimer = 0.9f;
+                    pendingZeroOrbs.Enqueue(orb);
                 }
             }
         }
+
+        if (pendingZeroOrbs.Count > 0 && activeSequenceCoroutine == null)
+        {
+            activeSequenceCoroutine = StartCoroutine(RunPipAndEventSequenceRoutine(eventManager));
+        }
     }
 
-    private void TriggerOrbZeroEffect(ThreatOrbEntry orb, EventManager eventManager)
+    /// <summary>
+    /// Führt die 5 Phasen strikt nacheinander aus:
+    /// 1. Einblenden -> 2. Warten -> 3. Boss-Aktion -> 4. Halten -> 5. Ausblenden.
+    /// </summary>
+    private IEnumerator RunPipAndEventSequenceRoutine(EventManager eventManager)
     {
-        if (showPiPWindowOnZero)
+        if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
+
+        if (!showPiPWindowOnZero)
         {
-            PipFocusCoord = orb.eventType == TimelineEventType.BossMajorPulse
-                ? GetCurrentBossGridCoord()
-                : orb.targetGridCoord;
-            PipEventTitle = $"⚡ {orb.title}";
-            PipFrameColor = orb.orbColor;
-            PipActiveTimer = pipHoldDuration + pipFadeDuration;
+            while (pendingZeroOrbs.Count > 0)
+            {
+                ThreatOrbEntry orb = pendingZeroOrbs.Dequeue();
+                if (eventManager != null)
+                {
+                    yield return StartCoroutine(eventManager.ExecuteSingleEventRoutine(orb.eventType));
+                }
+            }
+            activeSequenceCoroutine = null;
+            yield break;
         }
 
-        if (eventManager != null)
+        isPipSequenceRunning = true;
+        currentSequenceAlpha = 0f;
+
+        ThreatOrbEntry firstOrb = pendingZeroOrbs.Peek();
+        UpdatePipMetadataForOrb(firstOrb);
+
+        // PHASE 1: Langsames Einblenden (Fade-In)
+        if (pipFadeInDuration > 0.01f)
         {
-            eventManager.EnqueueTimelineEvent(orb.eventType);
+            float elapsed = 0f;
+            while (elapsed < pipFadeInDuration)
+            {
+                elapsed += Time.deltaTime;
+                currentSequenceAlpha = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / pipFadeInDuration));
+                yield return null;
+            }
         }
+        currentSequenceAlpha = 1f;
+
+        // PHASE 2: Warten BEVOR der Boss seine Aktion macht
+        if (pipPreActionDelay > 0.01f)
+        {
+            yield return new WaitForSeconds(pipPreActionDelay);
+        }
+
+        // PHASE 3: Boss-Aktion (bzw. Event) jetzt live im geöffneten Fenster ausführen!
+        while (pendingZeroOrbs.Count > 0)
+        {
+            ThreatOrbEntry currentOrb = pendingZeroOrbs.Dequeue();
+            UpdatePipMetadataForOrb(currentOrb);
+
+            if (eventManager != null)
+            {
+                yield return StartCoroutine(eventManager.ExecuteSingleEventRoutine(currentOrb.eventType));
+            }
+
+            // Fokus nach dem Boss-Zug auf die neu markierte Koordinate aktualisieren
+            if (currentOrb.eventType == TimelineEventType.BossMajorPulse)
+            {
+                PipFocusCoord = GetCurrentBossGridCoord();
+            }
+        }
+
+        // PHASE 4: Nachhaltezeit nach der Aktion
+        if (pipHoldDuration > 0.01f)
+        {
+            yield return new WaitForSeconds(pipHoldDuration);
+        }
+
+        // PHASE 5: Langsames Ausblenden (Fade-Out)
+        if (pipFadeDuration > 0.01f)
+        {
+            float elapsed = 0f;
+            while (elapsed < pipFadeDuration)
+            {
+                elapsed += Time.deltaTime;
+                currentSequenceAlpha = Mathf.SmoothStep(1f, 0f, Mathf.Clamp01(elapsed / pipFadeDuration));
+                yield return null;
+            }
+        }
+
+        currentSequenceAlpha = 0f;
+        isPipSequenceRunning = false;
+        activeSequenceCoroutine = null;
+    }
+
+    private void UpdatePipMetadataForOrb(ThreatOrbEntry orb)
+    {
+        if (orb == null) return;
+        PipFocusCoord = orb.eventType == TimelineEventType.BossMajorPulse
+            ? GetCurrentBossGridCoord()
+            : orb.targetGridCoord;
+        PipEventTitle = $"⚡ {orb.title}";
+        PipFrameColor = orb.orbColor;
     }
 
     public void DelayAllOrbs(int extraTicks)
@@ -246,12 +347,19 @@ public class ThreatTrackerManager : MonoBehaviour
 
     private void SyncBossTargetCoordinate()
     {
+        Vector2Int currentBossTarget = GetCurrentBossGridCoord();
+
         for (int i = 0; i < activeOrbs.Count; i++)
         {
             if (activeOrbs[i].eventType == TimelineEventType.BossMajorPulse)
             {
-                activeOrbs[i].targetGridCoord = GetCurrentBossGridCoord();
+                activeOrbs[i].targetGridCoord = currentBossTarget;
             }
+        }
+
+        if (isPipSequenceRunning)
+        {
+            PipFocusCoord = currentBossTarget;
         }
     }
 

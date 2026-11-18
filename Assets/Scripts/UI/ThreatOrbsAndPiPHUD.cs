@@ -75,7 +75,7 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         }
     }
 
-    private void UpdatePiPCameraPosition()
+private void UpdatePiPCameraPosition()
     {
         if (tracker == null || GridManager.Instance == null) return;
 
@@ -89,6 +89,7 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         EnsurePiPCameraReady();
         if (pipCamera == null) return;
 
+        bool wasDisabled = !pipCamera.enabled;
         pipCamera.enabled = true;
 
         Vector2Int targetCoord = tracker.PipActiveTimer > 0.01f
@@ -98,7 +99,14 @@ public class ThreatOrbsAndPiPHUD : MonoBehaviour
         float offset = GridManager.Instance.offset > 0.01f ? GridManager.Instance.offset : 1.1f;
         Vector3 desiredLocalPos = new Vector3(targetCoord.x * offset, targetCoord.y * offset, -10f);
 
-        pipCamera.transform.localPosition = Vector3.Lerp(pipCamera.transform.localPosition, desiredLocalPos, Time.deltaTime * 12f);
+        if (wasDisabled)
+        {
+            pipCamera.transform.localPosition = desiredLocalPos;
+        }
+        else
+        {
+            pipCamera.transform.localPosition = Vector3.Lerp(pipCamera.transform.localPosition, desiredLocalPos, Time.deltaTime * 12f);
+        }
     }
 
     private void OnGUI()
