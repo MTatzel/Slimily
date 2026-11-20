@@ -113,6 +113,11 @@ public class GameManager : MonoBehaviour
             gameObject.AddComponent<CubeLootManager>();
         }
 
+        if (GetComponent<AltarManager>() == null)
+        {
+            gameObject.AddComponent<AltarManager>();
+        }
+
         threatTracker = GetComponent<ThreatTrackerManager>();
         if (threatTracker == null) threatTracker = gameObject.AddComponent<ThreatTrackerManager>();
 
@@ -174,6 +179,11 @@ public class GameManager : MonoBehaviour
         {
             threatTracker.AdvanceAllOrbs(ticks, eventManager);
             currentFocus = threatTracker.GetBossOrbCountdown();
+        }
+
+        if (AltarManager.Instance != null)
+        {
+            AltarManager.Instance.OnTicksAdvanced(ticks);
         }
 
         NotifyFocusChanged();
@@ -484,7 +494,7 @@ public class GameManager : MonoBehaviour
         else
         {
             // Wechsel innerhalb der Macro-Ebene (z.B. Placement <-> MacroPlan):
-            // Nur sicherstellen, dass die Macro-Kamera aktiv ist, aber KEINEN Kamera-Snap zum Spieler auslösen!
+            // Nur sicherstellen, dass die Macro-Kamera aktiv ist, ohne Fokus-Rücksprung zum Spieler
             if (cameraController != null)
             {
                 cameraController.SetCameraActive(macro: true, micro: false);

@@ -179,6 +179,7 @@ GameObject:
   m_Component:
   - component: {fileID: 19358190}
   - component: {fileID: 19358189}
+  - component: {fileID: 19358191}
   m_Layer: 0
   m_Name: MacroGridManager
   m_TagString: Untagged
@@ -200,9 +201,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::MacroGridManager
   roomEntries: []
   defaultRoomPrefab: {fileID: 0}
-  roomsRootFolder: Assets/Prefabs/Rooms
-  autoSyncFoldersInEditor: 1
-  biomePools: []
+  roomPoolManager: {fileID: 0}
   roomSpacing: 100
   startCoordinate: {x: 25, y: 25}
   destroyFarRooms: 0
@@ -224,6 +223,50 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &19358191
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 19358188}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 266a96353b6ad4848935bb424f3aa9df, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BiomeRoomPoolManager
+  roomsRootFolder: Assets/Prefabs/Rooms
+  autoSyncFoldersInEditor: 1
+  biomePools:
+  - biome: 1
+    attributeSubPools:
+    - attributeType: 0
+      allRoomPrefabs:
+      - {fileID: 501595306572013261, guid: fdb3f9ebcc95b924aa23c45abb34a629, type: 3}
+      - {fileID: 9039357711245332424, guid: 3ce3da3a316f3194498031adb15c669b, type: 3}
+    - attributeType: 1
+      allRoomPrefabs:
+      - {fileID: 2607920250022602248, guid: 13e042df2bf4acc458fe673108a64459, type: 3}
+  - biome: 3
+    attributeSubPools:
+    - attributeType: 0
+      allRoomPrefabs: []
+  - biome: 2
+    attributeSubPools:
+    - attributeType: 0
+      allRoomPrefabs: []
+  - biome: 4
+    attributeSubPools:
+    - attributeType: 0
+      allRoomPrefabs: []
+  - biome: 5
+    attributeSubPools:
+    - attributeType: 0
+      allRoomPrefabs: []
+  - biome: 6
+    attributeSubPools: []
+  - biome: 0
+    attributeSubPools: []
 --- !u!1 &88399973
 GameObject:
   m_ObjectHideFlags: 0

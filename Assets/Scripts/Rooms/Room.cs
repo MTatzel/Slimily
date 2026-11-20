@@ -37,6 +37,9 @@ public class Room : MonoBehaviour
     [SerializeField] private Transform[] normalCubeSpawnPoints;
     [SerializeField] private Transform[] secretCubeSpawnPoints;
 
+    [Header("Altar-Spawnpunkt (Optional - sonst Raummitte)")]
+    [SerializeField] private Transform altarSpawnPoint;
+
     [Header("Kamera-Begrenzung")]
     [SerializeField] private Collider2D cameraBounds;
     public Collider2D CameraBounds => cameraBounds;
@@ -54,6 +57,7 @@ public class Room : MonoBehaviour
     private bool doorBoundsCached = false;
     private static Sprite fallbackGlowSprite;
 
+    public AltarInteractable ActiveAltar { get; private set; }
     public int NormalSpawnPointCount => (normalCubeSpawnPoints != null && normalCubeSpawnPoints.Length > 0) ? normalCubeSpawnPoints.Length : 1;
     public int SecretSpawnPointCount => (secretCubeSpawnPoints != null && secretCubeSpawnPoints.Length > 0) ? secretCubeSpawnPoints.Length : 1;
 
@@ -124,7 +128,7 @@ public class Room : MonoBehaviour
                 }
             }
 
-            // 2. Prüfen ob Door_... einen Collider2D hat (wie der 4x2 Rahmen auf dem Screenshot)
+            // 2. Prüfen ob Door_... einen Collider2D hat
             if (!found)
             {
                 Collider2D col = blocker.GetComponentInChildren<Collider2D>();
@@ -188,28 +192,24 @@ public class Room : MonoBehaviour
 
             if (dir == Direction.North)
             {
-                // Obere Hälfte des Nord-Türrahmens, volle Breite
                 float stripH = Mathf.Min(0.75f, tunnel.size.y * 0.45f);
                 triggerWorldCenter.y = (worldTunnelCenter.y + tunnel.extents.y) - stripH * 0.5f;
                 triggerSize = new Vector2(tunnel.size.x, stripH);
             }
             else if (dir == Direction.South)
             {
-                // Untere Hälfte des Süd-Türrahmens, volle Breite
                 float stripH = Mathf.Min(0.75f, tunnel.size.y * 0.45f);
                 triggerWorldCenter.y = (worldTunnelCenter.y - tunnel.extents.y) + stripH * 0.5f;
                 triggerSize = new Vector2(tunnel.size.x, stripH);
             }
             else if (dir == Direction.East)
             {
-                // Rechte Hälfte des Ost-Türrahmens, volle Höhe
                 float stripW = Mathf.Min(0.75f, tunnel.size.x * 0.45f);
                 triggerWorldCenter.x = (worldTunnelCenter.x + tunnel.extents.x) - stripW * 0.5f;
                 triggerSize = new Vector2(stripW, tunnel.size.y);
             }
             else if (dir == Direction.West)
             {
-                // Linke Hälfte des West-Türrahmens, volle Höhe
                 float stripW = Mathf.Min(0.75f, tunnel.size.x * 0.45f);
                 triggerWorldCenter.x = (worldTunnelCenter.x - tunnel.extents.x) + stripW * 0.5f;
                 triggerSize = new Vector2(stripW, tunnel.size.y);
@@ -222,9 +222,6 @@ public class Room : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Gibt die exakte Welt-Bounding-Box des Türrahmens (z.B. 4x2 Kasten) für eine Richtung zurück.
-    /// </summary>
     public Bounds GetDoorTunnelWorldBounds(Direction dir)
     {
         if (!doorBoundsCached)
@@ -282,6 +279,25 @@ public class Room : MonoBehaviour
             }
         }
         return transform;
+    }
+
+    public Vector3 GetAltarWorldPosition()
+    {
+        return altarSpawnPoint != null ? altarSpawnPoint.position : transform.position;
+    }
+
+    public void RegisterSpawnedAltar(AltarInteractable altar)
+    {
+        ActiveAltar = altar;
+    }
+
+    public void ClearSpawnedAltar()
+    {
+        if (ActiveAltar != null)
+        {
+            Destroy(ActiveAltar.gameObject);
+            ActiveAltar = null;
+        }
     }
 
     public void RegisterSpawnedPickup(CubePickup pickup)
@@ -464,6 +480,13 @@ public class Room : MonoBehaviour
                     Gizmos.DrawWireCube(secretCubeSpawnPoints[i].position, new Vector3(0.6f, 0.6f, 0.6f));
                 }
             }
+        }
+
+        if (altarSpawnPoint != null)
+        {
+            Gizmos.color = new Color(0.4f, 1f, 0.9f, 1f);
+            Gizmos.DrawWireSphere(altarSpawnPoint.position, 0.7f);
+            Gizmos.DrawWireCube(altarSpawnPoint.position, new Vector3(0.8f, 1.2f, 0.5f));
         }
     }
 

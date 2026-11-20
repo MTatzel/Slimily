@@ -295,7 +295,7 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-    private void TryPlaceShapeAt(int startX, int startY)
+private void TryPlaceShapeAt(int startX, int startY)
     {
         if (gridManager == null || currentShape == null) return;
 
@@ -303,16 +303,19 @@ public class PlacementManager : MonoBehaviour
         {
             string placedName = currentShape.shapeName;
             int cardTickCost = currentShape.tickCost;
-            int shrineCount = currentShape.CountModifier(BlockModifier.Shrine);
 
-            List<Vector2Int> newlyPlacedCoords = new List<Vector2Int>();
+            List<Vector2Int> normalLootCandidateCoords = new List<Vector2Int>();
 
             foreach (ShapeCell cell in currentShape.cells)
             {
                 int x = startX + cell.localPosition.x;
                 int y = startY + cell.localPosition.y;
                 Vector2Int coord = new Vector2Int(x, y);
-                newlyPlacedCoords.Add(coord);
+
+                if (cell.attribute != RoomAttributeType.Altar)
+                {
+                    normalLootCandidateCoords.Add(coord);
+                }
 
                 ZoneType resonanceBiome = cell.hasAssignedZone
                     ? cell.assignedZone
@@ -323,6 +326,11 @@ public class PlacementManager : MonoBehaviour
                 gridManager.PlaceBiomeBlockAt(x, y, resonanceBiome, cell.attribute);
                 ZoneType placedCellBiome = gridManager.grid[x, y].zoneType;
 
+                if (cell.attribute == RoomAttributeType.Altar && AltarManager.Instance != null)
+                {
+                    AltarManager.Instance.RegisterAltar(coord, placedCellBiome);
+                }
+
                 if (BiomeResonanceManager.Instance != null)
                 {
                     BiomeResonanceManager.Instance.RegisterBuiltTile(placedCellBiome);
@@ -330,14 +338,18 @@ public class PlacementManager : MonoBehaviour
 
                 if (MacroGridManager.Instance != null)
                 {
-                    Room chosenRoomPrefab = MacroGridManager.Instance.DrawRoomPrefabForBiome(placedCellBiome, resonanceBiome);
+                    Room chosenRoomPrefab = MacroGridManager.Instance.GetRoomPrefabForCell(
+                        placedCellBiome,
+                        resonanceBiome,
+                        cell.attribute
+                    );
                     MacroGridManager.Instance.RegisterRoom(coord, chosenRoomPrefab);
                 }
             }
 
             if (CubeLootManager.Instance != null)
             {
-                CubeLootManager.Instance.RegisterPlacedCluster(newlyPlacedCoords);
+                CubeLootManager.Instance.RegisterPlacedCluster(normalLootCandidateCoords);
             }
 
             if (MacroGridManager.Instance != null)
@@ -355,19 +367,12 @@ public class PlacementManager : MonoBehaviour
 
             if (gameManager == null) gameManager = GameManager.Instance;
 
-            if (shrineCount > 0 && gameManager != null)
-            {
-                float heal = shrineCount * nightmareReductionPerShrine;
-                gameManager.AddNightmare(-heal, $"Schrein gebaut ({placedName})");
-            }
-
             if (useFocusCost && gameManager != null && cardTickCost > 0)
             {
                 gameManager.AdvanceTicks(cardTickCost, $"Würfel '{placedName}' gebaut ({cardTickCost} Tick)");
             }
         }
     }
-
     private Vector2Int GetCellUnderMouse()
     {
         Camera activeCam = GetActiveRaycastCamera();

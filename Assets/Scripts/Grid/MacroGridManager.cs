@@ -1,10 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Unity.Cinemachine;
-#if UNITY_EDITOR
-using UnityEditor;
-using System.IO;
-#endif
 
 public class MacroGridManager : MonoBehaviour
 {
@@ -17,29 +13,13 @@ public class MacroGridManager : MonoBehaviour
         public Room roomPrefab;
     }
 
-    [System.Serializable]
-    public class BiomeRoomPool
-    {
-        public ZoneType biome;
-        [Tooltip("Alle verfügbaren Raum-Prefabs für dieses Biom (wird automatisch aus Assets/Prefabs/Rooms/<Biom> geladen).")]
-        public List<Room> allRoomPrefabs = new List<Room>();
-
-        // Aktueller Zieh-Stapel zur Laufzeit (wird geleert und bei 0 automatisch neu gemischt)
-        [System.NonSerialized]
-        public List<Room> remainingDrawPool = new List<Room>();
-    }
-
-    [Header("Raum-Konfiguration & Fallback")]
+    [Header("Raum-Konfiguration & Fallbacks")]
     [SerializeField] private List<RoomEntry> roomEntries = new List<RoomEntry>();
     [Tooltip("Wird für den Start-Hub und als Fallback genutzt, falls ein Biom-Ordner noch leer ist.")]
     [SerializeField] private Room defaultRoomPrefab;
 
-    [Header("Biom Raum-Pools (Automatischer Ordner-Sync)")]
-    [Tooltip("Stammordner, in dem deine Biom-Unterordner (z.B. Forest, Ruins, Ocean, Swamp) liegen.")]
-    [SerializeField] private string roomsRootFolder = "Assets/Prefabs/Rooms";
-    [Tooltip("Synchronisiert beim Start im Editor automatisch alle Raum-Prefabs aus den Biom-Unterordnern.")]
-    [SerializeField] private bool autoSyncFoldersInEditor = true;
-    [SerializeField] private List<BiomeRoomPool> biomePools = new List<BiomeRoomPool>();
+    [Header("Biom- & Attribut-Pools")]
+    [SerializeField] private BiomeRoomPoolManager roomPoolManager;
 
     [Header("Streaming & Platzierung (Weit getrennt gegen Überlappung)")]
     [SerializeField] private float roomSpacing = 200f;
@@ -76,6 +56,20 @@ public class MacroGridManager : MonoBehaviour
             Destroy(gameObject);
             return;
         }
+
+        EnsurePoolManager();
+    }
+
+    private void EnsurePoolManager()
+    {
+        if (roomPoolManager == null)
+        {
+            roomPoolManager = GetComponent<BiomeRoomPoolManager>();
+            if (roomPoolManager == null)
+            {
+                roomPoolManager = gameObject.AddComponent<BiomeRoomPoolManager>();
+            }
+        }
     }
 
     private void OnEnable()
@@ -88,210 +82,16 @@ public class MacroGridManager : MonoBehaviour
         Room.OnExitTriggered -= HandleRoomExit;
     }
 
-    // =========================================================================
-    // BIOM-POOL LOGIK (ORDNER-SCAN, ZIEHEN OHNE ZURÜCKLEGEN & AUTO-REFILL)
-    // =========================================================================
-
-#if UNITY_EDITOR
-    [ContextMenu("Biom-Pools jetzt aus Ordnern synchronisieren")]
-    public void SyncBiomePoolsFromFolders()
+    public Room GetRoomPrefabForCell(ZoneType primaryBiome, ZoneType fallbackResonanceBiome, RoomAttributeType attribute)
     {
-        if (string.IsNullOrWhiteSpace(roomsRootFolder) || !AssetDatabase.IsValidFolder(roomsRootFolder))
-        {
-            return;
-        }
-
-        ZoneType[] supportedBiomes =
-        {
-            ZoneType.Forest,
-            ZoneType.Ruins,
-            ZoneType.Ocean,
-            ZoneType.Swamp,
-            ZoneType.PurpleNightmare,
-            ZoneType.BlackVoid,
-            ZoneType.Hub
-        };
-
-        foreach (ZoneType zone in supportedBiomes)
-        {
-            BiomeRoomPool pool = GetOrCreatePoolEntry(zone);
-            pool.allRoomPrefabs.Clear();
-
-            string[] candidateFolderNames = GetFolderNamesForBiome(zone);
-            foreach (string folderName in candidateFolderNames)
-            {
-                string fullFolderPath = $"{roomsRootFolder.TrimEnd('/')}/{folderName}";
-                if (!AssetDatabase.IsValidFolder(fullFolderPath)) continue;
-
-                string[] prefabGuids = AssetDatabase.FindAssets("t:Prefab", new[] { fullFolderPath });
-                foreach (string guid in prefabGuids)
-                {
-                    string assetPath = AssetDatabase.GUIDToAssetPath(guid);
-                    GameObject prefabObj = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-                    if (prefabObj != null)
-                    {
-                        Room roomComp = prefabObj.GetComponent<Room>();
-                        if (roomComp != null && !pool.allRoomPrefabs.Contains(roomComp))
-                        {
-                            pool.allRoomPrefabs.Add(roomComp);
-                        }
-                    }
-                }
-            }
-        }
-
-        EditorUtility.SetDirty(this);
+        EnsurePoolManager();
+        return roomPoolManager.DrawRoomForCell(primaryBiome, fallbackResonanceBiome, attribute, defaultRoomPrefab);
     }
 
-    private string[] GetFolderNamesForBiome(ZoneType zone)
-    {
-        return zone switch
-        {
-            ZoneType.Forest => new[] { "Forest", "Wald" },
-            ZoneType.Ruins => new[] { "Ruins", "Ruinen" },
-            ZoneType.Ocean => new[] { "Ocean", "Meer" },
-            ZoneType.Swamp => new[] { "Swamp", "Sumpf" },
-            ZoneType.PurpleNightmare => new[] { "PurpleNightmare", "Nightmare", "Albtraum" },
-            ZoneType.BlackVoid => new[] { "BlackVoid", "Void", "Leere" },
-            ZoneType.Hub => new[] { "Hub", "Start" },
-            _ => new[] { zone.ToString() }
-        };
-    }
-#endif
-
-    private BiomeRoomPool GetOrCreatePoolEntry(ZoneType zone)
-    {
-        for (int i = 0; i < biomePools.Count; i++)
-        {
-            if (biomePools[i] != null && biomePools[i].biome == zone)
-            {
-                return biomePools[i];
-            }
-        }
-
-        BiomeRoomPool newPool = new BiomeRoomPool { biome = zone };
-        biomePools.Add(newPool);
-        return newPool;
-    }
-
-    private BiomeRoomPool FindPoolWithRooms(ZoneType zone)
-    {
-        for (int i = 0; i < biomePools.Count; i++)
-        {
-            BiomeRoomPool pool = biomePools[i];
-            if (pool != null && pool.biome == zone && pool.allRoomPrefabs != null)
-            {
-                pool.allRoomPrefabs.RemoveAll(r => r == null);
-                if (pool.allRoomPrefabs.Count > 0)
-                {
-                    return pool;
-                }
-            }
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Setzt zu Beginn eines Runs alle Zieh-Stapel zurück und mischt sie frisch durch.
-    /// </summary>
-    public void ResetAndShuffleAllBiomePools()
-    {
-#if UNITY_EDITOR
-        if (autoSyncFoldersInEditor)
-        {
-            SyncBiomePoolsFromFolders();
-        }
-#endif
-        for (int i = 0; i < biomePools.Count; i++)
-        {
-            BiomeRoomPool pool = biomePools[i];
-            if (pool == null) continue;
-
-            if (pool.remainingDrawPool == null)
-            {
-                pool.remainingDrawPool = new List<Room>();
-            }
-            pool.remainingDrawPool.Clear();
-            RefillAndShufflePool(pool);
-        }
-    }
-
-    private void RefillAndShufflePool(BiomeRoomPool pool)
-    {
-        if (pool == null || pool.allRoomPrefabs == null) return;
-
-        pool.allRoomPrefabs.RemoveAll(r => r == null);
-        if (pool.allRoomPrefabs.Count == 0) return;
-
-        if (pool.remainingDrawPool == null)
-        {
-            pool.remainingDrawPool = new List<Room>();
-        }
-        pool.remainingDrawPool.Clear();
-        pool.remainingDrawPool.AddRange(pool.allRoomPrefabs);
-
-        // Fisher-Yates Shuffle
-        for (int i = pool.remainingDrawPool.Count - 1; i > 0; i--)
-        {
-            int swapIndex = Random.Range(0, i + 1);
-            Room tmp = pool.remainingDrawPool[i];
-            pool.remainingDrawPool[i] = pool.remainingDrawPool[swapIndex];
-            pool.remainingDrawPool[swapIndex] = tmp;
-        }
-    }
-
-    /// <summary>
-    /// Zieht den nächsten Raum aus dem passenden Biom-Pool.
-    /// Ist der Pool leer, wird er automatisch wieder aufgefüllt und neu gemischt.
-    /// Existiert für das Biom kein Ordner oder kein Raum, wird defaultRoomPrefab zurückgegeben.
-    /// </summary>
     public Room DrawRoomPrefabForBiome(ZoneType primaryBiome, ZoneType fallbackResonanceBiome = ZoneType.Forest)
     {
-        BiomeRoomPool targetPool = FindPoolWithRooms(primaryBiome);
-
-        // Falls auf dem lila/schwarzen Rand gebaut wurde und dafür kein eigener Ordner existiert,
-        // nutze den Pool des ausgewürfelten Resonanz-Bioms des Würfelblocks:
-        if (targetPool == null && fallbackResonanceBiome != primaryBiome)
-        {
-            targetPool = FindPoolWithRooms(fallbackResonanceBiome);
-        }
-
-        // Falls für dieses Biom gar kein Ordner oder kein Raum existiert -> Standard-Prefab!
-        if (targetPool == null)
-        {
-            return defaultRoomPrefab;
-        }
-
-        if (targetPool.remainingDrawPool == null)
-        {
-            targetPool.remainingDrawPool = new List<Room>();
-        }
-
-        targetPool.remainingDrawPool.RemoveAll(r => r == null);
-
-        // Pool ist leer -> Automatisch wieder voll auffüllen & mischen!
-        if (targetPool.remainingDrawPool.Count == 0)
-        {
-            RefillAndShufflePool(targetPool);
-            Debug.Log($"[MacroGridManager] Raum-Pool für Biom '{targetPool.biome}' war leer und wurde neu aufgefüllt ({targetPool.remainingDrawPool.Count} Räume).");
-        }
-
-        if (targetPool.remainingDrawPool.Count == 0)
-        {
-            return defaultRoomPrefab;
-        }
-
-        // Obersten Raum aus dem Pool ziehen und entfernen
-        int lastIdx = targetPool.remainingDrawPool.Count - 1;
-        Room drawnPrefab = targetPool.remainingDrawPool[lastIdx];
-        targetPool.remainingDrawPool.RemoveAt(lastIdx);
-
-        return drawnPrefab != null ? drawnPrefab : defaultRoomPrefab;
+        return GetRoomPrefabForCell(primaryBiome, fallbackResonanceBiome, RoomAttributeType.None);
     }
-
-    // =========================================================================
-    // GRID & STREAMING VERWALTUNG
-    // =========================================================================
 
     public bool IsRoomVisited(Vector2Int coord)
     {
@@ -344,6 +144,7 @@ public class MacroGridManager : MonoBehaviour
 
         FindPlayerIfNeeded();
         FindCameraIfNeeded();
+        EnsurePoolManager();
 
         foreach (var room in grid.Values)
         {
@@ -360,9 +161,12 @@ public class MacroGridManager : MonoBehaviour
         {
             CubeLootManager.Instance.ClearAllLootStates();
         }
+        if (AltarManager.Instance != null)
+        {
+            AltarManager.Instance.ClearAllAltars();
+        }
 
-        // Alle Biom-Pools aus den Ordnern synchronisieren und frisch mischen
-        ResetAndShuffleAllBiomePools();
+        roomPoolManager.ResetAndShuffleAllPools();
 
         InitializeGrid();
 
@@ -429,6 +233,10 @@ public class MacroGridManager : MonoBehaviour
                     if (wasInactive && CubeLootManager.Instance != null)
                     {
                         CubeLootManager.Instance.RefreshRoomLoot(room, coord);
+                    }
+                    if (wasInactive && AltarManager.Instance != null)
+                    {
+                        AltarManager.Instance.RefreshRoomAltar(room, coord);
                     }
                 }
             }
@@ -500,9 +308,8 @@ public class MacroGridManager : MonoBehaviour
                  coord.y >= 0 && coord.y < GridManager.Instance.height &&
                  coord != startCoordinate)
         {
-            // Falls ein Raum ohne explizites Prefab registriert wurde, ziehe ihn anhand der GridCell-Zone
-            ZoneType cellZone = GridManager.Instance.grid[coord.x, coord.y].zoneType;
-            prefabToSpawn = DrawRoomPrefabForBiome(cellZone, cellZone);
+            GridCell cell = GridManager.Instance.grid[coord.x, coord.y];
+            prefabToSpawn = GetRoomPrefabForCell(cell.zoneType, cell.zoneType, cell.currentAttribute);
             roomPrefabs[coord] = prefabToSpawn;
         }
         else if (defaultRoomPrefab != null)
@@ -522,6 +329,10 @@ public class MacroGridManager : MonoBehaviour
             if (CubeLootManager.Instance != null)
             {
                 CubeLootManager.Instance.RefreshRoomLoot(newRoom, coord);
+            }
+            if (AltarManager.Instance != null)
+            {
+                AltarManager.Instance.RefreshRoomAltar(newRoom, coord);
             }
 
             return newRoom;
@@ -671,6 +482,10 @@ public class MacroGridManager : MonoBehaviour
         if (CubeLootManager.Instance != null)
         {
             CubeLootManager.Instance.OnRoomDestroyedByBoss(coord);
+        }
+        if (AltarManager.Instance != null)
+        {
+            AltarManager.Instance.OnRoomDestroyedByBoss(coord);
         }
 
         if (GridManager.Instance != null && GridManager.Instance.grid != null &&
