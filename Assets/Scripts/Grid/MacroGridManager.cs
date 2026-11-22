@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Unity.Cinemachine;
+using System.Collections;
 
 public class MacroGridManager : MonoBehaviour
 {
@@ -39,6 +40,7 @@ public class MacroGridManager : MonoBehaviour
 
     private Vector2Int currentCoordinate;
     private float lastTransitionTime = -1f;
+    private bool isRoomTransitionRunning = false;
     private const float TransitionCooldown = 0.18f;
 
     public Vector2Int CurrentCoordinate => currentCoordinate;
@@ -364,9 +366,9 @@ public class MacroGridManager : MonoBehaviour
         room.SetDoorWarning(Direction.West, openWest && IsCellTargetedByBoss(west));
     }
 
-    private void HandleRoomExit(Room fromRoom, Direction exitDirection)
+ private void HandleRoomExit(Room fromRoom, Direction exitDirection)
     {
-        if (Time.time - lastTransitionTime < TransitionCooldown)
+        if (isRoomTransitionRunning || Time.time - lastTransitionTime < TransitionCooldown)
         {
             return;
         }
@@ -379,13 +381,36 @@ public class MacroGridManager : MonoBehaviour
             return;
         }
 
-        bool wasAlreadyVisited = IsRoomVisited(targetCoord);
-        int entryTickCost = GetRoomEntryFocusCost(targetCoord);
+        StartCoroutine(RoomTransitionRoutine(fromRoom, exitDirection, targetCoord));
+    }
 
+private IEnumerator RoomTransitionRoutine(Room fromRoom, Direction exitDirection, Vector2Int targetCoord)
+    {
+        isRoomTransitionRunning = true;
         lastTransitionTime = Time.time;
-        visitedRooms.Add(targetCoord);
 
         FindPlayerIfNeeded();
+        PlatformerSlimeController slimeController = playerTransform != null ? playerTransform.GetComponent<PlatformerSlimeController>() : null;
+        Rigidbody2D slimeRb = playerTransform != null ? playerTransform.GetComponent<Rigidbody2D>() : null;
+
+        // 1. Slime sofort einfrieren (bevor irgendetwas passiert)
+        if (slimeController != null) slimeController.enabled = false;
+        if (slimeRb != null) slimeRb.simulated = false;
+
+        // 2. Komplett auf Schwarz ausblenden
+        if (RoomTransitionFader.Instance != null)
+        {
+            yield return StartCoroutine(RoomTransitionFader.Instance.FadeOutRoutine(exitDirection));
+        }
+
+        // Sicherstellen, dass mindestens 1 komplett schwarzer Frame gerendert wurde
+        yield return new WaitForEndOfFrame();
+
+        // 3. Raumwechsel, Teleport & Kamera-Update im komplett schwarzen Bild
+        bool wasAlreadyVisited = IsRoomVisited(targetCoord);
+        int entryTickCost = GetRoomEntryFocusCost(targetCoord);
+        visitedRooms.Add(targetCoord);
+
         Vector3 previousPos = (playerTransform != null) ? playerTransform.position : Vector3.zero;
 
         UpdateActiveRooms(targetCoord);
@@ -399,13 +424,19 @@ public class MacroGridManager : MonoBehaviour
         {
             Vector3 finalTargetPos = targetRoom.transform.position;
 
-            if (playerTransform != null && playerTransform.TryGetComponent<PlatformerSlimeController>(out var slimeController))
+            if (slimeController != null)
             {
                 finalTargetPos = slimeController.ExecuteRoomTransition(fromRoom, targetRoom, exitDirection, previousPos);
             }
 
             Vector3 deltaPosition = finalTargetPos - previousPos;
             UpdateCameraForTransition(targetRoom, deltaPosition);
+
+            // Cinemachine zwingen, Damping zu überspringen und sofort einzurasten
+            if (cinemachineCam != null)
+            {
+                cinemachineCam.PreviousStateIsValid = false;
+            }
         }
 
         if (BiomeResonanceManager.Instance != null)
@@ -417,6 +448,23 @@ public class MacroGridManager : MonoBehaviour
         {
             GameManager.Instance.AdvanceTicks(entryTickCost, $"Raum {targetCoord} betreten");
         }
+
+        // 4. Im Dunkeln 2 Frames warten, bis Cinemachine + Confiner komplett auf dem neuen Raum eingerastet sind
+        yield return null;
+        yield return null;
+
+        // 5. Erst jetzt wieder hell werden (Slime bleibt währenddessen noch eingefroren!)
+        if (RoomTransitionFader.Instance != null)
+        {
+            yield return StartCoroutine(RoomTransitionFader.Instance.FadeInRoutine(exitDirection));
+        }
+
+        // 6. Bild ist wieder da -> Slime freigeben
+        if (slimeRb != null) slimeRb.simulated = true;
+        if (slimeController != null) slimeController.enabled = true;
+
+        lastTransitionTime = Time.time;
+        isRoomTransitionRunning = false;
     }
 
     private void UpdateCameraConfiner(Room targetRoom)

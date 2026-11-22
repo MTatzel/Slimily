@@ -343,6 +343,7 @@ private void TryPlaceShapeAt(int startX, int startY)
                         resonanceBiome,
                         cell.attribute
                     );
+                    Debug.Log($"[Altar-Pool-Check] Feld {coord} | Biom: {placedCellBiome} | Attribut: {cell.attribute} | Gewählter Raum: {(chosenRoomPrefab != null ? chosenRoomPrefab.name : "NULL")}");
                     MacroGridManager.Instance.RegisterRoom(coord, chosenRoomPrefab);
                 }
             }
