@@ -11,7 +11,8 @@ public enum GameState
     MapView,
     MacroPlan,
     Placement,
-    EnemyTurn
+    EnemyTurn,
+    AltarTeleport
 }
 
 public class GameManager : MonoBehaviour
@@ -450,7 +451,7 @@ public class GameManager : MonoBehaviour
         FindReferencesIfNeeded();
         InterruptMeditation();
 
-        bool isGoingToMacro = (state == GameState.MacroPlan || state == GameState.MapView || state == GameState.EnemyTurn);
+        bool isGoingToMacro = (state == GameState.MacroPlan || state == GameState.MapView || state == GameState.EnemyTurn || state == GameState.AltarTeleport);
         bool comingFromMicro = (fromState == GameState.FreeRoam);
 
         if (state == GameState.FreeRoam)

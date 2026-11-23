@@ -52,6 +52,11 @@ public class AltarManager : MonoBehaviour
     [Tooltip("Cooldown in Ticks nach einer Nutzung (bei TickCooldown oder Combo).")]
     [Range(0, 12)] public int cooldownTicks = 4;
 
+    [Header("Boss-Korrumpierung")]
+    [Tooltip("Tick-Kosten, um einen korrumpierten Altar im Raum wieder zu reinigen.")]
+    [Range(0, 3)] public int cleanseTickCost = 1;
+
+    private AltarBiomeBonusHandler biomeBonusHandler;
     private readonly Dictionary<Vector2Int, AltarStateData> altarsByCoord = new Dictionary<Vector2Int, AltarStateData>();
     private static Sprite fallbackAltarSprite;
 
@@ -61,6 +66,17 @@ public class AltarManager : MonoBehaviour
     {
         if (Instance == null) Instance = this;
         else if (Instance != this) { Destroy(this); return; }
+
+        if (GetComponent<AltarTeleportController>() == null)
+        {
+            gameObject.AddComponent<AltarTeleportController>();
+        }
+
+        biomeBonusHandler = GetComponent<AltarBiomeBonusHandler>();
+        if (biomeBonusHandler == null)
+        {
+            biomeBonusHandler = gameObject.AddComponent<AltarBiomeBonusHandler>();
+        }
     }
 
     public void ClearAllAltars()
@@ -87,6 +103,51 @@ public class AltarManager : MonoBehaviour
         return state;
     }
 
+    public bool IsAltarCorrupted(Vector2Int coord)
+    {
+        return altarsByCoord.TryGetValue(coord, out AltarStateData state) && state.status == AltarStatus.Corrupted;
+    }
+
+    /// <summary>
+    /// Kann gezielt von bestimmten Boss-Angriffen aufgerufen werden, um einen Altar zu korrumpieren.
+    /// Gibt true zurück, wenn auf diesem Feld tatsächlich ein Altar korrumpiert wurde.
+    /// </summary>
+    public bool TryCorruptAltar(Vector2Int coord)
+    {
+        if (!altarsByCoord.TryGetValue(coord, out AltarStateData state)) return false;
+        if (state.status == AltarStatus.Corrupted) return false;
+
+        state.status = AltarStatus.Corrupted;
+        state.cooldownTicksRemaining = 0;
+
+        if (GridManager.Instance != null)
+        {
+            GridManager.Instance.SetCellAttribute(coord, RoomAttributeType.Corrupted);
+        }
+
+        RefreshActiveRoomVisual(coord);
+        Debug.Log($"[AltarManager] Altar bei {coord} wurde vom Boss korrumpiert!");
+        return true;
+    }
+
+    /// <summary>
+    /// Praktischer Helfer für Flächen-Angriffe von Bossen (korrumpiert alle Altäre im Radius).
+    /// </summary>
+    public int CorruptAltarsInRadius(Vector2Int center, int radius)
+    {
+        int corruptedCount = 0;
+        foreach (var kvp in altarsByCoord)
+        {
+            Vector2Int coord = kvp.Key;
+            int dist = Mathf.Max(Mathf.Abs(coord.x - center.x), Mathf.Abs(coord.y - center.y));
+            if (dist <= radius && TryCorruptAltar(coord))
+            {
+                corruptedCount++;
+            }
+        }
+        return corruptedCount;
+    }
+
     public void RefreshRoomAltar(Room room, Vector2Int coord)
     {
         if (room == null) return;
@@ -95,10 +156,11 @@ public class AltarManager : MonoBehaviour
 
         if (!altarsByCoord.TryGetValue(coord, out AltarStateData state))
         {
-            bool cellHasAltar = GridManager.Instance != null &&
-                                GridManager.Instance.GetCellAttribute(coord) == RoomAttributeType.Altar;
+            RoomAttributeType attr = GridManager.Instance != null
+                ? GridManager.Instance.GetCellAttribute(coord)
+                : RoomAttributeType.None;
 
-            if (!cellHasAltar) return;
+            if (attr != RoomAttributeType.Altar && attr != RoomAttributeType.Corrupted) return;
 
             ZoneType cellBiome = (GridManager.Instance != null && GridManager.Instance.grid != null &&
                                   coord.x >= 0 && coord.x < GridManager.Instance.width &&
@@ -108,6 +170,10 @@ public class AltarManager : MonoBehaviour
 
             RegisterAltar(coord, cellBiome);
             state = altarsByCoord[coord];
+            if (attr == RoomAttributeType.Corrupted)
+            {
+                state.status = AltarStatus.Corrupted;
+            }
         }
 
         Vector3 spawnPos = room.GetAltarWorldPosition();
@@ -133,14 +199,7 @@ public class AltarManager : MonoBehaviour
                 return AwakenAltar(state, out feedbackMessage);
 
             case AltarStatus.Corrupted:
-                state.status = AltarStatus.Active;
-                if (GridManager.Instance != null)
-                {
-                    GridManager.Instance.SetCellAttribute(coord, RoomAttributeType.Altar);
-                }
-                feedbackMessage = "Altar gereinigt!";
-                RefreshActiveRoomVisual(coord);
-                return true;
+                return CleanseAltar(state, out feedbackMessage);
 
             case AltarStatus.OnCooldown:
                 feedbackMessage = $"Lädt auf ({state.cooldownTicksRemaining} Ticks)";
@@ -151,12 +210,58 @@ public class AltarManager : MonoBehaviour
                 return false;
 
             case AltarStatus.Active:
-                feedbackMessage = "Altar aktiv (Teleport folgt in Schritt 2)";
-                return true;
+                if (AltarTeleportController.Instance != null)
+                {
+                    return AltarTeleportController.Instance.TryBeginTeleportSelection(coord, out feedbackMessage);
+                }
+                feedbackMessage = "Teleport-Controller fehlt!";
+                return false;
 
             default:
                 return false;
         }
+    }
+
+    private bool CleanseAltar(AltarStateData state, out string feedbackMessage)
+    {
+        if (cleanseTickCost > 0 && GameManager.Instance != null)
+        {
+            GameManager.Instance.AdvanceTicks(cleanseTickCost, $"Altar gereinigt ({state.coordinate})");
+        }
+
+        state.status = state.hasGrantedInitialLoot ? AltarStatus.Active : AltarStatus.Inactive;
+
+        if (GridManager.Instance != null)
+        {
+            GridManager.Instance.SetCellAttribute(state.coordinate, RoomAttributeType.Altar);
+        }
+
+        RefreshActiveRoomVisual(state.coordinate);
+        feedbackMessage = cleanseTickCost > 0
+            ? $"Altar gereinigt! ({cleanseTickCost} Tick)"
+            : "Altar gereinigt!";
+        return true;
+    }
+
+    public void ConsumeTeleportUse(Vector2Int coord)
+    {
+        if (!altarsByCoord.TryGetValue(coord, out AltarStateData state)) return;
+
+        if (usageMode == AltarUsageMode.FixedCharges)
+        {
+            state.remainingCharges = Mathf.Max(0, state.remainingCharges - 1);
+            if (state.remainingCharges <= 0)
+            {
+                state.status = AltarStatus.Exhausted;
+            }
+        }
+        else if (cooldownTicks > 0)
+        {
+            state.cooldownTicksRemaining = cooldownTicks;
+            state.status = AltarStatus.OnCooldown;
+        }
+
+        RefreshActiveRoomVisual(coord);
     }
 
     private bool AwakenAltar(AltarStateData state, out string feedbackMessage)
@@ -180,6 +285,10 @@ public class AltarManager : MonoBehaviour
             state.hasGrantedInitialLoot = true;
         }
 
+        string biomeBonusText = biomeBonusHandler != null
+            ? biomeBonusHandler.ApplyAwakenBonus(state.biome, state.coordinate)
+            : string.Empty;
+
         if (usageMode == AltarUsageMode.FixedCharges)
         {
             state.remainingCharges = Mathf.Max(0, state.remainingCharges - 1);
@@ -198,6 +307,11 @@ public class AltarManager : MonoBehaviour
         feedbackMessage = cubeGranted
             ? $"Erweckt! -{nightmareHealOnAwaken:0}% Albtraum & +1 Würfel"
             : $"Erweckt! -{nightmareHealOnAwaken:0}% Albtraum";
+
+        if (!string.IsNullOrEmpty(biomeBonusText))
+        {
+            feedbackMessage += $" | {biomeBonusText}";
+        }
 
         RefreshActiveRoomVisual(state.coordinate);
         return true;
