@@ -23,6 +23,7 @@ public class PlacementManager : MonoBehaviour
 
     private ShapeData currentShape = null;
     private int currentSlotIndex = -1;
+    private float selectInputLockTimer = 0f;
 
     [Header("Kameras")]
     [SerializeField] private Camera macroCamera;
@@ -86,6 +87,7 @@ public class PlacementManager : MonoBehaviour
 
         currentShape = shape.Clone();
         currentSlotIndex = slotIndex;
+        selectInputLockTimer = 0.15f; // Verhindert, dass der Auswahl-Klick die Form sofort legt
 
         if (BiomeResonanceManager.Instance != null)
         {
@@ -233,6 +235,12 @@ public class PlacementManager : MonoBehaviour
             }
         }
 
+        if (selectInputLockTimer > 0f)
+        {
+            selectInputLockTimer -= Time.unscaledDeltaTime;
+            return;
+        }
+
         bool placePressed = (gamepad != null && gamepad.buttonSouth.wasPressedThisFrame) ||
                             (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.spaceKey.wasPressedThisFrame)) ||
                             (mouse != null && mouse.leftButton.wasPressedThisFrame);
@@ -295,7 +303,7 @@ public class PlacementManager : MonoBehaviour
         }
     }
 
-private void TryPlaceShapeAt(int startX, int startY)
+    private void TryPlaceShapeAt(int startX, int startY)
     {
         if (gridManager == null || currentShape == null) return;
 
@@ -343,7 +351,6 @@ private void TryPlaceShapeAt(int startX, int startY)
                         resonanceBiome,
                         cell.attribute
                     );
-                    Debug.Log($"[Altar-Pool-Check] Feld {coord} | Biom: {placedCellBiome} | Attribut: {cell.attribute} | Gewählter Raum: {(chosenRoomPrefab != null ? chosenRoomPrefab.name : "NULL")}");
                     MacroGridManager.Instance.RegisterRoom(coord, chosenRoomPrefab);
                 }
             }
@@ -374,6 +381,7 @@ private void TryPlaceShapeAt(int startX, int startY)
             }
         }
     }
+
     private Vector2Int GetCellUnderMouse()
     {
         Camera activeCam = GetActiveRaycastCamera();

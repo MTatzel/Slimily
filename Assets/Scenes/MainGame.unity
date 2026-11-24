@@ -1768,6 +1768,104 @@ MonoBehaviour:
   m_FillOrigin: 2
   m_UseSpriteMesh: 0
   m_PixelsPerUnitMultiplier: 1
+--- !u!1 &848426638
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 848426639}
+  - component: {fileID: 848426642}
+  - component: {fileID: 848426641}
+  - component: {fileID: 848426640}
+  m_Layer: 0
+  m_Name: BossManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &848426639
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 848426638}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1529917400}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &848426640
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 848426638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3f27d71a450a242428a9f41094f99dbe, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BossMacroBehaviorController
+  visualMoveSpeed: 6
+  ticksUntilNextAction: 0
+  actionsPerformed: 0
+  currentTargetCoord: {x: 0, y: 0}
+  hasValidTarget: 0
+--- !u!114 &848426641
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 848426638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 096cd6c16fe8aa44c83beb07c897ebf3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BossTriggerController
+  enableAutomaticTriggers: 1
+  cooldownTicksAfterDespawn: 6
+  triggerOnNightmare: 1
+  nightmareThreshold: 40
+  nightmareBossOverride: {fileID: 0}
+  triggerOnTotalTicks: 1
+  ticksUntilBossSpawn: 12
+  tickBossOverride: {fileID: 0}
+  triggerOnVisitedRooms: 0
+  visitedRoomsThreshold: 6
+  explorationBossOverride: {fileID: 0}
+  triggerOnHubDistance: 0
+  hubDistanceThreshold: 5
+  distanceBossOverride: {fileID: 0}
+  ticksSinceLastBoss: 0
+  cooldownTicksRemaining: 0
+  lastKnownNightmare: 0
+  hasTriggeredExploration: 0
+  hasTriggeredDistance: 0
+--- !u!114 &848426642
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 848426638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cd4643d1adaf737418450caab3eb5ac3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BossDirector
+  availableBosses: []
+  activeProfile: {fileID: 0}
+  activeBossObject: {fileID: 0}
+  activeBossCoord: {x: 0, y: 0}
 --- !u!1 &863390934
 GameObject:
   m_ObjectHideFlags: 0
@@ -2576,6 +2674,7 @@ Transform:
   - {fileID: 1399349738}
   - {fileID: 1962367018}
   - {fileID: 757121918}
+  - {fileID: 848426639}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1551995903

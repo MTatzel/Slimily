@@ -285,19 +285,10 @@ public class AltarTeleportController : MonoBehaviour
 
     private bool CheckBossBlocksHub(Vector2Int fromCoord)
     {
-        if (!blockHubTeleportNearBoss || GameManager.Instance == null || GameManager.Instance.ActiveBoss == null)
+        if (!blockHubTeleportNearBoss || BossDirector.Instance == null || !BossDirector.Instance.HasActiveBoss)
             return false;
 
-        if (GridManager.Instance == null) return false;
-
-        float offset = GridManager.Instance.offset > 0.01f ? GridManager.Instance.offset : 1.1f;
-        Vector3 bossLocalPos = GameManager.Instance.ActiveBoss.transform.localPosition;
-        Vector2Int bossCoord = new Vector2Int(
-            Mathf.RoundToInt(bossLocalPos.x / offset),
-            Mathf.RoundToInt(bossLocalPos.y / offset)
-        );
-
-        return GetGridDistance(fromCoord, bossCoord) <= bossBlockRadius;
+        return GetGridDistance(fromCoord, BossDirector.Instance.ActiveBossCoord) <= bossBlockRadius;
     }
 
     private int GetGridDistance(Vector2Int a, Vector2Int b)

@@ -188,6 +188,9 @@ public class GameManager : MonoBehaviour
         }
 
         NotifyFocusChanged();
+
+        BossTriggerController.Instance?.NotifyTicksAdvanced(ticks);
+        BossMacroBehaviorController.Instance?.NotifyTicksAdvanced(ticks);
     }
 
     public void DelayNextBossEvent(int extraTicks, string reason = "")
@@ -236,7 +239,10 @@ public class GameManager : MonoBehaviour
         if (currentNightmare >= maxNightmare && !isResettingRun)
         {
             StartCoroutine(WakeUpInHubRoutine());
+            return;
         }
+
+        BossTriggerController.Instance?.NotifyNightmareValue(currentNightmare);
     }
 
     public void OnSlimeDamaged()
@@ -331,23 +337,25 @@ public class GameManager : MonoBehaviour
 
     private void SetupLevelEncounter(LevelConfiguration config)
     {
-        if (activeBossInstance != null) Destroy(activeBossInstance.gameObject);
-        if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
-
-        if (config != null && config.bossPrefab != null)
+        // Alten starren Test-Boss aufräumen, falls noch vorhanden
+        if (activeBossInstance != null)
         {
-            Transform spawnParent = transform.parent != null ? transform.parent : transform;
-            activeBossInstance = Instantiate(config.bossPrefab, spawnParent);
-            activeBossInstance.transform.localPosition = new Vector3(
-                config.bossSpawnCoordinate.x * config.cellOffset,
-                config.bossSpawnCoordinate.y * config.cellOffset,
-                0f
-            );
-            if (eventManager != null) eventManager.boss = activeBossInstance;
+            Destroy(activeBossInstance.gameObject);
+            activeBossInstance = null;
         }
-        else if (eventManager != null)
+
+        if (eventManager == null) eventManager = FindAnyObjectByType<EventManager>();
+        if (eventManager != null) eventManager.boss = null;
+
+        // Neues Boss-System sauber für den Run zurücksetzen
+        if (BossDirector.Instance != null)
         {
-            eventManager.boss = null;
+            BossDirector.Instance.DespawnActiveBoss("Level-Start / Reset");
+        }
+
+        if (BossTriggerController.Instance != null)
+        {
+            BossTriggerController.Instance.ResetTriggers();
         }
     }
 
